@@ -1,0 +1,503 @@
+// ══════════════════════════════════════════════════════════════════
+// multipleInquiryFlow.js — 복수 문의 자동 분기 처리
+// ══════════════════════════════════════════════════════════════════
+
+module.exports = function registerMultipleInquiryFlow(app, {
+  ai, GEMINI_MODEL,
+  matchWorkTitleFromSheet, matchWorkTitleByTokens,
+  generateDraftId, draftStore, fetchDeliveryDate,
+  handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt,
+}) {
+
+  // ── 타입별 필수 필드 정의 ─────────────────────────────────
+  const REQUIRED_FIELDS = {
+    "스케줄":   ["work_title", "episode", "extend_or_date"],  // extend_days 또는 requested_date 중 하나
+    "재수급":   ["work_title", "episode", "reason"],
+    "파일순서": ["work_title", "episode"],
+    "리테이크": ["work_title", "episode"],
+    "문의":     ["work_title", "episode", "content"],
+  };
+
+  // ── 복수 문의 AI 파싱 ─────────────────────────────────────
+  async function parseMultipleInquiry(text) {
+    const prompt = `
+너는 웹툰/만화 로컬라이징 전문 문의 분석 AI다.
+
+아래 문의에서 개별 문의 항목을 분리하여 배열로 추출해줘.
+각 항목은 독립된 작품·화수·유형을 가진다.
+
+각 항목에서 추출할 정보:
+1) type: 아래 중 하나
+   - "스케줄"   : 납품일·일정 연장/변경 요청
+   - "재수급"   : 원본 파일 재전송/재수급 요청
+   - "파일순서" : 파일 순서 오류 수정 요청
+   - "리테이크" : 제출 후 재작업·리테이크 요청
+   - "문의"     : 그 외 작업 관련 일반 문의
+   - "불명"     : 유형 판단 불가
+2) work_title_ja: 일본어·중국어 작품명 원문 그대로 (없으면 null)
+3) work_title_ko: 한국어 작품명 원문 그대로 (없으면 null)
+4) episode: 회차 숫자만 (없으면 null)
+5) extend_days: 연장 일수 숫자 (스케줄 유형만, 없으면 null)
+6) requested_date: 희망 마감일 YYYY-MM-DD (스케줄 유형만, 없으면 null)
+7) reason: 재수급 사유 한국어 1문장 (재수급 유형만, 없으면 null)
+8) content: 문의 내용 요약 (문의 유형만, 없으면 null)
+9) file_numbers: 파일/페이지 번호 배열 (재수급 유형만, 없으면 [])
+
+JSON만 출력. 코드블록 금지.
+{"items": [...]}
+
+문의:
+${text}`.trim();
+
+    const res = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt });
+    const parsed = JSON.parse((res.text || "").replace(/```json|```/g, "").trim());
+    return parsed.items || [];
+  }
+
+  // ── 항목별 누락 필드 확인 ─────────────────────────────────
+  function getMissingFields(item) {
+    const required = REQUIRED_FIELDS[item.type] || [];
+    const missing = [];
+    for (const field of required) {
+      if (field === "work_title" && !item.work_title_ja && !item.work_title_ko) missing.push("work_title");
+      if (field === "episode" && !item.episode) missing.push("episode");
+      if (field === "extend_or_date" && !item.extend_days && !item.requested_date) missing.push("extend_or_date");
+      if (field === "reason" && !item.reason) missing.push("reason");
+      if (field === "content" && !item.content) missing.push("content");
+    }
+    return missing;
+  }
+
+  // ── 항목별 작품명 매칭 ────────────────────────────────────
+  async function resolveTitle(item) {
+    let matched = await matchWorkTitleFromSheet(item.work_title_ja, item.work_title_ko).catch(() => null);
+    if (!matched) {
+      const tokenResult = await matchWorkTitleByTokens(item.work_title_ko, item.work_title_ja).catch(() => null);
+      if (tokenResult?.single) matched = tokenResult.single;
+      else if (tokenResult?.multiple) return { matched: null, candidates: tokenResult.multiple };
+    }
+    return { matched, candidates: null };
+  }
+
+  // ── 누락 필드 라벨 ────────────────────────────────────────
+  function fieldLabel(field) {
+    const map = {
+      work_title: "작품명",
+      episode: "화수",
+      extend_or_date: "연장 일수 또는 희망 마감일",
+      reason: "재수급 사유",
+      content: "문의 내용",
+    };
+    return map[field] || field;
+  }
+
+  // ── 타입 라벨 ─────────────────────────────────────────────
+  function typeLabel(type) {
+    const map = {
+      "스케줄": "📅 스케줄 연장",
+      "재수급": "📦 재수급",
+      "파일순서": "📁 파일 순서",
+      "리테이크": "🔄 태스크 재생성",
+      "문의": "💬 작업 문의",
+      "불명": "❓ 유형 불명",
+    };
+    return map[type] || type;
+  }
+
+  // ── 항목 처리: 각 봇 플로우 연결 ─────────────────────────
+  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId) {
+    // 한국어 표시명 우선: projectName > ko > work_title_ko > work_title_ja
+    const workName   = matchedTitle?.projectName || matchedTitle?.ko || item.work_title_ko || item.work_title_ja || "";
+    const workNameKo = matchedTitle?.projectName || matchedTitle?.ko || item.work_title_ko || workName;
+    const pivoId     = matchedTitle?.pivoId || null;
+    const episode    = item.episode || null;
+
+    switch (item.type) {
+      case "스케줄": {
+        const delivery = workNameKo && episode
+          ? await fetchDeliveryDate(workNameKo, episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+          : null;
+        const parsed = {
+          work_title_ko: workNameKo,
+          work_title_ja: item.work_title_ja || null,
+          episode,
+          extend_days: item.extend_days || null,
+          requested_date: item.requested_date || null,
+          worker_type: "불명",
+          originalChannelId,
+          originalTs,
+          requesterUserId: null,
+        };
+        await handleScheduleExt(client, dmChannel, parsed, matchedTitle, delivery, sourceLink);
+        break;
+      }
+
+      case "재수급": {
+        const delivery = workNameKo && episode
+          ? await fetchDeliveryDate(workNameKo, episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+          : null;
+        const draftId = generateDraftId();
+        draftStore.set(draftId, {
+          type: "file_inquiry",
+          draftId,
+          workName,
+          workNameKo,
+          episode: episode || "",
+          fileNumbers: item.file_numbers || [],
+          reason: item.reason || "",
+          deliveryDate: delivery?.allSame ? delivery.deliveryDate : "-",
+          sourceLink,
+          originalChannelId,
+          originalTs,
+          dmChannelId: dmChannel,
+        });
+        const fileNums = (item.file_numbers || []).join(", ") || "-";
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `📦 *재수급 요청 초안* — ${workName} ${episode || "-"}화`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `*📦 재수급 요청 초안*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n*납품일:* ${delivery?.allSame ? delivery.deliveryDate : "-"}\n*파일/페이지 번호:* ${fileNums}\n*재수급 사유:* ${item.reason || "-"}` }},
+            { type: "actions", elements: [
+              { type: "button", action_id: "open_file_inquiry_modal", text: { type: "plain_text", text: "수정" }, style: "primary", value: draftId },
+              { type: "button", action_id: "send_file_inquiry_now",   text: { type: "plain_text", text: "전송" }, style: "danger",   value: draftId,
+                confirm: { title: { type: "plain_text", text: "전송할까?" }, text: { type: "mrkdwn", text: "PM 채널에 재수급 요청을 전송해." }, confirm: { type: "plain_text", text: "전송" }, deny: { type: "plain_text", text: "취소" } }},
+            ]},
+          ],
+        });
+        break;
+      }
+
+      case "파일순서": {
+        await handleFileOrderInquiry(
+          client, dmChannel,
+          { title_ja: item.work_title_ja, title_ko: workNameKo, episode },
+          { url: sourceLink, channelId: originalChannelId, ts: originalTs, requesterUserId: requesterUserId || null },
+          item.work_title_ko || item.work_title_ja || "",
+        );
+        break;
+      }
+
+      case "리테이크": {
+        await handleRetakeInquiry(
+          client, dmChannel,
+          { title_ja: item.work_title_ja, title_ko: workNameKo, episode },
+          { url: sourceLink },
+          item.work_title_ko || item.work_title_ja || "",
+          requesterName || "",
+        );
+        break;
+      }
+
+      case "문의": {
+        // 일반 문의는 초안 생성 없이 내용만 표시 + 문의봇 버튼
+        const btnValue = JSON.stringify({ sourceLink, workName, episode: episode || "" });
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `💬 *작업 문의* — ${workName} ${episode || "-"}화`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `*💬 작업 문의*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n*내용:* ${item.content || "-"}` }},
+            { type: "actions", elements: [
+              { type: "button", action_id: "direct_inquiry_btn", text: { type: "plain_text", text: "문의봇으로 처리" }, style: "primary", value: btnValue },
+            ]},
+          ],
+        });
+        break;
+      }
+
+      default: {
+        const btnValue = JSON.stringify({ sourceLink, workName, episode: episode || "" });
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `❓ 유형을 특정할 수 없어. 직접 봇을 선택해줘. — ${workName} ${episode || "-"}화`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `❓ *유형 불명*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n직접 봇을 선택해줘.` }},
+            { type: "actions", elements: [
+              { type: "button", action_id: "direct_inquiry_btn",   text: { type: "plain_text", text: "문의봇" },    value: btnValue },
+              { type: "button", action_id: "direct_resupply_btn",  text: { type: "plain_text", text: "재수급봇" },  value: btnValue },
+              { type: "button", action_id: "direct_schedule_btn",  text: { type: "plain_text", text: "스케줄봇" },  value: btnValue },
+              { type: "button", action_id: "direct_fileorder_btn", text: { type: "plain_text", text: "파일순서봇" }, value: btnValue },
+              { type: "button", action_id: "direct_retake_btn",    text: { type: "plain_text", text: "태스크생성봇" }, value: btnValue },
+            ]},
+          ],
+        });
+      }
+    }
+  }
+
+  // ── 복수 문의 누락 정보 입력 모달 열기 ───────────────────
+  app.action("multi_fill_missing", async ({ ack, body, client }) => {
+    await ack();
+    const { multiPendingId, itemIndex } = JSON.parse(body.actions[0].value || "{}");
+    const multiPending = draftStore.get(multiPendingId);
+    if (!multiPending) return;
+
+    const item    = multiPending.items[itemIndex];
+    // 저장된 누락 필드 사용 (매칭 실패 포함)
+    const missing = multiPending.missingByIndex?.[itemIndex] || getMissingFields(item);
+
+    const blocks = [
+      { type: "section", text: { type: "mrkdwn", text: `*${typeLabel(item.type)}* — 누락된 정보를 입력해줘.` }},
+    ];
+
+    if (missing.includes("work_title")) {
+      blocks.push({ type: "input", block_id: "mi_work_block",
+        label: { type: "plain_text", text: "작품명" },
+        element: { type: "plain_text_input", action_id: "value",
+          initial_value: item.work_title_ko || item.work_title_ja || "",
+          placeholder: { type: "plain_text", text: "한국어 또는 일본어 작품명" } } });
+    }
+    if (missing.includes("episode")) {
+      blocks.push({ type: "input", block_id: "mi_episode_block",
+        label: { type: "plain_text", text: "화수 (숫자만)" },
+        element: { type: "plain_text_input", action_id: "value",
+          initial_value: item.episode || "",
+          placeholder: { type: "plain_text", text: "예: 221" } } });
+    }
+    if (missing.includes("extend_or_date")) {
+      blocks.push({ type: "input", block_id: "mi_extdays_block",
+        label: { type: "plain_text", text: "연장 일수 (숫자만)" },
+        optional: true,
+        element: { type: "plain_text_input", action_id: "value",
+          placeholder: { type: "plain_text", text: "예: 3" } } });
+      blocks.push({ type: "input", block_id: "mi_reqdate_block",
+        label: { type: "plain_text", text: "희망 마감일 (연장 일수 미입력 시)" },
+        optional: true,
+        element: { type: "datepicker", action_id: "value",
+          placeholder: { type: "plain_text", text: "날짜 선택" } } });
+    }
+    if (missing.includes("reason")) {
+      blocks.push({ type: "input", block_id: "mi_reason_block",
+        label: { type: "plain_text", text: "재수급 사유" },
+        element: { type: "plain_text_input", action_id: "value",
+          initial_value: item.reason || "",
+          placeholder: { type: "plain_text", text: "파일 손상, 레이어 미분리 등" } } });
+    }
+    if (missing.includes("content")) {
+      blocks.push({ type: "input", block_id: "mi_content_block",
+        label: { type: "plain_text", text: "문의 내용" },
+        element: { type: "plain_text_input", action_id: "value", multiline: true,
+          initial_value: item.content || "",
+          placeholder: { type: "plain_text", text: "문의 내용을 입력해줘." } } });
+    }
+
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal", callback_id: "submit_multi_fill_missing",
+        private_metadata: JSON.stringify({ multiPendingId, itemIndex }),
+        title:  { type: "plain_text", text: "누락 정보 입력" },
+        submit: { type: "plain_text", text: "처리" },
+        close:  { type: "plain_text", text: "취소" },
+        blocks,
+      },
+    });
+  });
+
+  // ── 누락 정보 입력 모달 제출 ─────────────────────────────
+  app.view("submit_multi_fill_missing", async ({ ack, body, view, client }) => {
+    await ack();
+    const { multiPendingId, itemIndex } = JSON.parse(view.private_metadata || "{}");
+    const multiPending = draftStore.get(multiPendingId);
+    if (!multiPending) return;
+
+    const v    = view.state.values;
+    const item = multiPending.items[itemIndex];
+
+    // 입력값으로 항목 업데이트
+    if (v.mi_work_block?.value?.value)    item.work_title_ko = v.mi_work_block.value.value.trim();
+    if (v.mi_episode_block?.value?.value) item.episode       = v.mi_episode_block.value.value.trim();
+    if (v.mi_extdays_block?.value?.value) item.extend_days   = parseInt(v.mi_extdays_block.value.value.trim(), 10) || null;
+    if (v.mi_reqdate_block?.value?.selected_date) item.requested_date = v.mi_reqdate_block.value.selected_date;
+    if (v.mi_reason_block?.value?.value)  item.reason  = v.mi_reason_block.value.value.trim();
+    if (v.mi_content_block?.value?.value) item.content = v.mi_content_block.value.value.trim();
+
+    multiPending.items[itemIndex] = item;
+    draftStore.set(multiPendingId, multiPending);
+
+    // 다시 매칭 시도 후 처리
+    const { matched, candidates } = await resolveTitle(item);
+
+    if (candidates) {
+      // 복수 후보 → 선택 버튼
+      await client.chat.postMessage({
+        channel: body.user.id,
+        text: `[항목 ${itemIndex + 1}] 작품 후보가 여러 개야. 선택해줘.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: `*[항목 ${itemIndex + 1}] ${typeLabel(item.type)}* — 작품 후보 ${candidates.length}건` }},
+          { type: "actions", elements: candidates.slice(0, 5).map((r, i) => ({
+            type: "button", action_id: `multi_token_pick_${i}`,
+            text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
+            value: JSON.stringify({ multiPendingId, itemIndex, pivoId: r.pivoId, projectName: r.projectName }),
+          }))},
+        ],
+      });
+      return;
+    }
+
+    await processItem(
+      client, body.user.id, item, matched,
+      multiPending.originalChannelId, multiPending.originalTs,
+      multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
+    );
+  });
+
+  app.action(/^multi_token_pick_\d+$/, async ({ ack, body, client }) => {
+    await ack();
+    const { multiPendingId, itemIndex, pivoId, projectName } = JSON.parse(body.actions[0].value || "{}");
+    const multiPending = draftStore.get(multiPendingId);
+    if (!multiPending) return;
+
+    const matchedTitle = { projectName, pivoId };
+    const item         = multiPending.items[itemIndex];
+
+    await processItem(
+      client, body.user.id, item, matchedTitle,
+      multiPending.originalChannelId, multiPending.originalTs,
+      multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
+    );
+  });
+
+  // ── 메인 핸들러 ──────────────────────────────────────────
+  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null) {
+    // 1. AI로 항목 분리 파싱 (외부에서 이미 파싱된 경우 재사용)
+    let items;
+    if (preItems && preItems.length) {
+      items = preItems;
+    } else {
+      try {
+        items = await parseMultipleInquiry(originalText);
+      } catch (e) {
+        console.error("[multi] AI 파싱 실패:", e.message);
+        await client.chat.postMessage({ channel: dmChannel, text: "⚠️ 복수 문의 파싱에 실패했어. 직접 봇을 소환해줘." });
+        return;
+      }
+    }
+
+    // forceType 지정 시 모든 항목 타입 강제 덮어씌움
+    if (forceType) {
+      items = items.map(item => ({ ...item, type: forceType }));
+    }
+
+    if (!items.length) {
+      await client.chat.postMessage({ channel: dmChannel, text: "⚠️ 문의 항목을 분리할 수 없어. 직접 봇을 소환해줘." });
+      return;
+    }
+
+    // 2. 전체 항목 요약 표시
+    const summaryLines = items.map((item, i) =>
+      `${i + 1}. ${typeLabel(item.type)} — ${item.work_title_ko || item.work_title_ja || "작품명 미확인"} ${item.episode ? item.episode+"화" : ""}`
+    );
+    await client.chat.postMessage({
+      channel: dmChannel,
+      text: `📋 복수 문의 ${items.length}건 감지됨`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `*📋 복수 문의 ${items.length}건 감지 — 항목별로 처리할게.*\n${summaryLines.join("\n")}${sourceLink ? `\n\n🔗 <${sourceLink}|원문 링크>` : ""}` }},
+      ],
+    });
+
+    // 3. 항목별 매칭 + 누락 필드 사전 계산 (병렬)
+    const multiPendingId = `multi_${Date.now()}`;
+    const resolvedItems = await Promise.all(items.map(async (item, i) => {
+      let missing = getMissingFields(item);
+      const { matched, candidates } = await resolveTitle(item);
+      if (!matched && !candidates && !missing.includes("work_title")) {
+        missing = ["work_title", ...missing];
+      }
+      return { item, missing, matched, candidates };
+    }));
+
+    draftStore.set(multiPendingId, {
+      items,
+      originalChannelId, originalTs, sourceLink, requesterName, requesterUserId,
+      missingByIndex: Object.fromEntries(resolvedItems.map(({ missing }, i) => [i, missing])),
+    });
+
+    // 4. 항목별 병렬 처리
+    await Promise.all(resolvedItems.map(async ({ item, missing, matched, candidates }, i) => {
+      try {
+
+        const workName = matched?.projectName || item.work_title_ko || item.work_title_ja || "미확인";
+        const header   = `*[항목 ${i + 1}] ${typeLabel(item.type)}* — ${workName} ${item.episode ? item.episode+"화" : ""}`;
+
+        // 케이스 1: 타입 불명
+        if (item.type === "불명") {
+          const btnValue = JSON.stringify({ sourceLink, workName, episode: item.episode || "" });
+          await client.chat.postMessage({
+            channel: dmChannel,
+            text: `[항목 ${i + 1}] 유형을 특정할 수 없어. 직접 선택해줘.`,
+            blocks: [
+              { type: "section", text: { type: "mrkdwn", text: `${header}\n유형을 특정할 수 없어. 직접 봇을 선택해줘.` }},
+              { type: "actions", elements: [
+                { type: "button", action_id: "direct_inquiry_btn",   text: { type: "plain_text", text: "문의봇" },    value: btnValue },
+                { type: "button", action_id: "direct_resupply_btn",  text: { type: "plain_text", text: "재수급봇" },  value: btnValue },
+                { type: "button", action_id: "direct_schedule_btn",  text: { type: "plain_text", text: "스케줄봇" },  value: btnValue },
+                { type: "button", action_id: "direct_fileorder_btn", text: { type: "plain_text", text: "파일순서봇" }, value: btnValue },
+                { type: "button", action_id: "direct_retake_btn",    text: { type: "plain_text", text: "태스크생성봇" }, value: btnValue },
+              ]},
+            ],
+          });
+          return;
+        }
+
+        // 케이스 2: 복수 후보
+        if (candidates) {
+          await client.chat.postMessage({
+            channel: dmChannel,
+            text: `[항목 ${i + 1}] 작품 후보가 여러 개야. 선택해줘.`,
+            blocks: [
+              { type: "section", text: { type: "mrkdwn", text: `${header}\n작품 후보가 여러 개야. 선택해줘.` }},
+              { type: "actions", elements: candidates.slice(0, 5).map((r, ci) => ({
+                type: "button", action_id: `multi_token_pick_${ci}`,
+                text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${ci+1}` },
+                value: JSON.stringify({ multiPendingId, itemIndex: i, pivoId: r.pivoId, projectName: r.projectName }),
+              }))},
+            ],
+          });
+          return;
+        }
+
+        // 케이스 3: 누락 필드 있음 (매칭 실패 포함)
+        if (missing.length > 0) {
+          const missingLabels = missing.map(fieldLabel).join(", ");
+          const matchFailNote = !matched && missing.includes("work_title")
+            ? `\n시트에서 *${item.work_title_ko || item.work_title_ja || "작품명"}* 을 찾지 못했어. 정확한 작품명을 입력해줘.`
+            : "";
+          await client.chat.postMessage({
+            channel: dmChannel,
+            text: `[항목 ${i + 1}] 누락 정보가 있어. 직접 입력해줘.`,
+            blocks: [
+              { type: "section", text: { type: "mrkdwn",
+                text: `${header}\n⚠️ 아래 정보를 확인할 수 없어.\n・ ${missingLabels}${matchFailNote}` }},
+              { type: "actions", elements: [
+                { type: "button", action_id: "multi_fill_missing",
+                  text: { type: "plain_text", text: "✏️ 정보 입력" },
+                  style: "primary",
+                  value: JSON.stringify({ multiPendingId, itemIndex: i }) },
+              ]},
+            ],
+          });
+          return;
+        }
+
+        // 케이스 4: 정상 처리
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `[항목 ${i + 1}] ${typeLabel(item.type)} 처리 중...`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `${header}\n처리 중...` }},
+          ],
+        });
+        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId);
+
+      } catch (e) {
+        console.error(`[multi] 항목 ${i + 1} 처리 실패:`, e.message);
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `⚠️ [항목 ${i + 1}] 처리 중 오류가 발생했어: ${e.message}`,
+        });
+      }
+    }));
+  }
+
+  return { handleMultipleInquiry };
+};
