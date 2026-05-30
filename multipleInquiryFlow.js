@@ -6,7 +6,7 @@ module.exports = function registerMultipleInquiryFlow(app, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, matchWorkTitleByTokens,
   generateDraftId, draftStore, fetchDeliveryDate,
-  handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt,
+  handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt, handleScheduleExtGrouped,
 }) {
 
   // ── 타입별 필수 필드 정의 ─────────────────────────────────
@@ -412,8 +412,86 @@ ${text}`.trim();
       missingByIndex: Object.fromEntries(resolvedItems.map(({ missing }, i) => [i, missing])),
     });
 
-    // 4. 항목별 병렬 처리
-    await Promise.all(resolvedItems.map(async ({ item, missing, matched, candidates }, i) => {
+    // 4-A. 스케줄 항목 묶음 후보 식별 — 동일 작품(pivoId) + 동일 연장요청(extend_days/requested_date)
+    //   - 매칭 성공 + 누락 없는 항목만 대상 (그 외엔 단일 흐름으로 fallback)
+    //   - 2건 이상 모이면 handleScheduleExtGrouped 로 위임 → 그 안에서 시그니처(시작/마감/작업자 이메일) 일치 여부 재검증
+    const batchHandled  = new Set();
+    const scheduleBatches = [];
+    if (handleScheduleExtGrouped) {
+      const scheduleByKey = new Map();
+      resolvedItems.forEach(({ item, missing, matched }, i) => {
+        if (item.type !== "스케줄") return;
+        if (!matched?.pivoId) return;
+        if (missing.length > 0) return;
+        if (!item.episode) return;
+        const key = `${matched.pivoId}|${item.extend_days || ""}|${item.requested_date || ""}`;
+        if (!scheduleByKey.has(key)) scheduleByKey.set(key, []);
+        scheduleByKey.get(key).push(i);
+      });
+      for (const indices of scheduleByKey.values()) {
+        if (indices.length >= 2) {
+          scheduleBatches.push(indices);
+          indices.forEach(i => batchHandled.add(i));
+        }
+      }
+    }
+
+    // 4-B. 묶음 처리 (병렬)
+    const batchPromises = scheduleBatches.map(async (indices) => {
+      try {
+        const firstRi  = resolvedItems[indices[0]];
+        const workName = firstRi.matched?.projectName || firstRi.item.work_title_ko || firstRi.item.work_title_ja || "-";
+        const epsLabel = indices.map(i => resolvedItems[i].item.episode + "화").join(", ");
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: `[묶음 후보] ${workName} ${epsLabel}`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn",
+              text: `*📚 ${workName} ${epsLabel}* — 동일 일정이면 한 카드로, 다르면 개별로 띄울게.` } },
+          ],
+        });
+        const groupItems = indices.map(i => {
+          const ri = resolvedItems[i];
+          return {
+            episode: ri.item.episode,
+            parsed: {
+              work_title_ko: ri.matched?.projectName || ri.item.work_title_ko || null,
+              work_title_ja: ri.item.work_title_ja || null,
+              episode: ri.item.episode,
+              extend_days: ri.item.extend_days || null,
+              requested_date: ri.item.requested_date || null,
+              worker_type: "불명",
+              originalChannelId,
+              originalTs,
+              requesterUserId,
+            },
+            matchedTitle: ri.matched,
+            delivery: null, // grouped flow가 재조회
+            sourceLink,
+            originalChannelId,
+            originalTs,
+            requesterUserId,
+          };
+        });
+        await handleScheduleExtGrouped(client, dmChannel, groupItems);
+      } catch (e) {
+        console.error("[multi] 스케줄 묶음 처리 실패:", e.message);
+        // 실패 시 각 항목 단일 흐름으로 fallback
+        indices.forEach(i => batchHandled.delete(i));
+        await Promise.all(indices.map(async (i) => {
+          const ri = resolvedItems[i];
+          try {
+            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId);
+          } catch (err) {
+            console.error(`[multi] fallback 항목 ${i+1} 실패:`, err.message);
+          }
+        }));
+      }
+    });
+
+    // 4-C. 묶음에 포함되지 않은 항목은 기존 흐름대로 병렬 처리
+    const otherPromises = resolvedItems.map(async ({ item, missing, matched, candidates }, i) => {
+      if (batchHandled.has(i)) return;
       try {
 
         const workName = matched?.projectName || item.work_title_ko || item.work_title_ja || "미확인";
@@ -496,7 +574,9 @@ ${text}`.trim();
           text: `⚠️ [항목 ${i + 1}] 처리 중 오류가 발생했어: ${e.message}`,
         });
       }
-    }));
+    });
+
+    await Promise.all([...batchPromises, ...otherPromises]);
   }
 
   return { handleMultipleInquiry };

@@ -1556,7 +1556,7 @@ const { handleRetakeInquiry } = require("./retakeFlow")(app, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, google, getGoogleAuth,
 });
 
-const { handleScheduleExt } = require("./scheduleExtFlow")(app, {
+const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(app, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
   google, getGoogleAuth, fetchDeliveryDate,
 });
@@ -1565,7 +1565,7 @@ const { handleMultipleInquiry } = require("./multipleInquiryFlow")(app, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, matchWorkTitleByTokens,
   generateDraftId, draftStore, fetchDeliveryDate,
-  handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt,
+  handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt, handleScheduleExtGrouped,
 });
 
 const { handleWorkerRelay } = require("./workerRelayFlow")(app, {

@@ -125,6 +125,39 @@ module.exports = function registerScheduleExtFlow(app, {
     return a > b;
   }
 
+  // ── 화수 라벨 ────────────────────────────────────────────
+  // [4,5,6] → "4-6화" / [4,6] → "4, 6화" / [5] → "5화"
+  function _formatEpisodeLabel(episodes) {
+    if (!episodes || !episodes.length) return "-";
+    const nums = episodes.map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+    if (!nums.length) return episodes.map(e => `${e}화`).join(", ");
+    if (nums.length === 1) return `${nums[0]}화`;
+    const contiguous = nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    if (contiguous) return `${nums[0]}-${nums[nums.length - 1]}화`;
+    return nums.map(n => `${n}화`).join(", ");
+  }
+
+  // ── task 시그니처 (opCode|email|시작일|마감일 정렬 후 결합) ─
+  // 화수 묶음 시 동일 일정인지 판단에 사용
+  function _taskSignature(tasks) {
+    if (!tasks || !tasks.length) return "";
+    return tasks
+      .map(t => `${t.opCode}|${(t.workerEmail || "").toLowerCase()}|${t.startDateOrig || ""}|${t.endDateOrig || ""}`)
+      .sort()
+      .join(":::");
+  }
+
+  // ── 여러 화수의 납품일 조회 (연속 범위면 한 번에) ─────────
+  async function _fetchDeliveryForEpisodes(workNameKo, projectName, episodes) {
+    const sorted = [...episodes].map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+    if (!sorted.length) return null;
+    const isContiguous = sorted.every((ep, i) => i === 0 || ep === sorted[i - 1] + 1);
+    const rangeStr = isContiguous && sorted.length > 1
+      ? `${sorted[0]}-${sorted[sorted.length - 1]}`
+      : String(sorted[0]);
+    return await fetchDeliveryDate(workNameKo, rangeStr, "zh-ja", projectName).catch(() => null);
+  }
+
   // ── 슬랙 멘션 텍스트 생성 ────────────────────────────────
   async function _getMentionText(email) {
     const info = await _getWorkerInfo(email).catch(() => null);
@@ -138,7 +171,7 @@ module.exports = function registerScheduleExtFlow(app, {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 메인 진입: 스케줄 연장 플로우 시작
+  // 메인 진입: 단일 화수 — 스케줄 연장 플로우 시작
   // parsed: parseScheduleInquiry 결과 (extend_days, work_title_*, episode 등)
   // matchedTitle: matchWorkTitleFromSheet 결과
   // delivery: fetchDeliveryDate 결과
@@ -157,6 +190,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         workName, pivoId, episode,
+        episodes: episode ? [parseInt(episode, 10)] : [],
         delivery, sourceLink,
         requesterUserId,
         originalChannelId: parsed.originalChannelId || null,
@@ -180,10 +214,117 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     await _proceedScheduleExt(client, dmChannel, {
-      workName, pivoId, episode, extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
+      workName, pivoId,
+      episodes: [parseInt(episode, 10)],
+      extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
       originalChannelId: parsed.originalChannelId || null,
       originalTs:        parsed.originalTs        || null,
     });
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // 묶음 진입: 복수 문의 다건 스케줄을 받아 시그니처 동일한 화수끼리 묶음 처리
+  // items: [{ episode, parsed, matchedTitle, delivery, sourceLink,
+  //          originalChannelId, originalTs, requesterUserId }, ...]
+  // 동일 작품(pivoId) + 동일 연장 요청(extend_days/requested_date) 가정
+  // 시그니처 (시작일/마감일/작업자 이메일) 모두 일치 → 묶음 / 불일치 → 개별
+  // ══════════════════════════════════════════════════════════
+  async function handleScheduleExtGrouped(client, dmChannel, items) {
+    if (!items || items.length === 0) return;
+
+    // 단일 fallback 시 납품일이 비어 있으면 채워주는 헬퍼
+    const _fillDelivery = async (it) => {
+      if (it.delivery) return it.delivery;
+      const workNameKo = it.matchedTitle?.projectName || it.parsed?.work_title_ko;
+      if (!workNameKo || !it.episode) return null;
+      return await fetchDeliveryDate(workNameKo, String(it.episode), "zh-ja", it.matchedTitle?.projectName || null).catch(() => null);
+    };
+    const _runSingle = async (it) => {
+      const delivery = await _fillDelivery(it);
+      await handleScheduleExt(client, dmChannel, it.parsed, it.matchedTitle, delivery, it.sourceLink);
+    };
+
+    // 1건이면 그냥 단일 처리
+    if (items.length === 1) {
+      return _runSingle(items[0]);
+    }
+
+    const first  = items[0];
+    const pivoId = first.matchedTitle?.pivoId || null;
+
+    // pivoId 없으면 묶음 불가 → 각자 단일 처리
+    if (!pivoId) {
+      for (const it of items) await _runSingle(it);
+      return;
+    }
+
+    // 모든 화수의 task 일괄 조회
+    let projectUuid = null;
+    try { projectUuid = await _getProjectUuid(pivoId); } catch (_) {}
+
+    if (!projectUuid) {
+      for (const it of items) await _runSingle(it);
+      return;
+    }
+
+    const tasksByEp = {};
+    await Promise.all(items.map(async (it) => {
+      const ep = parseInt(it.episode, 10);
+      if (isNaN(ep)) return;
+      try {
+        const t = await _getJobTasks(projectUuid, ep);
+        if (t && t.length > 0) tasksByEp[ep] = t;
+      } catch (e) { console.warn("[scheduleExt] _getJobTasks 실패:", ep, e.message); }
+    }));
+
+    // 시그니처별로 그룹화
+    const sigGroups = new Map(); // sig → [item, ...]
+    const noTasksItems = [];
+    for (const it of items) {
+      const ep = parseInt(it.episode, 10);
+      if (!tasksByEp[ep]) { noTasksItems.push(it); continue; }
+      const sig = _taskSignature(tasksByEp[ep]);
+      if (!sigGroups.has(sig)) sigGroups.set(sig, []);
+      sigGroups.get(sig).push(it);
+    }
+
+    // task 없는 화수는 개별 처리 (기존 흐름이 에러 메시지 처리함)
+    for (const it of noTasksItems) await _runSingle(it);
+
+    // 시그니처 그룹 처리 (병렬)
+    const groupPromises = [...sigGroups.values()].map(async (groupItems) => {
+      if (groupItems.length === 1) {
+        // 단독 — 기존 단일 처리
+        await _runSingle(groupItems[0]);
+        return;
+      }
+
+      // 묶음 처리
+      const f = groupItems[0];
+      const episodes = groupItems.map(it => parseInt(it.episode, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+      const groupTasksByEp = Object.fromEntries(episodes.map(ep => [ep, tasksByEp[ep]]));
+      const workName = f.matchedTitle?.projectName || f.parsed.work_title_ko || f.parsed.work_title_ja || "-";
+      const workNameKo = f.matchedTitle?.projectName || f.matchedTitle?.ko || f.parsed.work_title_ko || workName;
+
+      // 묶음 납품일 재조회 (연속 범위면 한 번에)
+      const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.projectName || null, episodes);
+
+      await _proceedScheduleExt(client, dmChannel, {
+        workName, pivoId,
+        episodes,
+        extDays: f.parsed.extend_days ? parseInt(f.parsed.extend_days, 10) : null,
+        requestedDate: f.parsed.requested_date || null,
+        delivery: mergedDelivery || f.delivery,
+        sourceLink: f.sourceLink,
+        originalChannelId: f.originalChannelId || f.parsed.originalChannelId || null,
+        originalTs:        f.originalTs        || f.parsed.originalTs        || null,
+        requesterUserId:   f.requesterUserId   || f.parsed.requesterUserId   || null,
+        preFetchedTasksByEpisode: groupTasksByEp,
+        preFetchedProjectUuid:    projectUuid,
+      });
+    });
+
+    await Promise.all(groupPromises);
   }
 
   // ── 연장 일수 수동 입력 모달 ─────────────────────────────
@@ -240,32 +381,85 @@ module.exports = function registerScheduleExtFlow(app, {
       return;
     }
     draftStore.delete(pendingId);
-    await _proceedScheduleExt(client, pending.dmChannelId, { ...pending, extDays, episode });
+    await _proceedScheduleExt(client, pending.dmChannelId, {
+      ...pending,
+      extDays,
+      episodes: [parseInt(episode, 10)],
+    });
   });
 
   // ── 핵심 처리: 일정 시뮬레이션 + 1단계 메시지 ───────────
+  // info.episodes (number[]) — 단일 또는 묶음
+  // info.preFetchedTasksByEpisode (옵션) — handleScheduleExtGrouped가 미리 조회한 결과
   async function _proceedScheduleExt(client, dmChannel, info) {
-    const { workName, pivoId, episode, delivery, sourceLink,
+    const { workName, pivoId, delivery, sourceLink,
             originalChannelId, originalTs, requesterUserId,
             requestedDate, isDirectCall } = info;
     let extDays = info.extDays || null;
 
-    // Totus에서 JOB 태스크 조회
-    let tasks = null;
-    try {
-      if (pivoId) {
-        const projectUuid = await _getProjectUuid(pivoId);
-        if (projectUuid) tasks = await _getJobTasks(projectUuid, episode);
-      }
-    } catch (e) {
-      console.error("[scheduleExt] JOB 조회 실패:", e.message);
-    }
-
-    if (!tasks || tasks.length === 0) {
-      await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ ${workName} ${episode}화 태스크를 Totus에서 찾을 수 없어. 직접 확인해줘.` });
+    // 화수 배열 정규화
+    const episodes = Array.isArray(info.episodes) && info.episodes.length
+      ? info.episodes.map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b)
+      : (info.episode ? [parseInt(info.episode, 10)] : []);
+    if (!episodes.length) {
+      await client.chat.postMessage({ channel: dmChannel, text: "⚠️ 회차를 특정할 수 없어. 직접 확인해줘." });
       return;
     }
+    const episodeLabel = _formatEpisodeLabel(episodes);
+    const isBatch      = episodes.length > 1;
+
+    // Totus에서 JOB 태스크 조회 (이미 조회된 경우 재사용)
+    let tasksByEpisode = info.preFetchedTasksByEpisode || null;
+    if (!tasksByEpisode && pivoId) {
+      tasksByEpisode = {};
+      try {
+        const projectUuid = info.preFetchedProjectUuid || await _getProjectUuid(pivoId);
+        if (projectUuid) {
+          await Promise.all(episodes.map(async (ep) => {
+            const t = await _getJobTasks(projectUuid, ep);
+            if (t && t.length > 0) tasksByEpisode[ep] = t;
+          }));
+        }
+      } catch (e) {
+        console.error("[scheduleExt] JOB 조회 실패:", e.message);
+      }
+    }
+
+    // 어느 한 화수라도 task 없으면 실패
+    const missingEps = episodes.filter(ep => !tasksByEpisode || !tasksByEpisode[ep] || tasksByEpisode[ep].length === 0);
+    if (missingEps.length === episodes.length) {
+      await client.chat.postMessage({ channel: dmChannel,
+        text: `⚠️ ${workName} ${episodeLabel} 태스크를 Totus에서 찾을 수 없어. 직접 확인해줘.` });
+      return;
+    }
+    if (missingEps.length > 0) {
+      await client.chat.postMessage({ channel: dmChannel,
+        text: `⚠️ ${workName} ${missingEps.map(e => e + "화").join(", ")} 태스크를 Totus에서 찾을 수 없어. 나머지 화수만 처리할게.` });
+      // 누락 화수 제외하고 진행
+      const validEps = episodes.filter(ep => !missingEps.includes(ep));
+      if (!validEps.length) return;
+      episodes.length = 0;
+      episodes.push(...validEps);
+    }
+
+    // 묶음 검증: 시그니처 재확인 (defensive)
+    const sigs = episodes.map(ep => _taskSignature(tasksByEpisode[ep]));
+    const allSigSame = sigs.every(s => s === sigs[0]);
+    if (isBatch && !allSigSame) {
+      // 시그니처 불일치 시 — 단독으로 분리
+      console.log("[scheduleExt] 묶음 검증 실패 — 화수별로 분리 처리");
+      for (const ep of episodes) {
+        await _proceedScheduleExt(client, dmChannel, {
+          ...info,
+          episodes: [ep],
+          preFetchedTasksByEpisode: { [ep]: tasksByEpisode[ep] },
+        });
+      }
+      return;
+    }
+
+    // 대표 tasks (시그니처 동일하므로 첫 번째 사용)
+    const tasks = tasksByEpisode[episodes[0]];
 
     // ── 요청 작업자 특정: Slack 이메일 도메인 vs task 작업자 도메인 매칭 ──
     let requesterTaskIndex = null;
@@ -302,16 +496,16 @@ module.exports = function registerScheduleExtFlow(app, {
         console.log(`[scheduleExt] requestedDate(${requestedDate}) - lastEndDate(${lastTaskEndDate.slice(0,10)}) = diff:${diff}`);
         const _makePending = () => {
           const pendingId = `schext_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schext_pending", workName, pivoId, episode, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
+          draftStore.set(pendingId, { type: "schext_pending", workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
           return pendingId;
         };
         if (diff === 0) {
           const pendingId = _makePending();
           await client.chat.postMessage({ channel: dmChannel,
-            text: `ℹ️ *${workName} ${episode}화* — 희망 마감일(${requestedDate})이 현재 마감일과 동일해. 연장이 필요 없는 것 같아.`,
+            text: `ℹ️ *${workName} ${episodeLabel}* — 희망 마감일(${requestedDate})이 현재 마감일과 동일해. 연장이 필요 없는 것 같아.`,
             blocks: [
               { type: "section", text: { type: "mrkdwn",
-                text: `ℹ️ *${workName} ${episode}화*\n희망 마감일 *${requestedDate}* 이 현재 마감일과 동일해. 연장이 필요 없는 것 같아.` } },
+                text: `ℹ️ *${workName} ${episodeLabel}*\n희망 마감일 *${requestedDate}* 이 현재 마감일과 동일해. 연장이 필요 없는 것 같아.` } },
               { type: "actions", elements: [
                 { type: "button", action_id: "schext_open_days_modal",
                   text: { type: "plain_text", text: "연장 일수 직접 입력" },
@@ -326,10 +520,10 @@ module.exports = function registerScheduleExtFlow(app, {
         if (diff < 0) {
           const pendingId = _makePending();
           await client.chat.postMessage({ channel: dmChannel,
-            text: `⚠️ *${workName} ${episode}화* — 희망 마감일(${requestedDate})이 현재 마감일(${lastTaskEndDate.slice(0,10)})보다 이전이야. 문의 내용을 확인해줘.`,
+            text: `⚠️ *${workName} ${episodeLabel}* — 희망 마감일(${requestedDate})이 현재 마감일(${lastTaskEndDate.slice(0,10)})보다 이전이야. 문의 내용을 확인해줘.`,
             blocks: [
               { type: "section", text: { type: "mrkdwn",
-                text: `⚠️ *${workName} ${episode}화*\n희망 마감일 *${requestedDate}* 이 현재 마감일 *${lastTaskEndDate.slice(0,10)}* 보다 이전이야. 문의 내용이 맞는지 확인해줘.` } },
+                text: `⚠️ *${workName} ${episodeLabel}*\n희망 마감일 *${requestedDate}* 이 현재 마감일 *${lastTaskEndDate.slice(0,10)}* 보다 이전이야. 문의 내용이 맞는지 확인해줘.` } },
               { type: "actions", elements: [
                 { type: "button", action_id: "schext_open_days_modal",
                   text: { type: "plain_text", text: "연장 일수 직접 입력" },
@@ -367,11 +561,16 @@ module.exports = function registerScheduleExtFlow(app, {
     const draftId = generateDraftId();
     draftStore.set(draftId, {
       type: "schext",
-      workName, pivoId, episode, extDays,
+      workName, pivoId,
+      episode: episodes[0],   // backward-compat
+      episodes,
+      episodeLabel,
+      extDays,
       delivery, sourceLink,
       originalChannelId, originalTs, requesterUserId,
       dmChannelId: dmChannel,
-      tasks,
+      tasks,                  // 대표 (시그니처 동일)
+      tasksByEpisode,         // 전체 (apply 시 사용)
       simTasks,
       isOverDelivery,
       deliveryDateStr,
@@ -397,7 +596,7 @@ module.exports = function registerScheduleExtFlow(app, {
   // ── 요청 작업자 수동 선택 메시지 (도메인 불일치 시) ─────
   async function _sendRequesterSelectMsg(client, dmChannel, draftId) {
     const data = draftStore.get(draftId);
-    const { workName, episode, tasks } = data;
+    const { workName, episodeLabel, tasks } = data;
 
     const elements = tasks.map((t, i) => ({
       type: "button",
@@ -410,13 +609,17 @@ module.exports = function registerScheduleExtFlow(app, {
       `・ *${t.opName}*　${toDisplayDate(t.startDateOrig)}~${toDisplayDate(t.endDateOrig)}　${t.workerEmail || "-"}`
     ).join("\n");
 
+    const batchNote = data.episodes && data.episodes.length > 1
+      ? `\n_${data.episodes.length}개 화수 동일 일정 묶음 처리_`
+      : "";
+
     await client.chat.postMessage({
       channel: dmChannel,
       text: "요청 작업자를 선택해줘.",
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `*📋 ${workName} ${episode}화 — 요청 작업자를 선택해줘.*
-작업자 도메인이 일치하지 않아 직접 선택이 필요해.
+          text: `*📋 ${workName} ${episodeLabel} — 요청 작업자를 선택해줘.*
+작업자 도메인이 일치하지 않아 직접 선택이 필요해.${batchNote}
 
 ${taskLines}` } },
         { type: "actions", elements },
@@ -438,7 +641,7 @@ ${taskLines}` } },
   // ── 1단계 메시지 전송 ────────────────────────────────────
   async function _sendStep1(client, dmChannel, draftId) {
     const data = draftStore.get(draftId);
-    const { workName, episode, extDays, tasks, simTasks, isOverDelivery, deliveryDateStr, requesterTaskIndex } = data;
+    const { workName, episodeLabel, extDays, tasks, isOverDelivery, deliveryDateStr, requesterTaskIndex } = data;
 
     const currentLines = tasks.map((t, i) => {
       const marker = i === requesterTaskIndex ? "👤" : "・";
@@ -446,15 +649,19 @@ ${taskLines}` } },
     }).join("\n");
 
     const statusText = isOverDelivery
-      ? `⚠️ 3일 연장 시 납품일(${deliveryDateStr}) 초과 — 조정이 필요해.`
+      ? `⚠️ ${extDays}일 연장 시 납품일(${deliveryDateStr}) 초과 — 조정이 필요해.`
       : `✅ ${extDays}일 연장 시 납품일(${deliveryDateStr || "미확인"}) 내 완료 가능`;
+
+    const batchNote = data.episodes && data.episodes.length > 1
+      ? `\n・ 📚 묶음: ${data.episodes.length}개 화수 동일 일정`
+      : "";
 
     await client.chat.postMessage({
       channel: dmChannel,
-      text: `${workName} ${episode}화 일정 연장 요청`,
+      text: `${workName} ${episodeLabel} 일정 연장 요청`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `*📋 ${workName} ${episode}화 — 일정 연장 요청*\n・ 🗓 납품예정일: ${deliveryDateStr || "확인 불가"}\n・ 📆 연장 요청: ${extDays}일\n・ 👤 요청 작업자: ${requesterTaskIndex !== null ? tasks[requesterTaskIndex].opName : "미확인"}${data.sourceLink ? `\n・ 🔗 <${data.sourceLink}|원문 링크>` : ""}` } },
+          text: `*📋 ${workName} ${episodeLabel} — 일정 연장 요청*\n・ 🗓 납품예정일: ${deliveryDateStr || "확인 불가"}\n・ 📆 연장 요청: ${extDays}일\n・ 👤 요청 작업자: ${requesterTaskIndex !== null ? tasks[requesterTaskIndex].opName : "미확인"}${batchNote}${data.sourceLink ? `\n・ 🔗 <${data.sourceLink}|원문 링크>` : ""}` } },
         { type: "section", text: { type: "mrkdwn",
           text: `*현재 일정*\n${currentLines}` } },
         { type: "section", text: { type: "mrkdwn", text: statusText } },
@@ -491,10 +698,14 @@ ${taskLines}` } },
   // ── 2단계 메시지: 변경 전/후 비교 + 수정 버튼 ───────────
   async function _sendStep2(client, dmChannel, draftId) {
     const data = draftStore.get(draftId);
-    const { workName, episode, tasks, simTasks, isOverDelivery, deliveryDateStr } = data;
+    const { workName, episodeLabel, simTasks, isOverDelivery, deliveryDateStr } = data;
 
     const overText = isOverDelivery
       ? `\n⚠️ 납품일(${deliveryDateStr}) 초과 — 수동으로 조정해줘.`
+      : "";
+
+    const batchNote = data.episodes && data.episodes.length > 1
+      ? `\n_${data.episodes.length}개 화수에 동일하게 적용돼._`
       : "";
 
     const opBlocks = simTasks.map((t, i) => {
@@ -517,10 +728,10 @@ ${taskLines}` } },
 
     await client.chat.postMessage({
       channel: dmChannel,
-      text: `${workName} ${episode}화 변경 후 일정 미리보기`,
+      text: `${workName} ${episodeLabel} 변경 후 일정 미리보기`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `*📋 변경 후 일정 미리보기*${overText}` } },
+          text: `*📋 ${workName} ${episodeLabel} — 변경 후 일정 미리보기*${batchNote}${overText}` } },
         ...opBlocks,
         { type: "divider" },
         { type: "actions", elements: [
@@ -603,16 +814,35 @@ ${taskLines}` } },
   async function _applySchedule(client, userId, draftId, simTasks) {
     const data = draftStore.get(draftId);
     try {
-      const tasks = simTasks.map(t => ({
-        taskUuid:  t.taskUuid,
-        startDate: t.newStartDateOrig,
-        endDate:   t.newEndDateOrig,
-      }));
+      // 묶음/단일 공통: tasksByEpisode 전체 화수의 task에 simTasks 시뮬레이션 결과 매핑
+      // simTasks의 인덱스 i는 대표 tasks(data.tasks)의 opCode 순서와 일치
+      // 각 화수별 task에서 동일 opCode를 찾아 일괄 반영
+      const apiTasks = [];
+      const tasksByEp = data.tasksByEpisode || { [data.episodes?.[0] || data.episode]: data.tasks };
+      const episodes  = data.episodes && data.episodes.length ? data.episodes : Object.keys(tasksByEp).map(Number);
+
+      for (const ep of episodes) {
+        const epTasks = tasksByEp[ep] || [];
+        for (let i = 0; i < simTasks.length; i++) {
+          const sim = simTasks[i];
+          // opCode 매칭 (없으면 인덱스로 fallback)
+          const matching = epTasks.find(t => t.opCode === data.tasks[i].opCode) || epTasks[i];
+          if (matching) {
+            apiTasks.push({
+              taskUuid:  matching.taskUuid,
+              startDate: sim.newStartDateOrig,
+              endDate:   sim.newEndDateOrig,
+            });
+          }
+        }
+      }
+
+      console.log(`[scheduleExt] 일괄 반영 — 화수:${episodes.length}, task:${apiTasks.length}`);
 
       const json = await _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
         method:  "POST",
         headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
-        body:    JSON.stringify({ tasks }),
+        body:    JSON.stringify({ tasks: apiTasks }),
       }, { bot: "schedule", endpoint: "/tasks/dates", params: {}, expectedCount: null });
       console.log("[scheduleExt] 일정 반영 응답:", JSON.stringify(json));
 
@@ -628,13 +858,16 @@ ${taskLines}` } },
       const isOver       = data.isOverDelivery;
       const overNote     = isOver ? `\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.` : `\n✅ 납품예정일(${data.deliveryDateStr || "미확인"}) 이내`;
       const completeMeta = JSON.stringify({ draftId });
+      const batchNote    = data.episodes && data.episodes.length > 1
+        ? `\n_${data.episodes.length}개 화수 일괄 반영됨_`
+        : "";
 
       await client.chat.postMessage({
         channel: data.dmChannelId,
-        text:    `✅ ${data.workName} ${data.episode}화 일정 반영 완료`,
+        text:    `✅ ${data.workName} ${data.episodeLabel} 일정 반영 완료`,
         blocks: [
           { type: "section", text: { type: "mrkdwn",
-            text: `✅ *${data.workName} ${data.episode}화 일정 반영 완료*${overNote}\n\n${changeLines}` } },
+            text: `✅ *${data.workName} ${data.episodeLabel} 일정 반영 완료*${batchNote}${overNote}\n\n${changeLines}` } },
           { type: "context", elements: [
             { type: "mrkdwn", text: `처리자: <@${userId}> · ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}` },
           ]},
@@ -692,7 +925,7 @@ ${taskLines}` } },
         close:  { type: "plain_text", text: "취소" },
         blocks: [
           { type: "section", text: { type: "mrkdwn",
-            text: `*${data.workName} ${data.episode}화*　현재 납품일: ${deliveryDate}` } },
+            text: `*${data.workName} ${data.episodeLabel}*　현재 납품일: ${deliveryDate}` } },
           { type: "input", block_id: "pm_desired_date_block",
             label: { type: "plain_text", text: "희망 납품일 (예: 2026-05-10)" },
             element: { type: "plain_text_input", action_id: "value",
@@ -726,7 +959,7 @@ ${taskLines}` } },
       ``,
       `・ 담당자: <@${body.user.id}>`,
       `・ 작품명: ${data.workName}`,
-      `・ 회차: ${data.episode}화`,
+      `・ 회차: ${data.episodeLabel}`,
       `・ 현재 납품일: ${data.deliveryDateStr || "-"}`,
       `・ 희망 납품일: ${desiredDate}`,
       ``,
@@ -744,10 +977,10 @@ ${taskLines}` } },
           { type: "button", action_id: "schext_pm_delivery_confirm",
             text: { type: "plain_text", text: "✅ 연장 가능" },
             style: "primary",
-            value: JSON.stringify({ workName: data.workName, episode: data.episode, apmUserId: body.user.id, desiredDate }) },
+            value: JSON.stringify({ workName: data.workName, episodeLabel: data.episodeLabel, apmUserId: body.user.id, desiredDate }) },
           { type: "button", action_id: "schext_pm_delivery_no",
             text: { type: "plain_text", text: "❌ 연장 불가" },
-            value: JSON.stringify({ workName: data.workName, episode: data.episode, apmUserId: body.user.id, desiredDate }) },
+            value: JSON.stringify({ workName: data.workName, episodeLabel: data.episodeLabel, apmUserId: body.user.id, desiredDate }) },
         ]},
       ],
     });
@@ -763,17 +996,17 @@ ${taskLines}` } },
 
     await client.chat.postMessage({
       channel: SCHEDULE_CHANNEL_ID(),
-      text:    `${data.workName} ${data.episode}화 납품일 초과 — PM 확인 필요`,
+      text:    `${data.workName} ${data.episodeLabel} 납품일 초과 — PM 확인 필요`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `<@${PM_SLACK_ID()}>\n*📢 ${data.workName} ${data.episode}화 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
+          text: `<@${PM_SLACK_ID()}>\n*📢 ${data.workName} ${data.episodeLabel} 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
         { type: "actions", elements: [
           { type: "button", action_id: "schext_pm_delivery_confirm",
             text: { type: "plain_text", text: "✅ 연장 가능" },
-            style: "primary", value: JSON.stringify({ workName: data.workName, episode: data.episode, apmUserId: userId, desiredDate: null }) },
+            style: "primary", value: JSON.stringify({ workName: data.workName, episodeLabel: data.episodeLabel, apmUserId: userId, desiredDate: null }) },
           { type: "button", action_id: "schext_pm_delivery_no",
             text: { type: "plain_text", text: "❌ 연장 불가" },
-            value: JSON.stringify({ workName: data.workName, episode: data.episode, apmUserId: userId, desiredDate: null }) },
+            value: JSON.stringify({ workName: data.workName, episodeLabel: data.episodeLabel, apmUserId: userId, desiredDate: null }) },
         ]},
       ],
     });
@@ -782,15 +1015,19 @@ ${taskLines}` } },
   // ── PM 납품일 연장 확인/불필요 버튼 ──────────────────────
   app.action("schext_pm_delivery_confirm", async ({ ack, body, client }) => {
     await ack();
-    const { workName, episode, apmUserId, desiredDate } = JSON.parse(body.actions[0].value || "{}");
-    const dateText = desiredDate ? `\n변경된 납품일 : ${desiredDate}` : "";
+    const parsed = JSON.parse(body.actions[0].value || "{}");
+    const workName     = parsed.workName;
+    const episodeLabel = parsed.episodeLabel || (parsed.episode ? `${parsed.episode}화` : "-"); // backward-compat
+    const apmUserId    = parsed.apmUserId;
+    const desiredDate  = parsed.desiredDate;
+    const dateText     = desiredDate ? `\n변경된 납품일 : ${desiredDate}` : "";
     // PM 채널 메시지 완료 처리
     await client.chat.update({
       channel: body.channel.id, ts: body.message.ts,
-      text: `✅ ${workName} ${episode}화 납품일 연장 승인됨`,
+      text: `✅ ${workName} ${episodeLabel} 납품일 연장 승인됨`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `✅ *${workName} ${episode}화 납품일 연장 승인됨*` } },
+          text: `✅ *${workName} ${episodeLabel} 납품일 연장 승인됨*` } },
         { type: "context", elements: [
           { type: "mrkdwn", text: `확인자: <@${body.user.id}> · ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}` },
         ]},
@@ -802,7 +1039,7 @@ ${taskLines}` } },
       if (dmRes) {
         await client.chat.postMessage({
           channel: dmRes.channel.id,
-          text: `<@${apmUserId}>\n요청하신 *${workName} ${episode}화* 납품일 연장이 승인되었습니다.${dateText}\n확인자: <@${body.user.id}>`,
+          text: `<@${apmUserId}>\n요청하신 *${workName} ${episodeLabel}* 납품일 연장이 승인되었습니다.${dateText}\n확인자: <@${body.user.id}>`,
         });
       }
     }
@@ -810,14 +1047,17 @@ ${taskLines}` } },
 
   app.action("schext_pm_delivery_no", async ({ ack, body, client }) => {
     await ack();
-    const { workName, episode, apmUserId } = JSON.parse(body.actions[0].value || "{}");
+    const parsed = JSON.parse(body.actions[0].value || "{}");
+    const workName     = parsed.workName;
+    const episodeLabel = parsed.episodeLabel || (parsed.episode ? `${parsed.episode}화` : "-"); // backward-compat
+    const apmUserId    = parsed.apmUserId;
     // PM 채널 메시지 완료 처리
     await client.chat.update({
       channel: body.channel.id, ts: body.message.ts,
-      text: `❌ ${workName} ${episode}화 납품일 연장 거절됨`,
+      text: `❌ ${workName} ${episodeLabel} 납품일 연장 거절됨`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `❌ *${workName} ${episode}화 납품일 연장 거절됨*` } },
+          text: `❌ *${workName} ${episodeLabel} 납품일 연장 거절됨*` } },
         { type: "context", elements: [
           { type: "mrkdwn", text: `확인자: <@${body.user.id}> · ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}` },
         ]},
@@ -829,7 +1069,7 @@ ${taskLines}` } },
       if (dmRes) {
         await client.chat.postMessage({
           channel: dmRes.channel.id,
-          text: `<@${apmUserId}>\n요청하신 *${workName} ${episode}화* 납품일 연장이 거절되었습니다.\n자세한 거절 사유는 PM에게 문의 부탁 드립니다.\n확인자: <@${body.user.id}>`,
+          text: `<@${apmUserId}>\n요청하신 *${workName} ${episodeLabel}* 납품일 연장이 거절되었습니다.\n자세한 거절 사유는 PM에게 문의 부탁 드립니다.\n확인자: <@${body.user.id}>`,
         });
       }
     }
@@ -848,16 +1088,16 @@ ${taskLines}` } },
     const reqIdx         = data.requesterTaskIndex ?? 0;
     const requesterTask  = data.simTasks[reqIdx];
     const followupTasks  = data.simTasks.filter((_, i) => i !== reqIdx);
-    const defaultMsg     = `${data.workName} ${data.episode}화 작업 일정이 변경되었습니다.\n\n확인 부탁드립니다.`;
+    const defaultMsg     = `${data.workName} ${data.episodeLabel} 작업 일정이 변경되었습니다.\n\n확인 부탁드립니다.`;
 
     const checkboxOptions = followupTasks.map((t, i) => ({
       text:  { type: "mrkdwn", text: `*${t.opName}*　${toDisplayDate(t.newStartDateOrig)}~${toDisplayDate(t.newEndDateOrig)}` },
-      value: String(i + 1), // simTasks 인덱스 (0은 요청자)
+      value: String(data.simTasks.indexOf(t)), // simTasks 인덱스
     }));
 
     const blocks = [
       { type: "section", text: { type: "mrkdwn",
-        text: `*일정 변경 안내 메시지 전송*\n${data.workName} ${data.episode}화` } },
+        text: `*일정 변경 안내 메시지 전송*\n${data.workName} ${data.episodeLabel}` } },
       { type: "divider" },
       { type: "section", text: { type: "mrkdwn",
         text: `*요청 작업자*\n・ ${requesterTask.opName}　<@${requesterTask.workerEmail?.split("@")[0] || "-"}>　${toDisplayDate(requesterTask.newStartDateOrig)}~${toDisplayDate(requesterTask.newEndDateOrig)}` },
@@ -905,7 +1145,7 @@ ${taskLines}` } },
     if (!data) return;
 
     const t = data.simTasks[data.requesterTaskIndex ?? 0];
-    const defaultMsg = `${data.workName} ${data.episode}화 작업 일정이 변경되었습니다.\n\n・ 시작일: ${toDisplayDate(t.newStartDateOrig)}\n・ 마감일: ${toDisplayDate(t.newEndDateOrig)}\n\n확인 부탁드립니다.`;
+    const defaultMsg = `${data.workName} ${data.episodeLabel} 작업 일정이 변경되었습니다.\n\n・ 시작일: ${toDisplayDate(t.newStartDateOrig)}\n・ 마감일: ${toDisplayDate(t.newEndDateOrig)}\n\n확인 부탁드립니다.`;
 
     await client.views.push({
       trigger_id: body.trigger_id,
@@ -1007,5 +1247,5 @@ ${taskLines}` } },
       text: `✅ 후속 오퍼레이션 작업자 ${successCount}명에게 메시지를 전송했어.` });
   });
 
-  return { handleScheduleExt };
+  return { handleScheduleExt, handleScheduleExtGrouped };
 };
