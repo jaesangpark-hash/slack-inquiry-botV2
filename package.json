@@ -1,24 +1,24 @@
 {
   "name": "slack-inquiry-bot",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "version": "0.1.0",
   "type": "commonjs",
+  "description": "작업자 문의 자동 응답 Slack 봇",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/app.js",
+    "collect": "node src/collectWorkers.js",
+    "test": "node --test"
+  },
   "dependencies": {
-    "@google/genai": "^1.44.0",
-    "@google/generative-ai": "^0.24.1",
-    "@slack/bolt": "^4.6.0",
-    "axios": "^1.13.6",
-    "dotenv": "^17.3.1",
-    "googleapis": "^171.4.0",
-    "node-cron": "^4.2.1",
-    "openai": "^6.27.0",
-    "sharp": "^0.34.5"
+    "@slack/bolt": "^4.0.0",
+    "@slack/web-api": "^7.0.0",
+    "@google/genai": "latest",
+    "googleapis": "^140.0.0",
+    "node-cron": "^3.0.0",
+    "axios": "^1.7.0",
+    "sharp": "^0.33.0",
+    "dotenv": "^16.0.0"
   }
 }

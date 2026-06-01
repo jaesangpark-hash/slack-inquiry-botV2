@@ -1,0 +1,10 @@
+node_modules
+logs
+.env
+.env.*
+docs
+*.md
+.gitignore
+tsconfig.json
+tools
+scripts

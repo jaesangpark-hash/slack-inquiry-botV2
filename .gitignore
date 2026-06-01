@@ -1,23 +1,18 @@
-# ── 비밀 정보 (절대 커밋 금지) ──
-.env
-service-account.json
-
-# ── 의존성 ──
 node_modules/
-
-# ── 로컬/에디터 설정 ──
 .claude/
-
-# ── 로그·운영 데이터 ──
+.env
+.env.dev
+.env.prod
+service-account.json
+*.json.key
+*.orig
 logs/
-findChannels_result.json
-unmatched_workers.json
+tasks.json
+workers.csv
+workers_existing.csv
+tools/unmatched_workers.json
+tools/findChannels_result.json
+scripts/vendor-sync.env
 
-# ── 구버전 중첩 복사본 ──
-APM 봇/
-
-# ── 봇 런타임과 무관한 일회성 유틸 스크립트 (사내 repo 미포함) ──
-collectWorkers.js
-collect_channels.js
-findChannels.js
-matchWorkers.js
+# 구버전 봇 백업 (모듈화 이관 시 보관) — git 추적/커밋 제외
+legacy/

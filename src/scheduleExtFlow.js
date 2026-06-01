@@ -1,12 +1,12 @@
 // ══════════════════════════════════════════════════════════════════
 // scheduleExtFlow.js — 스케줄 연장 플로우
 // app.js 에서 require("./scheduleExtFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet,
-//   generateDraftId, draftStore, google, getGoogleAuth, fetchDeliveryDate }) 로 호출
+//   generateDraftId, draftStore, fetchDeliveryDate }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
 module.exports = function registerScheduleExtFlow(app, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
-  google, getGoogleAuth, fetchDeliveryDate,
+  fetchDeliveryDate, sheetsClient,
 }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
@@ -23,8 +23,8 @@ module.exports = function registerScheduleExtFlow(app, {
   const SCHEDULE_CHANNEL_ID = () => process.env.SCHEDULE_CHANNEL_ID;
   const PM_SLACK_ID         = () => process.env.PM_SLACK_ID;
 
-  const WORKER_SHEET_ID    = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";
-  const WORKER_SHEET_RANGE = "작업자 DB!A:D";
+  const WORKER_SHEET_ID    = process.env.WORKER_SHEET_ID;
+  const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE;
   const workerSheetCache   = { loadedAt: 0, rows: [] };
 
   // 납품검수 오퍼레이션 코드 — 항상 제외
@@ -34,9 +34,8 @@ module.exports = function registerScheduleExtFlow(app, {
   async function _getWorkerInfo(email) {
     try {
       if (Date.now() - workerSheetCache.loadedAt > 300000 || !workerSheetCache.rows.length) {
-        const sheets = google.sheets({ version: "v4", auth: getGoogleAuth(["https://www.googleapis.com/auth/spreadsheets.readonly"]) });
-        const res    = await sheets.spreadsheets.values.get({ spreadsheetId: WORKER_SHEET_ID, range: WORKER_SHEET_RANGE });
-        workerSheetCache.rows     = (res.data.values || []).slice(1);
+        const res    = await sheetsClient.getValues(WORKER_SHEET_ID, WORKER_SHEET_RANGE);
+        workerSheetCache.rows     = (res || []).slice(1);
         workerSheetCache.loadedAt = Date.now();
       }
       const found = workerSheetCache.rows.find(row => (row[1] || "").trim().toLowerCase() === email.toLowerCase());

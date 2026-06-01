@@ -3,7 +3,7 @@
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, google, getGoogleAuth }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;
@@ -22,8 +22,8 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     return result;
   }
 
-  const WORKER_SHEET_ID    = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";
-  const WORKER_SHEET_RANGE = "작업자 DB!A:D";
+  const WORKER_SHEET_ID    = process.env.WORKER_SHEET_ID;
+  const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE;
   const workerSheetCache   = { loadedAt: 0, rows: [] };
 
   // ── 작업자 시트 조회: 이메일 → 채널 ID (5분 캐시) ────────
@@ -31,9 +31,8 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     try {
       // 5분 캐시
       if (Date.now() - workerSheetCache.loadedAt > 300000 || !workerSheetCache.rows.length) {
-        const sheets = google.sheets({ version: "v4", auth: getGoogleAuth(["https://www.googleapis.com/auth/spreadsheets.readonly"]) });
-        const res    = await sheets.spreadsheets.values.get({ spreadsheetId: WORKER_SHEET_ID, range: WORKER_SHEET_RANGE });
-        workerSheetCache.rows     = (res.data.values || []).slice(1);
+        const res    = await sheetsClient.getValues(WORKER_SHEET_ID, WORKER_SHEET_RANGE);
+        workerSheetCache.rows     = (res || []).slice(1);
         workerSheetCache.loadedAt = Date.now();
         console.log(`[retake] 작업자 시트 캐시 갱신 — ${workerSheetCache.rows.length}건`);
       }

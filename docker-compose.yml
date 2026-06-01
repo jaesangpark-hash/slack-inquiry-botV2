@@ -1,0 +1,23 @@
+# slack-inquiry-bot docker-compose (단일 파일)
+# 사용법: docker compose up -d --build
+# 전제:  .env 파일에 23종 환경변수를 채운 상태
+#
+# 참고:
+#   - env_file: .env 로 .env 파일 전체를 읽습니다 (npm start와 동일한 .env 소비)
+#   - 외부 네트워크 없음 (default bridge 사용)
+#   - GIT_SHA / container_name / dev/prod split 없음 (단독 운영 환경)
+#   - Socket Mode 봇이라 인바운드 포트 매핑 없음 (Slack 아웃바운드 소켓 연결만 사용)
+
+services:
+  inquiry-bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

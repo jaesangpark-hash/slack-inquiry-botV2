@@ -3,7 +3,7 @@
 // app.js 에서 require("./fileOrderFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore }) {
+module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore }) {
 
   const { loggedCall } = require("./apiLogger");
 
@@ -290,24 +290,6 @@ JSON만 출력. 코드블록 금지.
     const titleKo = parsed.work_title_ko || analysis.title_ko;
     let matchedTitle = null;
 
-    // 작품 후보 여러 건 → 선택 버튼 표시 (cand·token 공통)
-    const showCandidates = async (rows) => {
-      const pendingId = `fo_pending_${Date.now()}`;
-      draftStore.set(pendingId, { type: "file_order_pending", workName: "", workNameKo: "", episode: parsed.episode || analysis?.episode || "", pageNumbers: parsed.page_numbers || [], sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText });
-      await client.chat.postMessage({
-        channel: dmChannel,
-        text: "작품 후보가 여러 개야. 선택해줘.",
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${rows.length}건* — 해당하는 작품을 선택해줘.` }},
-          { type: "actions", elements: rows.slice(0, 5).map((r, i) => ({
-            type: "button", action_id: `fileorder_cand_pick_${i}`,
-            text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-            value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
-          }))},
-        ],
-      });
-    };
-
     if (titleJa || titleKo) {
       const candResult = matchWorkTitleWithCandidates
         ? await matchWorkTitleWithCandidates(titleJa, titleKo).catch(() => null)
@@ -315,25 +297,23 @@ JSON만 출력. 코드블록 금지.
       if (candResult?.single) {
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
-        await showCandidates(candResult.multiple);
+        const pendingId = `fo_pending_${Date.now()}`;
+        draftStore.set(pendingId, { type: "file_order_pending", workName: "", workNameKo: "", episode: parsed.episode || analysis?.episode || "", pageNumbers: parsed.page_numbers || [], sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText });
+        await client.chat.postMessage({
+          channel: dmChannel,
+          text: "작품 후보가 여러 개야. 선택해줘.",
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
+            { type: "actions", elements: candResult.multiple.map((r, i) => ({
+              type: "button", action_id: `fileorder_cand_pick_${i}`,
+              text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
+              value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
+            }))},
+          ],
+        });
         return;
-      } else if (candResult?.tooMany) {
+      } else if (candResult?.tooMany || !candResult) {
         matchedTitle = await matchWorkTitleFromSheet(titleJa, titleKo).catch(() => null);
-      } else {
-        // cand 매칭 실패(null) → 키워드(토큰) 조합 매칭 시도
-        // 작품명이 잘려도 앞 몇 글자/키워드가 살아 있으면 매칭 (한·일 공통)
-        const tokenResult = matchWorkTitleByTokens
-          ? await matchWorkTitleByTokens(titleKo, titleJa).catch(() => null)
-          : null;
-        if (tokenResult?.single) {
-          matchedTitle = tokenResult.single;
-          console.log("[fileOrder][match-token] 단건 자동 선택:", matchedTitle.projectName);
-        } else if (tokenResult?.multiple) {
-          await showCandidates(tokenResult.multiple);
-          return;
-        } else {
-          matchedTitle = await matchWorkTitleFromSheet(titleJa, titleKo).catch(() => null);
-        }
       }
     }
 
