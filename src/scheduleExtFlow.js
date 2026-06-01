@@ -146,6 +146,28 @@ module.exports = function registerScheduleExtFlow(app, {
       .join(":::");
   }
 
+  // ── 화수 묶음 호환성 판정 ─────────────────────────────────
+  // 두 화수를 한 카드로 묶어도 되는 기준 (작성자 합의 SSOT):
+  //   ① 납품일(납품 시트 G열값)이 같음
+  //   ② 공통으로 존재하는 오퍼레이션의 작업자(이메일 전체)가 동일인
+  //   ③ 오퍼 개수가 달라도 겹치는 오퍼만 일치하면 OK (시작/마감일은 비교하지 않음)
+  // 비추이적(예: A·B 호환, B·C 호환이라도 A·C 비호환 가능)이라 그리디 클러스터에서 쌍별로 호출.
+  function _episodesCompatible(tasksA, tasksB, deliveryA, deliveryB) {
+    // ① 납품일 — 둘 다 유효하고 같아야 함 (미상이면 묶지 않음)
+    if (!deliveryA || !deliveryB || deliveryA === "확인 불가" || deliveryB === "확인 불가") return false;
+    if (deliveryA !== deliveryB) return false;
+    // ②③ 공통 오퍼코드의 작업자 이메일 일치 + 겹치는 오퍼 1개 이상
+    const mapB = new Map((tasksB || []).map(t => [t.opCode, (t.workerEmail || "").toLowerCase()]));
+    let shared = 0;
+    for (const t of (tasksA || [])) {
+      if (mapB.has(t.opCode)) {
+        shared++;
+        if (mapB.get(t.opCode) !== (t.workerEmail || "").toLowerCase()) return false;
+      }
+    }
+    return shared > 0;
+  }
+
   // ── 여러 화수의 납품일 조회 (연속 범위면 한 번에) ─────────
   async function _fetchDeliveryForEpisodes(workNameKo, projectName, episodes) {
     const sorted = [...episodes].map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
@@ -266,7 +288,9 @@ module.exports = function registerScheduleExtFlow(app, {
       return;
     }
 
-    const tasksByEp = {};
+    // 화수별 task + 납품일(납품 시트) 일괄 조회 — 납품일은 묶음 조건① 비교용
+    const tasksByEp    = {};
+    const deliveryByEp = {};
     await Promise.all(items.map(async (it) => {
       const ep = parseInt(it.episode, 10);
       if (isNaN(ep)) return;
@@ -274,35 +298,52 @@ module.exports = function registerScheduleExtFlow(app, {
         const t = await _getJobTasks(projectUuid, ep);
         if (t && t.length > 0) tasksByEp[ep] = t;
       } catch (e) { console.warn("[scheduleExt] _getJobTasks 실패:", ep, e.message); }
+      try {
+        const workNameKo = it.matchedTitle?.projectName || it.parsed?.work_title_ko;
+        const d = workNameKo
+          ? await fetchDeliveryDate(workNameKo, String(ep), "zh-ja", it.matchedTitle?.projectName || null)
+          : null;
+        deliveryByEp[ep] = d?.episodes?.[0]?.deliveryDate || d?.deliveryDate || null;
+      } catch (e) { console.warn("[scheduleExt] 납품일 조회 실패:", ep, e.message); }
     }));
 
-    // 시그니처별로 그룹화
-    const sigGroups = new Map(); // sig → [item, ...]
+    // task 없는 화수는 개별 처리, 나머지는 호환성 클러스터링 대상
     const noTasksItems = [];
+    const withTasks    = [];
     for (const it of items) {
       const ep = parseInt(it.episode, 10);
       if (!tasksByEp[ep]) { noTasksItems.push(it); continue; }
-      const sig = _taskSignature(tasksByEp[ep]);
-      if (!sigGroups.has(sig)) sigGroups.set(sig, []);
-      sigGroups.get(sig).push(it);
+      withTasks.push({ it, ep });
     }
-
-    // task 없는 화수는 개별 처리 (기존 흐름이 에러 메시지 처리함)
     for (const it of noTasksItems) await _runSingle(it);
 
-    // 시그니처 그룹 처리 (병렬)
-    const groupPromises = [...sigGroups.values()].map(async (groupItems) => {
-      if (groupItems.length === 1) {
-        // 단독 — 기존 단일 처리
-        await _runSingle(groupItems[0]);
+    // ── 묶음 클러스터링 (조건①②③ — _episodesCompatible) ──────
+    // 시그니처 완전일치가 아니라 "납품일 같음 + 공통 오퍼 동일인" 호환성 기준.
+    // 비추이적이라 그리디: 새 화수는 기존 클러스터의 "모든" 멤버와 호환될 때만 합류.
+    withTasks.sort((a, b) => a.ep - b.ep);
+    const clusters = []; // [{ it, ep }[], ...]
+    for (const cur of withTasks) {
+      let placed = false;
+      for (const cl of clusters) {
+        if (cl.every(m => _episodesCompatible(tasksByEp[cur.ep], tasksByEp[m.ep], deliveryByEp[cur.ep], deliveryByEp[m.ep]))) {
+          cl.push(cur); placed = true; break;
+        }
+      }
+      if (!placed) clusters.push([cur]);
+    }
+
+    // 클러스터 처리 (병렬) — 1건이면 단일, 2건+면 묶음
+    const groupPromises = clusters.map(async (cluster) => {
+      if (cluster.length === 1) {
+        await _runSingle(cluster[0].it);
         return;
       }
 
-      // 묶음 처리
-      const f = groupItems[0];
-      const episodes = groupItems.map(it => parseInt(it.episode, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+      const groupItems = cluster.map(c => c.it);
+      const f          = groupItems[0];
+      const episodes   = cluster.map(c => c.ep).sort((a, b) => a - b);
       const groupTasksByEp = Object.fromEntries(episodes.map(ep => [ep, tasksByEp[ep]]));
-      const workName = f.matchedTitle?.projectName || f.parsed.work_title_ko || f.parsed.work_title_ja || "-";
+      const workName   = f.matchedTitle?.projectName || f.parsed.work_title_ko || f.parsed.work_title_ja || "-";
       const workNameKo = f.matchedTitle?.projectName || f.matchedTitle?.ko || f.parsed.work_title_ko || workName;
 
       // 묶음 납품일 재조회 (연속 범위면 한 번에)
@@ -320,6 +361,7 @@ module.exports = function registerScheduleExtFlow(app, {
         requesterUserId:   f.requesterUserId   || f.parsed.requesterUserId   || null,
         preFetchedTasksByEpisode: groupTasksByEp,
         preFetchedProjectUuid:    projectUuid,
+        preValidatedBatch:        true,
       });
     });
 
@@ -442,9 +484,11 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     // 묶음 검증: 시그니처 재확인 (defensive)
+    // preValidatedBatch=true 면 handleScheduleExtGrouped가 이미 호환성(납품일+공통 오퍼 동일인)으로
+    // 묶은 것이므로 엄격 시그니처 재분할을 건너뛴다 (안 그러면 완화한 묶음이 여기서 도로 쪼개짐).
     const sigs = episodes.map(ep => _taskSignature(tasksByEpisode[ep]));
     const allSigSame = sigs.every(s => s === sigs[0]);
-    if (isBatch && !allSigSame) {
+    if (isBatch && !info.preValidatedBatch && !allSigSame) {
       // 시그니처 불일치 시 — 단독으로 분리
       console.log("[scheduleExt] 묶음 검증 실패 — 화수별로 분리 처리");
       for (const ep of episodes) {
