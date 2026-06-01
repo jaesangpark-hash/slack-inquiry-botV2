@@ -21,6 +21,10 @@ module.exports = function registerResupplyActions(app, deps) {
     appendResupplyRecord,
     strikethroughResupplyRow,
     PM_REQUEST_CHANNEL_ID,
+    // 납품일·APM 조회 (선택 주입 — 미주입 시 조회 skip)
+    matchWorkTitleFromSheet,
+    fetchDeliveryDate,
+    resolveApmUserId,
   } = deps;
 
   app.action("open_file_inquiry_modal", async ({ ack, body, client }) => {
@@ -59,6 +63,20 @@ module.exports = function registerResupplyActions(app, deps) {
     draft.episode     = v.fi_episode_block?.value?.value?.trim() || draft.episode;
     draft.fileNumbers = (v.fi_files_block?.value?.value || "").split(",").map(s => s.trim()).filter(Boolean);
     draft.reason      = v.fi_reason_block?.value?.value?.trim()  || draft.reason;
+
+    // 작품/회차 수정 반영 후 납품일·APM 재조회 (회차 형식 무관)
+    if (matchWorkTitleFromSheet && fetchDeliveryDate && draft.episode && draft.episode !== "-") {
+      const mt    = await matchWorkTitleFromSheet(draft.workName, draft.workName).catch(() => null);
+      const qName = mt?.projectName || draft.workName;
+      const dRes  = qName
+        ? await fetchDeliveryDate(qName, draft.episode, "zh-ja", mt?.projectName || null).catch(() => null)
+        : null;
+      if (dRes) {
+        draft.deliveryDate = dRes.allSame ? dRes.deliveryDate : dRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ");
+        draft.apmName   = dRes.apm || draft.apmName || null;
+        draft.apmUserId = (typeof resolveApmUserId === "function" ? resolveApmUserId(dRes.apm || null) : null) || draft.apmUserId || null;
+      }
+    }
     draftStore.set(draftId, draft);
     const rowIndex = await appendResupplyRecord(draft, body.user.id, client);
     draft.resupplyRowIndex = rowIndex;

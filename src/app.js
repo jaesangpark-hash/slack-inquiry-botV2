@@ -215,6 +215,9 @@ require("./handlers/resupply-actions")(app, {
   appendResupplyRecord,
   strikethroughResupplyRow,
   PM_REQUEST_CHANNEL_ID,
+  matchWorkTitleFromSheet,
+  fetchDeliveryDate,
+  resolveApmUserId,
 });
 
 require("./handlers/schedule-actions")(app, {
@@ -267,6 +270,7 @@ const inquiryRouter = createInquiryRouter({
   matchWorkTitleFromSheet,
   matchWorkTitleByTokens,
   fetchDeliveryDate,
+  resolveApmUserId,
   generateDraftId,
   draftStore,
   buildFileInquiryBlocks,

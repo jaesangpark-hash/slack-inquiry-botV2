@@ -18,6 +18,8 @@ module.exports = function createInquiryRouter(deps) {
     matchWorkTitleByTokens,
     // 납품일
     fetchDeliveryDate,
+    // APM 이름 → Slack ID 매핑
+    resolveApmUserId,
     // 유틸
     generateDraftId,
     // 공유 상태 (진입점 단일 인스턴스 — 복제 금지)
@@ -365,6 +367,15 @@ module.exports = function createInquiryRouter(deps) {
         return;
       }
 
+      // 납품일 + APM 조회 (모든 재수급 경로 일관 — 회차 형식 무관, fetchDeliveryDate 내부 parseEpisodeNumbers가 정규화)
+      const fiDeliveryQueryName = matchedTitle?.projectName || fileParsed.work_title_ko || fileParsed.work_title_ja || null;
+      const fiDeliveryRes = (fetchDeliveryDate && fiDeliveryQueryName && fileParsed.episode)
+        ? await fetchDeliveryDate(fiDeliveryQueryName, fileParsed.episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+        : null;
+      const fiDeliveryDate = fiDeliveryRes
+        ? (fiDeliveryRes.allSame ? fiDeliveryRes.deliveryDate : fiDeliveryRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", "))
+        : "-";
+
       // message: matchedTitle?.optional chaining으로 "-" 채워 draft 진행 (UD-8 보존)
       const draftId = generateDraftId();
       const draft = {
@@ -378,6 +389,9 @@ module.exports = function createInquiryRouter(deps) {
         episode:     fileParsed.episode    || "-",
         fileNumbers: fileParsed.file_numbers || [],
         reason:      buildFileInquiryReason(fileParsed, matchedTitle),
+        deliveryDate: fiDeliveryDate,
+        apmName:     fiDeliveryRes?.apm || null,
+        apmUserId:   (typeof resolveApmUserId === "function") ? resolveApmUserId(fiDeliveryRes?.apm || null) : null,
         sourceLink,
       };
       draftStore.set(draftId, draft);
