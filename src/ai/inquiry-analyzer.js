@@ -50,11 +50,12 @@ ${isThreadContext ? `
          - 문의·재수급 유형: 단건으로 묶어서 처리 (화수별 분리 불필요)
          - 스케줄·파일순서·리테이크 유형: 화수별로 별도 항목으로 분리 (화수마다 독립적으로 처리해야 함)
    - "기타"            : 위 어느 유형에도 해당하지 않는 경우
+   ※ route_ambiguous(릴레이/문의 경계 판단): "번역문 누락/확인/수정"(작업자에게 바로 전달하는 릴레이)인지 "작업 관련 문의"(어느 쪽이 맞는지 PM의 원문·설정 판단이 필요)인지 확신이 안 서는 경계 케이스면 true. 둘 중 하나가 명확하거나, 그 외 유형(스케줄·파일·리테이크·복수·기타 등)으로 명확히 분류되면 false.
 8) priority — "높음" | "보통" | "낮음"
 9) episode — 문의에서 언급된 화수(숫자만). 여러 화차면 첫 번째만. 없으면 null
 
 JSON만 출력. 코드블록 금지.
-{"translated_ko":"string","source_lang":"string","summary_ko":"string","action_required":"string","title_ja":"string|null","title_ko":"string|null","inquiry_type":"string","priority":"string","episode":"string|null","multi_items":"array|null"}
+{"translated_ko":"string","source_lang":"string","summary_ko":"string","action_required":"string","title_ja":"string|null","title_ko":"string|null","inquiry_type":"string","priority":"string","episode":"string|null","route_ambiguous":"boolean","multi_items":"array|null"}
 
 multi_items: inquiry_type이 "복수 문의"인 경우에만 항목 배열 반환, 그 외 null
 각 항목 형식:
@@ -78,6 +79,7 @@ ${sourceText}`.trim();
       inquiry_type:    parsed.inquiry_type    || "기타",
       priority:        parsed.priority        || "보통",
       episode:         parsed.episode         || null,
+      route_ambiguous: parsed.route_ambiguous === true,
       multi_items:     Array.isArray(parsed.multi_items) ? parsed.multi_items : null,
     };
   }

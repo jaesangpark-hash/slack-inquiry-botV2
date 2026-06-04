@@ -243,6 +243,7 @@ require("./handlers/direct-input-actions")(app, {
   resolveApmUserId,
   postInquiryToTargetChannel,
   TARGET_CHANNEL_ID,
+  handleWorkerRelay,
 });
 
 // ── 드래프트 UI ───────────────────────────────────────────

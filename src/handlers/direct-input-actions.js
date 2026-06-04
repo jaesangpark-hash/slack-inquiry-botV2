@@ -17,6 +17,7 @@
  *   resolveApmUserId: Function,
  *   postInquiryToTargetChannel: Function,
  *   TARGET_CHANNEL_ID: string,
+ *   handleWorkerRelay: Function,
  * }} deps
  */
 module.exports = function registerDirectInputActions(app, deps) {
@@ -33,6 +34,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     resolveApmUserId,
     postInquiryToTargetChannel,
     TARGET_CHANNEL_ID,
+    handleWorkerRelay,
   } = deps;
 
   // ── 문의봇 완료 버튼 ─────────────────────────────────────
@@ -444,6 +446,67 @@ module.exports = function registerDirectInputActions(app, deps) {
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
+  });
+
+  // ── 릴레이/문의 경계 폴백: 작업자 릴레이 선택 ───────────────
+  // router ③-b가 stash한 route_pending 맥락으로 handleWorkerRelay 재실행 (원문 스레드 맥락 보존)
+  app.action("route_pick_relay", async ({ ack, body, client }) => {
+    await ack();
+    const pendingId = body.actions?.[0]?.value;
+    const pending = pendingId ? draftStore.get(pendingId) : null;
+    if (!pending || pending.type !== "route_pending") {
+      await client.chat.postMessage({ channel: body.user.id, text: "대기 중인 문의를 찾지 못했어. 다시 소환해줘." });
+      return;
+    }
+    draftStore.delete(pendingId);
+    await client.chat.update({ channel: body.channel.id, ts: body.message.ts,
+      text: "📨 작업자 릴레이로 처리할게.",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "📨 *작업자 릴레이*로 처리 중..." }}] });
+    await handleWorkerRelay(
+      client, pending.dmChannel, pending.analysis,
+      { url: pending.sourceLink, channelId: pending.channelId, ts: pending.ts },
+      pending.relayText, pending.requesterUserId, pending.relayImageUrls,
+    );
+  });
+
+  // ── 릴레이/문의 경계 폴백: PM 문의(문의봇) 선택 ─────────────
+  // 분석 결과로 PM 문의 draft 생성 (inquiryType은 "작업 관련 문의"로 확정). 원문 스레드 정보 보존 → 답변 버튼 동작
+  app.action("route_pick_inquiry", async ({ ack, body, client }) => {
+    await ack();
+    const pendingId = body.actions?.[0]?.value;
+    const pending = pendingId ? draftStore.get(pendingId) : null;
+    if (!pending || pending.type !== "route_pending") {
+      await client.chat.postMessage({ channel: body.user.id, text: "대기 중인 문의를 찾지 못했어. 다시 소환해줘." });
+      return;
+    }
+    draftStore.delete(pendingId);
+    const a = pending.analysis;
+    const matchedTitle = await matchWorkTitleFromSheet(a.title_ja, a.title_ko).catch(() => null);
+    const draftId = generateDraftId();
+    const draft = {
+      draftId,
+      userId:            body.user.id,
+      dmChannelId:       pending.dmChannel,
+      progressMessageTs: null,
+      sourceLink:        pending.sourceLink,
+      originalText:      pending.originalText,
+      originalChannelId: pending.channelId,
+      originalTs:        pending.ts,
+      workName:      matchedTitle?.projectName || a.title_ko || a.title_ja || "",
+      workNameKo:    matchedTitle?.ko || "",
+      pivoId:        matchedTitle?.pivoId || null,
+      episode:       a.episode || null,
+      inquiryType:   "작업 관련 문의",
+      inquiryContent: a.translated_ko   || "",
+      summary:        a.summary_ko      || "",
+      actionRequired: a.action_required || "",
+      sourceLang:     a.source_lang     || "ja",
+    };
+    draftStore.set(draftId, draft);
+    await client.chat.update({ channel: body.channel.id, ts: body.message.ts,
+      text: "📝 PM 문의로 처리할게.",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "📝 *PM 문의(문의봇)*로 처리 중..." }}] });
+    await client.chat.postMessage({ channel: pending.dmChannel, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
   });
 
   // ── 수정 모달 ─────────────────────────────────────────────

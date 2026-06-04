@@ -39,6 +39,7 @@ function makeDeps(draftStore, overrides = {}) {
     fetchDeliveryDate: async () => null,
     handleFileOrderInquiry: async () => {},
     handleScheduleExt: async () => {},
+    handleWorkerRelay: async () => {},
     generateDraftId: () => `draft_${Date.now()}`,
     resolveApmUserId: () => null,
     postInquiryToTargetChannel: async () => ({ ts: "ts_tgt" }),
@@ -120,17 +121,25 @@ describe("registerDirectInputActions — 등록 검증", () => {
     assert.ok(typeof app._registered.actions["send_inquiry_now"] === "function");
   });
 
+  it("route_pick_relay action 등록", () => {
+    assert.ok(typeof app._registered.actions["route_pick_relay"] === "function");
+  });
+
+  it("route_pick_inquiry action 등록", () => {
+    assert.ok(typeof app._registered.actions["route_pick_inquiry"] === "function");
+  });
+
   it("submit_inquiry_modal view 등록", () => {
     assert.ok(typeof app._registered.views["submit_inquiry_modal"] === "function");
   });
 
-  it("등록 actions 10개 (string 9 + regex 1)", () => {
+  it("등록 actions 12개 (string 11 + regex 1)", () => {
     // string: inquiry_done, open_inquiry_reply_modal, direct_resupply_btn, direct_schedule_btn,
     //         direct_inquiry_btn, direct_fileorder_btn, open_manual_title_modal,
-    //         open_inquiry_modal, send_inquiry_now
+    //         open_inquiry_modal, send_inquiry_now, route_pick_relay, route_pick_inquiry
     // regex: inquiry_cand_pick_\d+
     const actionCount = Object.keys(app._registered.actions).length;
-    assert.equal(actionCount, 10);
+    assert.equal(actionCount, 12);
   });
 
   it("등록 views 7개", () => {

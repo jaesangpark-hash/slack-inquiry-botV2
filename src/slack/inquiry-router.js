@@ -282,6 +282,45 @@ module.exports = function createInquiryRouter(deps) {
       return;
     }
 
+    // ── ③-b 릴레이/PM문의 경계 모호 → 봇 선택 폴백 (자동 오라우팅 방지) ──
+    // route_ambiguous=true & 경계 유형(번역계열↔작업관련문의)일 때만 발동.
+    // 릴레이는 원문 스레드 맥락(channelId/ts/files)이 필수라 새 모달로 못 만듦 → 맥락을 draftStore에 stash 후
+    // route_pick_relay 핸들러가 handleWorkerRelay를 재실행. PM은 route_pick_inquiry가 분석 결과로 draft 생성.
+    if (analysis.route_ambiguous &&
+        ["번역문 누락", "번역문 확인", "번역문 수정", "작업 관련 문의"].includes(analysis.inquiry_type)) {
+      const matchedForSummary = await matchWorkTitleFromSheet(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const displayName = matchedForSummary?.projectName || analysis.title_ja || analysis.title_ko || "";
+      const relayImageUrls = (files || [])
+        .filter(f => f.mimetype?.startsWith("image/"))
+        .map(f => f.url_private || f.permalink || null)
+        .filter(Boolean);
+      const pendingId = `route_pending_${Date.now()}`;
+      draftStore.set(pendingId, {
+        type:            "route_pending",
+        analysis,
+        sourceLink,
+        channelId,
+        ts,
+        dmChannel,
+        relayText:       hasThreadContext ? threadContextText : originalText,
+        relayImageUrls,
+        requesterUserId: requesterUserId || null,
+        originalText,
+      });
+      await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
+        text: `⚠️ 작업자 릴레이인지 PM 문의인지 애매해서 자동 분류를 보류했어. (AI 추정: ${analysis.inquiry_type})` });
+      await client.chat.postMessage({ channel: dmChannel, text: "릴레이/문의 중 선택해줘.",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: `*${displayName || "작품 미상"}*${analysis.episode ? ` ${analysis.episode}화` : ""}\n작업자에게 바로 전달할 *릴레이* 건인지, PM 판단이 필요한 *문의* 건인지 선택해줘.` }},
+          { type: "actions", elements: [
+            { type: "button", action_id: "route_pick_relay",   text: { type: "plain_text", text: "작업자 릴레이" },   value: pendingId },
+            { type: "button", action_id: "route_pick_inquiry", text: { type: "plain_text", text: "PM 문의(문의봇)" }, style: "primary", value: pendingId },
+          ]},
+        ],
+      });
+      return;
+    }
+
     // ── ④ 번역계열 (누락/확인/수정) ─────────────────────────────
     if (["번역문 누락", "번역문 확인", "번역문 수정"].includes(analysis.inquiry_type)) {
       if (source === "reaction") {
