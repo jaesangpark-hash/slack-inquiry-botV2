@@ -36,10 +36,11 @@ const assert = require("node:assert/strict");
 const createTitleMatcher = require("../title-matcher");
 
 // ── fake 빌더 ─────────────────────────────────────────────────────────────────
-// 마스터 시트 행 구조 (A:G):
-//   row[0]=A(공통번호), row[1]=B(pivo_id), row[2]=C(론칭일), row[3]=D(JP_title), row[4]=E(가제), row[5]=F(원제), row[6]=G(프로젝트명)
+// 마스터 시트 행 구조 (탭 '출판사 드라이브 링크', A:H):
+//   row[0]=A(APM), row[1]=B(중국어/ko), row[2]=C(한국어타이틀/projectName), row[3]=D(일본어/jaDisplay),
+//   row[4]=E(FIX 타이틀/jpTitle), row[5]=F(미정), row[6]=G(출판사), row[7]=H(드라이브 링크), row[8]=I(pivo_id)
 function makeRow({ pivoId = "p1", jpTitle = "", jaDisplay = "", ko = "", projectName = "" }) {
-  return ["A1", pivoId, "2024-01-01", jpTitle, jaDisplay, ko, projectName];
+  return ["", ko, projectName, jaDisplay, jpTitle, "", "", "", pivoId];
 }
 
 // fake sheetsClient: getValues → 헤더 포함 rows 반환 (slice(1)로 헤더 제거됨)

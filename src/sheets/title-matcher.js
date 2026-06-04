@@ -3,13 +3,14 @@
 
 const { normalizeTitle, normalizeTitleKo, stripKariSuffix } = require("./normalize");
 
-// 새 시트 구조 (한일/중일 공통):
-//   A=공통번호, B=pivo_id, C=론칭일, D=JP_title, E=가제(일본어), F=원제(중국어), G=프로젝트명(한국어표시용)
+// 시트 구조 (탭 '출판사 드라이브 링크'):
+//   A=APM, B=작품명(중국어), C=한국어타이틀, D=작품명(일본어), E=FIX 타이틀,
+//   F=미정, G=출판사, H=출판사 드라이브 링크, I=PIVO ID
 // 반환값: { ko, jaDisplay, jaNorm, koNorm, projectName, pivoId }
-//   projectName = G열 한국어 프로젝트명 (APM 표시용)
-//   pivoId      = B열 (Totus API 매핑용, 결과물 미노출)
+//   projectName = C열 한국어타이틀 (한국어 매칭 키 + APM 표시용)
+//   pivoId      = I열 PIVO ID (Totus API 매핑용, 결과물 미노출)
 
-const ZHJA_SHEET_RANGE = "'중일_master'!A:G";
+const ZHJA_SHEET_RANGE = "'출판사 드라이브 링크'!A:I";
 const CANDIDATE_MAX = 5;
 
 /**
@@ -25,11 +26,11 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     );
     const rows = (res || []).slice(1); // 헤더 제외
     return rows.map(row => {
-      const pivoId      = (row[1] || "").trim();                        // B열
-      const jpTitle     = (row[3] || "").trim();                        // D열 JP_title(일본어 타이틀)
-      const jaDisplay   = stripKariSuffix((row[4] || "").trim());       // E열 가제
-      const ko          = (row[5] || "").trim();                        // F열 원제(중국어) — 매칭에 미사용
-      const projectName = (row[6] || "").trim();                        // G열 프로젝트명(한국어)
+      const pivoId      = (row[8] || "").trim();                        // I열 PIVO ID
+      const jpTitle     = (row[4] || "").trim();                        // E열 FIX 타이틀(정식 일본어)
+      const jaDisplay   = stripKariSuffix((row[3] || "").trim());       // D열 작품명(일본어), 仮 제거
+      const ko          = (row[1] || "").trim();                        // B열 작품명(중국어) — 매칭에 미사용
+      const projectName = (row[2] || "").trim();                        // C열 한국어타이틀
       return { ko, jaDisplay, jpTitle, jaNorm: normalizeTitle(jaDisplay), koNorm: normalizeTitleKo(ko), projectName, pivoId };
     }).filter(r => r.ko || r.jaDisplay);
   }
@@ -38,7 +39,7 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     if (Date.now() - titleCache.loadedAt < 300000 && titleCache.rows.length) return titleCache.rows;
     titleCache.rows = await _loadMasterRows(ZHJA_SHEET_RANGE);
     titleCache.loadedAt = Date.now();
-    console.log("[DEBUG-SHEET] 중일_master 로드:", titleCache.rows.length, "건, 마지막 3행:", JSON.stringify(titleCache.rows.slice(-3)));
+    console.log("[DEBUG-SHEET] '출판사 드라이브 링크' 로드:", titleCache.rows.length, "건, 마지막 3행:", JSON.stringify(titleCache.rows.slice(-3)));
     return titleCache.rows;
   }
 
