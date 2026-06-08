@@ -98,7 +98,8 @@ module.exports = function (app, deps) {
             analysis = { inquiry_type: null };
           } else {
             const analysisText = hasThreadContext ? threadContextText : originalText;
-            analysis = await analyzeInquiryWithAI(analysisText, hasThreadContext);
+            const msgDate = new Date(parseInt(ts.split(".")[0]) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
+            analysis = await analyzeInquiryWithAI(analysisText, hasThreadContext, msgDate);
             console.log(`[DEBUG] reaction inquiry_type: ${analysis.inquiry_type} | title_ja: ${analysis.title_ja} | title_ko: ${analysis.title_ko} | 스레드맥락: ${hasThreadContext ? "O" : "X"}`);
           }
 
@@ -191,7 +192,8 @@ module.exports = function (app, deps) {
           return;
         }
 
-        const analysis = await analyzeInquiryWithAI(originalText);
+        const msgDate = new Date(parseInt(linkInfo.ts.split(".")[0]) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
+        const analysis = await analyzeInquiryWithAI(originalText, false, msgDate);
         await updateProgress(message.channel, progressMsg.ts, 3, "AI 분석 완료");
         console.log("[DEBUG] inquiry_type:", analysis.inquiry_type, "| title_ja:", analysis.title_ja, "| title_ko:", analysis.title_ko);
 

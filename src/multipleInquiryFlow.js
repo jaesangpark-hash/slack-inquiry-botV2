@@ -19,9 +19,9 @@ module.exports = function registerMultipleInquiryFlow(app, {
   };
 
   // ── 복수 문의 AI 파싱 ─────────────────────────────────────
-  async function parseMultipleInquiry(text) {
-    const prompt = `
-너는 웹툰/만화 로컬라이징 전문 문의 분석 AI다.
+  async function parseMultipleInquiry(text, msgDate = null) {
+    const dateContext = msgDate ? `문의 작성일(KST): ${msgDate}\n\n` : "";
+    const prompt = `${dateContext}너는 웹툰/만화 로컬라이징 전문 문의 분석 AI다.
 
 아래 문의에서 개별 문의 항목을 분리하여 배열로 추출해줘.
 각 항목은 독립된 작품·화수·유형을 가진다.
@@ -37,8 +37,8 @@ module.exports = function registerMultipleInquiryFlow(app, {
 2) work_title_ja: 일본어·중국어 작품명 원문 그대로 (없으면 null)
 3) work_title_ko: 한국어 작품명 원문 그대로 (없으면 null)
 4) episode: 회차 숫자만 (없으면 null)
-5) extend_days: 연장 일수 숫자 (스케줄 유형만, 없으면 null)
-6) requested_date: 희망 마감일 YYYY-MM-DD (스케줄 유형만, 없으면 null)
+5) extend_days: 연장 일수 (스케줄 유형만). "추가 일수"가 명시된 경우에만 반드시 양의 정수(예: 3). 한국어·일본어·영어 공통("N일 연장", "extend N days", "N more days"). 목표일 표현(tomorrow 등)은 여기 넣지 말 것. 숫자가 아니면 null
+6) requested_date: 희망 마감일 YYYY-MM-DD (스케줄 유형만). 작성일 기준 변환. "N월N일까지/28일까지/by May 10" 등 달력 날짜, "내일/明日/tomorrow"=작성일+1·"모레/明後日/the day after tomorrow"=작성일+2, "to/by/until tomorrow·내일까지·明日まで" 같은 목표 마감일 표현 모두 여기로. 작성일 모르면 추측 금지 → null
 7) reason: 재수급 사유 한국어 1문장 (재수급 유형만, 없으면 null)
 8) content: 문의 내용 요약 (문의 유형만, 없으면 null)
 9) file_numbers: 파일/페이지 번호 배열 (재수급 유형만, 없으면 [])
@@ -61,7 +61,13 @@ ${text}`.trim();
     for (const field of required) {
       if (field === "work_title" && !item.work_title_ja && !item.work_title_ko) missing.push("work_title");
       if (field === "episode" && !item.episode) missing.push("episode");
-      if (field === "extend_or_date" && !item.extend_days && !item.requested_date) missing.push("extend_or_date");
+      if (field === "extend_or_date") {
+        // extend_days 는 양의 정수일 때만 유효 (문자열 "tomorrow" 등은 무효 처리 → 누락)
+        const days     = Number(item.extend_days);
+        const hasDays  = item.extend_days != null && Number.isFinite(days) && days > 0;
+        const hasDate  = !!item.requested_date;
+        if (!hasDays && !hasDate) missing.push("extend_or_date");
+      }
       if (field === "reason" && !item.reason) missing.push("reason");
       if (field === "content" && !item.content) missing.push("content");
     }
@@ -365,7 +371,10 @@ ${text}`.trim();
       items = preItems;
     } else {
       try {
-        items = await parseMultipleInquiry(originalText);
+        const msgDate = originalTs
+          ? new Date(parseInt(originalTs.split(".")[0]) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10)
+          : null;
+        items = await parseMultipleInquiry(originalText, msgDate);
       } catch (e) {
         console.error("[multi] AI 파싱 실패:", e.message);
         await client.chat.postMessage({ channel: dmChannel, text: "⚠️ 복수 문의 파싱에 실패했어. 직접 봇을 소환해줘." });

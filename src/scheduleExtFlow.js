@@ -422,10 +422,14 @@ module.exports = function registerScheduleExtFlow(app, {
       return;
     }
     draftStore.delete(pendingId);
+    // 회차를 직접 입력했으면 그 화수만, 아니면 묶음(pending.episodes) 유지
+    const episodes = episodeInput
+      ? [parseInt(episodeInput, 10)]
+      : (pending.episodes && pending.episodes.length ? pending.episodes : [parseInt(episode, 10)]);
     await _proceedScheduleExt(client, pending.dmChannelId, {
       ...pending,
       extDays,
-      episodes: [parseInt(episode, 10)],
+      episodes,
     });
   });
 
@@ -583,8 +587,33 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     if (!extDays || extDays <= 0) {
-      await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ 연장 일수를 계산할 수 없어. 직접 입력해줘.` });
+      // 자동 계산 실패(파싱 불가/희망일 없음 등) — 버튼으로 직접 입력받기.
+      // 묶음(episodes 여러 개)이면 이미 조회·검증한 tasksByEpisode를 그대로 넘겨 재진입 시 재조회/재분할 방지.
+      const pendingId = `schext_pending_${Date.now()}`;
+      draftStore.set(pendingId, {
+        type: "schext_pending",
+        workName, pivoId,
+        episode: episodes[0], episodes,
+        delivery, sourceLink, requesterUserId,
+        originalChannelId, originalTs,
+        dmChannelId: dmChannel,
+        preFetchedTasksByEpisode: tasksByEpisode,
+        preFetchedProjectUuid:    info.preFetchedProjectUuid || null,
+        preValidatedBatch:        !!info.preValidatedBatch,
+      });
+      await client.chat.postMessage({
+        channel: dmChannel,
+        text: `${workName} ${episodeLabel} — 연장 일수를 특정할 수 없어. 직접 입력해줘.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `*📅 일정 연장 요청*\n*작품명:* ${workName}　*회차:* ${episodeLabel}\n⚠️ 연장 일수를 자동으로 계산하지 못했어. 직접 입력해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "schext_open_days_modal",
+              text: { type: "plain_text", text: "연장 일수 입력" },
+              style: "primary", value: pendingId },
+          ]},
+        ],
+      });
       return;
     }
 
