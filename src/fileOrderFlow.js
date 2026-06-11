@@ -434,36 +434,14 @@ JSON만 출력. 코드블록 금지.
     const resolvedWorkNameKo = matchedTitle?.projectName || workName;
     draftStore.delete(pendingId);
 
-    const manualDraftId = generateDraftId();
-    draftStore.set(manualDraftId, {
-      type: 'file_order',
-      workName:      resolvedWorkName,
-      workNameKo:    resolvedWorkNameKo,
+    // 정상 경로(후보 선택)와 동일하게 실제 파일 목록을 조회한다.
+    // (과거: currentFiles:[] placeholder → 수동입력 시 total=0 으로 항상 invalid 되는 버그)
+    await _proceedFileOrderCheck(client, pending.dmChannelId, {
+      workName:   resolvedWorkName,
+      workNameKo: resolvedWorkNameKo,
+      pivoId:     matchedTitle?.pivoId || null,
       episode,
-      currentFiles:  [],
-      suggestedFiles: [],
-      dmChannelId:   pending.dmChannelId,
-      sourceLink:    pending.sourceLink || '',
-    });
-
-    await client.chat.postMessage({
-      channel: pending.dmChannelId,
-      text: `현재 Totus에 설정된 *${resolvedWorkName} ${episode}화*의 파일 순서는 아래와 같습니다.`,
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn',
-          text: `*현재 Totus에 설정된 ${resolvedWorkName} ${episode}화의 파일 순서는 아래와 같습니다.*` } },
-        { type: 'section', text: { type: 'mrkdwn',
-          text: '_(API 연동 후 실제 파일 목록이 여기에 표시됩니다)_' } },
-        { type: 'divider' },
-        { type: 'actions', elements: [
-          { type: 'button', action_id: 'file_order_manual_input',
-            text: { type: 'plain_text', text: '파일 순서 변경' },
-            style: 'primary', value: manualDraftId },
-          { type: 'button', action_id: 'file_order_close',
-            text: { type: 'plain_text', text: '❌ 종료 (수정 불필요)' },
-            value: manualDraftId },
-        ]},
-      ],
+      sourceLink: pending.sourceLink || '',
     });
   });
 
