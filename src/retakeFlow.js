@@ -3,7 +3,7 @@
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;
@@ -245,22 +245,38 @@ JSON만 출력. 코드블록 금지.
   async function _proceedRetakeOperationSelect(client, dmChannel, info) {
     const { workName, workNameKo, pivoId, episode, sourceLink, requesterName } = info;
     const draftId = generateDraftId();
+
+    // 납품 시트 D열에서 실제 담당 APM 조회 (zh-ja 탭 → 미매칭 시 ko-ja 탭)
+    let actualApm = null;
+    if (fetchDeliveryDate && episode) {
+      try {
+        const dlv = await fetchDeliveryDate(workNameKo || workName, episode);
+        actualApm = dlv?.apm || null;
+        if (!actualApm) {
+          const dlvKo = await fetchDeliveryDate(workNameKo || workName, episode, "ko-ja");
+          actualApm = dlvKo?.apm || null;
+        }
+      } catch (_) {}
+    }
+
     draftStore.set(draftId, {
       type: "retake",
       workName, workNameKo, pivoId: pivoId || null, episode, sourceLink,
       requesterName: requesterName || "",
+      actualApm: actualApm || "",
       dmChannelId: dmChannel,
     });
 
-    const linkText = sourceLink ? `\n*원본 링크:* ${sourceLink}` : "";
-    const requesterText = requesterName ? `\n*작업자:* ${requesterName}` : "";
+    const linkText    = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
+    const senderText  = requesterName ? `\n*발송자:* ${requesterName}` : "";
+    const apmText     = actualApm     ? `\n*담당 APM:* ${actualApm}`  : "";
 
     await client.chat.postMessage({
       channel: dmChannel,
       text: `${workName} ${episode}화 태스크 재생성 — 작업 유형을 선택해주세요.`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `*🔄 태스크 재생성 요청*${requesterText}\n*작품명:* ${workName}　*회차:* ${episode}화${linkText}\n\n내용을 확인하고 작업 유형을 선택해줘.` } },
+          text: `*🔄 태스크 재생성 요청*${senderText}${apmText}\n*작품명:* ${workName}　*회차:* ${episode}화${linkText}\n\n내용을 확인하고 작업 유형을 선택해줘.` } },
         { type: "actions", elements: [
           { type: "button", action_id: "retake_select_operation",
             text: { type: "plain_text", text: "작업 유형 선택" },

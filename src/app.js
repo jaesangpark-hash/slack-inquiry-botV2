@@ -123,7 +123,7 @@ const { handleFileOrderInquiry } = require("./fileOrderFlow")(app, {
 });
 
 const { handleRetakeInquiry } = require("./retakeFlow")(app, {
-  ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient,
+  ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(app, {
