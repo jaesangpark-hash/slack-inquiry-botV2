@@ -90,6 +90,7 @@ const RETAKE_CHANNELS      = new Set(
 const APM_SLACK_ID_MAP = {
   "서주원": "U07E0QPL8MV",
   "정태영": "U05CE8HFA6B",
+  "오화진": "U02GPTNGZ5W",
 };
 
 function resolveApmUserId(apmName) {
