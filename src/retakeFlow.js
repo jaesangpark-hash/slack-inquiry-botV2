@@ -264,6 +264,7 @@ JSON만 출력. 코드블록 금지.
     }
     if (actualApm && resolveApmUserId) {
       actualApmId = resolveApmUserId(actualApm) || null;
+      console.log(`[retake] APM 이름→ID 변환: "${actualApm}" → ${actualApmId || "매핑 없음"}`);
     }
 
     draftStore.set(draftId, {
@@ -843,8 +844,9 @@ JSON만 출력. 코드블록 금지.
     const senderCtxAuto = data.requesterUserId
       ? `발송자: <@${data.requesterUserId}>`
       : data.requesterName ? `발송자: ${data.requesterName}` : null;
-    const apmCtxAuto = data.actualApmId
-      ? `담당 APM: <@${data.actualApmId}>`
+    const _resolvedApmIdAuto = data.actualApmId || (resolveApmUserId && data.actualApm ? resolveApmUserId(data.actualApm) : null);
+    const apmCtxAuto = _resolvedApmIdAuto
+      ? `담당 APM: <@${_resolvedApmIdAuto}>`
       : data.actualApm ? `담당 APM: ${data.actualApm}` : `담당 APM: <@${body.user.id}>`;
     const autoContextElements = [
       ...(senderCtxAuto ? [{ type: "mrkdwn", text: senderCtxAuto }] : []),
@@ -989,9 +991,12 @@ ${msgText}
       const senderCtx = data.requesterUserId
         ? `발송자: <@${data.requesterUserId}>`
         : data.requesterName ? `발송자: ${data.requesterName}` : null;
-      const apmCtxText = apmEdited
-        ? (/^U[A-Z0-9]{6,}$/.test(apmEdited) ? `담당 APM: <@${apmEdited}>` : `담당 APM: ${apmEdited}`)
-        : `담당 APM: <@${body.user.id}>`;
+      const _apmEditedId = /^U[A-Z0-9]{6,}$/.test(apmEdited)
+        ? apmEdited
+        : (resolveApmUserId && apmEdited ? resolveApmUserId(apmEdited) : null);
+      const apmCtxText = _apmEditedId
+        ? `담당 APM: <@${_apmEditedId}>`
+        : apmEdited ? `담당 APM: ${apmEdited}` : `담당 APM: <@${body.user.id}>`;
       const contextElements = [
         ...(senderCtx ? [{ type: "mrkdwn", text: senderCtx }] : []),
         { type: "mrkdwn", text: apmCtxText },
