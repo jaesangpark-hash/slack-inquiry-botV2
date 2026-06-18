@@ -282,8 +282,9 @@ JSON만 출력. 코드블록 금지.
       dmChannelId: dmChannel,
     });
 
-    const linkText    = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
-    const senderText  = requesterName ? `\n*발송자:* ${requesterName}` : "";
+    const linkText     = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
+    const senderDisplay = requesterUserId ? `<@${requesterUserId}>` : requesterName;
+    const senderText  = senderDisplay ? `\n*발송자:* ${senderDisplay}` : "";
     const apmDisplay  = actualApmId ? `<@${actualApmId}>` : actualApm;
     const apmText     = apmDisplay   ? `\n*담당 APM:* ${apmDisplay}`  : "";
 
@@ -650,14 +651,15 @@ JSON만 출력. 코드블록 금지.
     const sourceLink = body.actions?.[0]?.value || "";
     const pendingId  = `rt_pending_${Date.now()}`;
     draftStore.set(pendingId, {
-      type:          "retake_pending",
-      workName:      "",
-      workNameKo:    "",
-      episode:       "",
-      sourceLink:    sourceLink !== "direct" ? sourceLink : "",
-      dmChannelId:   body.user.id,
-      originalText:  "",
-      requesterName: "",
+      type:            "retake_pending",
+      workName:        "",
+      workNameKo:      "",
+      episode:         "",
+      sourceLink:      sourceLink !== "direct" ? sourceLink : "",
+      dmChannelId:     body.user.id,
+      originalText:    "",
+      requesterName:   "",
+      requesterUserId: body.user.id,
     });
     await client.views.open({
       trigger_id: body.trigger_id,
