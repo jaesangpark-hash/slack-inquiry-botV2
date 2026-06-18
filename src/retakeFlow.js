@@ -115,7 +115,7 @@ JSON만 출력. 코드블록 금지.
   }
 
   // ── 메인 핸들러: 수정&리테이크 문의 처리 ────────────────
-  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "") {
+  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null) {
     let parsed;
     try { parsed = await parseRetakeInquiry(originalText); } catch (e) { parsed = {}; }
 
@@ -131,7 +131,7 @@ JSON만 출력. 코드블록 금지.
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
         const pendingId = `rt_pending_${Date.now()}`;
-        draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName });
+        draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
         await client.chat.postMessage({
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
@@ -153,7 +153,7 @@ JSON만 출력. 코드블록 금지.
             matchedTitle = tokenResult.single;
           } else if (tokenResult?.multiple) {
             const pendingId = `rt_pending_${Date.now()}`;
-            draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName });
+            draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
             await client.chat.postMessage({
               channel: dmChannel,
               text: "작품 후보가 여러 개야. 선택해줘.",
@@ -189,6 +189,7 @@ JSON만 출력. 코드블록 금지.
         dmChannelId: dmChannel,
         originalText,
         requesterName,
+        requesterUserId: requesterUserId || null,
       });
 
       const missingFields = [];
@@ -220,6 +221,7 @@ JSON만 출력. 코드블록 금지.
       episode,
       sourceLink: linkInfo?.url || "",
       requesterName,
+      requesterUserId: requesterUserId || null,
     });
   }
 
@@ -232,18 +234,19 @@ JSON만 출력. 코드블록 금지.
 
     draftStore.delete(pendingId);
     await _proceedRetakeOperationSelect(client, pending.dmChannelId, {
-      workName:      projectName,
-      workNameKo:    projectName,
-      pivoId:        pivoId || null,
-      episode:       pending.episode,
-      sourceLink:    pending.sourceLink || "",
-      requesterName: pending.requesterName || "",
+      workName:        projectName,
+      workNameKo:      projectName,
+      pivoId:          pivoId || null,
+      episode:         pending.episode,
+      sourceLink:      pending.sourceLink || "",
+      requesterName:   pending.requesterName   || "",
+      requesterUserId: pending.requesterUserId || null,
     });
   });
 
   // ── 오퍼레이션 선택 DM 표시 ──────────────────────────────
   async function _proceedRetakeOperationSelect(client, dmChannel, info) {
-    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName } = info;
+    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId } = info;
     const draftId = generateDraftId();
 
     // 납품 시트 D열에서 실제 담당 APM 조회 (zh-ja 탭 → 미매칭 시 ko-ja 탭)
@@ -262,8 +265,9 @@ JSON만 출력. 코드블록 금지.
     draftStore.set(draftId, {
       type: "retake",
       workName, workNameKo, pivoId: pivoId || null, episode, sourceLink,
-      requesterName: requesterName || "",
-      actualApm: actualApm || "",
+      requesterName:   requesterName   || "",
+      requesterUserId: requesterUserId || null,
+      actualApm:       actualApm       || "",
       dmChannelId: dmChannel,
     });
 
@@ -787,8 +791,9 @@ JSON만 출력. 코드블록 금지.
       workNameKo:    resolvedWorkNameKo,
       pivoId:        resolvedPivoId,
       episode,
-      sourceLink:    pending.sourceLink    || "",
-      requesterName: pending.requesterName || "",
+      sourceLink:      pending.sourceLink      || "",
+      requesterName:   pending.requesterName   || "",
+      requesterUserId: pending.requesterUserId || null,
     });
   });
 
@@ -829,6 +834,17 @@ JSON만 출력. 코드블록 금지.
 
     const msgText = `${data.workName} ${data.episode}화 작업을 다시 요청 드렸습니다.\n마감일 : ${endDateDisplay}`;
 
+    const senderCtxAuto = data.requesterUserId
+      ? `발송자: <@${data.requesterUserId}>`
+      : data.requesterName ? `발송자: ${data.requesterName}` : null;
+    const apmCtxAuto = data.actualApm
+      ? (/^U[A-Z0-9]{6,}$/.test(data.actualApm) ? `담당 APM: <@${data.actualApm}>` : `담당 APM: ${data.actualApm}`)
+      : `담당 APM: <@${body.user.id}>`;
+    const autoContextElements = [
+      ...(senderCtxAuto ? [{ type: "mrkdwn", text: senderCtxAuto }] : []),
+      { type: "mrkdwn", text: apmCtxAuto },
+    ];
+
     try {
       try { await client.conversations.join({ channel: workerChannelId }); } catch (_) {}
       await client.chat.postMessage({
@@ -838,9 +854,7 @@ JSON만 출력. 코드블록 금지.
           ...(mentionText ? [{ type: "section", text: { type: "mrkdwn", text: mentionText } }] : []),
           { type: "section", text: { type: "mrkdwn", text: msgText } },
           { type: "divider" },
-          { type: "context", elements: [
-            { type: "mrkdwn", text: `담당 APM: <@${body.user.id}>` },
-          ]},
+          { type: "context", elements: autoContextElements },
         ],
       });
       await client.chat.postMessage({ channel: body.user.id,
@@ -875,6 +889,13 @@ JSON만 출력. 코드블록 금지.
             element: { type: "plain_text_input", action_id: "value",
               initial_value: data.workName || "",
               placeholder: { type: "plain_text", text: "작품명" } } },
+          { type: "input", block_id: "rt_worker_apm_block",
+            label: { type: "plain_text", text: "담당 APM (수정 가능)" },
+            hint: { type: "plain_text", text: "납품 시트에서 자동 조회. Slack ID(@U...) 입력 시 멘션으로 발송됩니다." },
+            optional: true,
+            element: { type: "plain_text_input", action_id: "value",
+              initial_value: data.actualApm || "",
+              placeholder: { type: "plain_text", text: "예: 서주원 또는 U07E0QPL8MV" } } },
           { type: "input", block_id: "rt_worker_msg_block",
             label: { type: "plain_text", text: "수정 내용" },
             element: { type: "plain_text_input", action_id: "value", multiline: true,
@@ -897,6 +918,7 @@ JSON만 출력. 코드블록 금지.
     if (!data) return;
 
     const workNameEdited = view.state.values.rt_worker_workname_block?.value?.value?.trim() || data.workName || "";
+    const apmEdited      = view.state.values.rt_worker_apm_block?.value?.value?.trim()      || data.actualApm || "";
     const msgText        = view.state.values.rt_worker_msg_block?.value?.value?.trim() || "";
     const imgRaw         = view.state.values.rt_worker_img_block?.value?.value?.trim() || "";
     const imgUrls        = imgRaw ? imgRaw.split("\n").map(u => u.trim()).filter(Boolean) : [];
@@ -955,6 +977,20 @@ ${msgText}
       try { await client.conversations.join({ channel: workerChannelId }); } catch (_) {}
       console.log("[retake] 💬 작업자 채널 전송 시도 — channel:", workerChannelId);
 
+      // 발송자·담당 APM 컨텍스트 구성
+      // - 발송자: requesterUserId(Slack ID) 우선, 없으면 이름 텍스트
+      // - 담당 APM: 모달 입력값. U로 시작하면 멘션, 아니면 텍스트
+      const senderCtx = data.requesterUserId
+        ? `발송자: <@${data.requesterUserId}>`
+        : data.requesterName ? `발송자: ${data.requesterName}` : null;
+      const apmCtxText = apmEdited
+        ? (/^U[A-Z0-9]{6,}$/.test(apmEdited) ? `담당 APM: <@${apmEdited}>` : `담당 APM: ${apmEdited}`)
+        : `담당 APM: <@${body.user.id}>`;
+      const contextElements = [
+        ...(senderCtx ? [{ type: "mrkdwn", text: senderCtx }] : []),
+        { type: "mrkdwn", text: apmCtxText },
+      ];
+
       // 메인 메시지 전송 (이미지 제외)
       const mainMsg = await client.chat.postMessage({
         channel: workerChannelId,
@@ -963,9 +999,7 @@ ${msgText}
           ...(mentionText ? [{ type: "section", text: { type: "mrkdwn", text: mentionText } }] : []),
           { type: "section", text: { type: "mrkdwn", text: templateMsg } },
           { type: "divider" },
-          { type: "context", elements: [
-            { type: "mrkdwn", text: `담당 APM: <@${body.user.id}>` },
-          ]},
+          { type: "context", elements: contextElements },
         ],
       });
 

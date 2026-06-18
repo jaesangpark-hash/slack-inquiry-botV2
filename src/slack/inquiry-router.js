@@ -114,7 +114,7 @@ module.exports = function createInquiryRouter(deps) {
       if (itemLines.length >= 2) {
         await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null);
       } else {
-        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink }, originalText, retakeRequesterName);
+        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink }, originalText, retakeRequesterName, requesterUserId || null);
       }
       return;
     }
@@ -348,7 +348,7 @@ module.exports = function createInquiryRouter(deps) {
           const userInfo = await client.users.info({ user: requesterUserId });
           retakeName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || requesterUserId || "";
         } catch (_) {}
-        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink }, originalText, retakeName);
+        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink }, originalText, retakeName, requesterUserId || null);
       }
       // UD-7: message 경로는 분기 부재 → ⑧ 기본처리로 자동 폴백 (여기서 return 안 함)
       if (source === "reaction") return;
