@@ -3,7 +3,7 @@
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;
@@ -250,7 +250,8 @@ JSON만 출력. 코드블록 금지.
     const draftId = generateDraftId();
 
     // 납품 시트 D열에서 실제 담당 APM 조회 (zh-ja 탭 → 미매칭 시 ko-ja 탭)
-    let actualApm = null;
+    let actualApm   = null;
+    let actualApmId = null;
     if (fetchDeliveryDate && episode) {
       try {
         const dlv = await fetchDeliveryDate(workNameKo || workName, episode);
@@ -261,6 +262,9 @@ JSON만 출력. 코드블록 금지.
         }
       } catch (_) {}
     }
+    if (actualApm && resolveApmUserId) {
+      actualApmId = resolveApmUserId(actualApm) || null;
+    }
 
     draftStore.set(draftId, {
       type: "retake",
@@ -268,12 +272,14 @@ JSON만 출력. 코드블록 금지.
       requesterName:   requesterName   || "",
       requesterUserId: requesterUserId || null,
       actualApm:       actualApm       || "",
+      actualApmId:     actualApmId     || null,
       dmChannelId: dmChannel,
     });
 
     const linkText    = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
     const senderText  = requesterName ? `\n*발송자:* ${requesterName}` : "";
-    const apmText     = actualApm     ? `\n*담당 APM:* ${actualApm}`  : "";
+    const apmDisplay  = actualApmId ? `<@${actualApmId}>` : actualApm;
+    const apmText     = apmDisplay   ? `\n*담당 APM:* ${apmDisplay}`  : "";
 
     await client.chat.postMessage({
       channel: dmChannel,
@@ -837,9 +843,9 @@ JSON만 출력. 코드블록 금지.
     const senderCtxAuto = data.requesterUserId
       ? `발송자: <@${data.requesterUserId}>`
       : data.requesterName ? `발송자: ${data.requesterName}` : null;
-    const apmCtxAuto = data.actualApm
-      ? (/^U[A-Z0-9]{6,}$/.test(data.actualApm) ? `담당 APM: <@${data.actualApm}>` : `담당 APM: ${data.actualApm}`)
-      : `담당 APM: <@${body.user.id}>`;
+    const apmCtxAuto = data.actualApmId
+      ? `담당 APM: <@${data.actualApmId}>`
+      : data.actualApm ? `담당 APM: ${data.actualApm}` : `담당 APM: <@${body.user.id}>`;
     const autoContextElements = [
       ...(senderCtxAuto ? [{ type: "mrkdwn", text: senderCtxAuto }] : []),
       { type: "mrkdwn", text: apmCtxAuto },
@@ -891,10 +897,10 @@ JSON만 출력. 코드블록 금지.
               placeholder: { type: "plain_text", text: "작품명" } } },
           { type: "input", block_id: "rt_worker_apm_block",
             label: { type: "plain_text", text: "담당 APM (수정 가능)" },
-            hint: { type: "plain_text", text: "납품 시트에서 자동 조회. Slack ID(@U...) 입력 시 멘션으로 발송됩니다." },
+            hint: { type: "plain_text", text: "납품 시트에서 자동 조회. Slack ID(U...) 입력 시 멘션으로 발송됩니다." },
             optional: true,
             element: { type: "plain_text_input", action_id: "value",
-              initial_value: data.actualApm || "",
+              initial_value: data.actualApmId || data.actualApm || "",
               placeholder: { type: "plain_text", text: "예: 서주원 또는 U07E0QPL8MV" } } },
           { type: "input", block_id: "rt_worker_msg_block",
             label: { type: "plain_text", text: "수정 내용" },
