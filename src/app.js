@@ -91,6 +91,7 @@ const APM_SLACK_ID_MAP = {
   "서주원": "U07E0QPL8MV",
   "정태영": "U05CE8HFA6B",
   "오화진": "U02GPTNGZ5W",
+  "박재상": "U04463JR4HH",
 };
 
 function resolveApmUserId(apmName) {
