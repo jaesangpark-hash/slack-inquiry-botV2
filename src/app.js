@@ -96,10 +96,11 @@ const APM_SLACK_ID_MAP = {
 
 function resolveApmUserId(apmName) {
   if (!apmName) return null;
-  // 정확히 일치하는 이름 우선
-  if (APM_SLACK_ID_MAP[apmName]) return APM_SLACK_ID_MAP[apmName];
+  // Google Sheets는 NFD(분해형) 유니코드를 반환할 수 있어 NFC 정규화 후 비교
+  const name = apmName.normalize("NFC").trim();
+  if (APM_SLACK_ID_MAP[name]) return APM_SLACK_ID_MAP[name];
   // 부분 일치 (예: "서주원(mona)" 같은 형태 대응)
-  const found = Object.keys(APM_SLACK_ID_MAP).find(k => apmName.includes(k) || k.includes(apmName));
+  const found = Object.keys(APM_SLACK_ID_MAP).find(k => name.includes(k) || k.includes(name));
   return found ? APM_SLACK_ID_MAP[found] : null;
 }
 

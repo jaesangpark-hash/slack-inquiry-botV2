@@ -255,17 +255,22 @@ JSON만 출력. 코드블록 금지.
     if (fetchDeliveryDate && episode) {
       try {
         const dlv = await fetchDeliveryDate(workNameKo || workName, episode);
-        actualApm = dlv?.apm || null;
+        actualApm = (dlv?.apm || "").normalize("NFC").trim() || null;
         if (!actualApm) {
           const dlvKo = await fetchDeliveryDate(workNameKo || workName, episode, "ko-ja");
-          actualApm = dlvKo?.apm || null;
+          actualApm = (dlvKo?.apm || "").normalize("NFC").trim() || null;
         }
       } catch (_) {}
     }
-    if (actualApm && resolveApmUserId) {
-      actualApmId = resolveApmUserId(actualApm) || null;
-      console.log(`[retake] APM 이름→ID 변환: "${actualApm}" → ${actualApmId || "매핑 없음"}`);
+    if (actualApm) {
+      if (typeof resolveApmUserId === "function") {
+        actualApmId = resolveApmUserId(actualApm) || null;
+        console.log(`[retake] APM 이름→ID 변환: "${actualApm}" → ${actualApmId || "매핑 없음"}`);
+      } else {
+        console.warn("[retake] resolveApmUserId 미주입 — APM ID 변환 불가");
+      }
     }
+    console.log(`[retake] _proceedRetakeOperationSelect — requesterUserId: ${requesterUserId || "없음"}, actualApm: "${actualApm || ""}", actualApmId: ${actualApmId || "없음"}`);
 
     draftStore.set(draftId, {
       type: "retake",
