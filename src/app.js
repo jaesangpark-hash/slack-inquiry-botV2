@@ -149,7 +149,17 @@ const { handleWorkerRelay } = require("./workerRelayFlow")(app, {
 // 인증 방식: service account JSON 파일 대신 GOOGLE_CREDENTIALS env에 JSON 문자열을 직접 저장.
 // 형식: GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}'
 // .env 파일에 한 줄로 넣으면 되고, 별도 service-account.json 파일을 둘 필요가 없다.
+//
+// scope별 GoogleAuth 인스턴스 캐시. GoogleAuth는 내부적으로 access token을 ~1시간 캐싱하므로
+// 인스턴스를 재사용해야 token 재사용이 된다. 매 호출마다 new 하면 token 캐시가 비어 있어
+// 호출마다 oauth2/v4/token 엔드포인트를 때리고, 그만큼 "Premature close" 같은 일시적
+// 네트워크 오류에 노출이 커진다(= masterRows 조회 실패 → 작품명 매칭 실패).
+const _googleAuthByScope = new Map();
 function getGoogleAuth(scopes) {
+  const cacheKey = (scopes || []).join(" ");
+  const cached = _googleAuthByScope.get(cacheKey);
+  if (cached) return cached;
+
   const credentialsJson = process.env.GOOGLE_CREDENTIALS;
   let credentials;
   try {
@@ -161,7 +171,9 @@ function getGoogleAuth(scopes) {
         `형식: '{"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}'`
     );
   }
-  return new google.auth.GoogleAuth({ credentials, scopes });
+  const auth = new google.auth.GoogleAuth({ credentials, scopes });
+  _googleAuthByScope.set(cacheKey, auth);
+  return auth;
 }
 
 // ── 유틸 ──────────────────────────────────────────────────
