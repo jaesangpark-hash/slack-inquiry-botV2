@@ -38,9 +38,19 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
       }
       const rows  = workerSheetCache.rows;
       console.log(`[retake] 작업자 시트 rows:${rows.length} / 찾는 이메일: ${email}`);
-      const found = rows.find(row => (row[1] || "").trim().toLowerCase() === email.toLowerCase());
-      console.log(`[retake] 매칭된 행 raw:`, JSON.stringify(found));
-      console.log(`[retake] 작업자 채널 ID: ${found?.[3] || "없음"} / Slack IDs: ${found?.[2] || "없음"}`);
+      // B열(Slack 이메일) 또는 E열(Totus 이메일)로 매칭
+      const target = email.toLowerCase();
+      const found = rows.find(row => {
+        const slackEmail = (row[1] || "").trim().toLowerCase();
+        const totusEmail = (row[4] || "").trim().toLowerCase();
+        return slackEmail === target || (totusEmail && totusEmail === target);
+      });
+      if (found) {
+        const matchedBy = (found[4] || "").trim().toLowerCase() === target ? "E열(Totus)" : "B열(Slack)";
+        console.log(`[retake] 매칭: ${matchedBy} / 채널: ${found[3] || "없음"} / SlackID: ${found[2] || "없음"}`);
+      } else {
+        console.log(`[retake] 매칭 실패 — 이메일 ${email} 없음`);
+      }
       return found ? { channelId: found[3]?.trim() || null, slackIds: found[2]?.trim() || null } : null;
     } catch (e) {
       console.error("[retake] 작업자 시트 조회 실패:", e.message);
