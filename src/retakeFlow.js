@@ -31,10 +31,15 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     try {
       // 5분 캐시
       if (Date.now() - workerSheetCache.loadedAt > 300000 || !workerSheetCache.rows.length) {
-        const res    = await sheetsClient.getValues(WORKER_SHEET_ID, WORKER_SHEET_RANGE);
-        workerSheetCache.rows     = (res || []).slice(1);
-        workerSheetCache.loadedAt = Date.now();
-        console.log(`[retake] 작업자 시트 캐시 갱신 — ${workerSheetCache.rows.length}건`);
+        const res   = await sheetsClient.getValues(WORKER_SHEET_ID, WORKER_SHEET_RANGE);
+        const fresh = (res || []).slice(1);
+        if (fresh.length) {
+          workerSheetCache.rows     = fresh;
+          workerSheetCache.loadedAt = Date.now();
+          console.log(`[retake] 작업자 시트 캐시 갱신 — ${workerSheetCache.rows.length}건`);
+        } else {
+          console.warn(`[retake] 작업자 시트 재로드 실패 — 기존 캐시 유지: ${workerSheetCache.rows.length}건`);
+        }
       }
       const rows  = workerSheetCache.rows;
       console.log(`[retake] 작업자 시트 rows:${rows.length} / 찾는 이메일: ${email}`);

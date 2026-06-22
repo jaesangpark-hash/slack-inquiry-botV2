@@ -37,9 +37,14 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
 
   async function loadTitleRowsFromSheet() {
     if (Date.now() - titleCache.loadedAt < 300000 && titleCache.rows.length) return titleCache.rows;
-    titleCache.rows = await _loadMasterRows(ZHJA_SHEET_RANGE);
-    titleCache.loadedAt = Date.now();
-    console.log("[DEBUG-SHEET] '출판사 드라이브 링크' 로드:", titleCache.rows.length, "건, 마지막 3행:", JSON.stringify(titleCache.rows.slice(-3)));
+    const fresh = await _loadMasterRows(ZHJA_SHEET_RANGE);
+    if (fresh.length) {
+      titleCache.rows = fresh;
+      titleCache.loadedAt = Date.now();
+      console.log("[DEBUG-SHEET] '출판사 드라이브 링크' 로드:", titleCache.rows.length, "건, 마지막 3행:", JSON.stringify(titleCache.rows.slice(-3)));
+    } else {
+      console.warn("[title-matcher] 시트 재로드 실패 — 기존 캐시 유지:", titleCache.rows.length, "건");
+    }
     return titleCache.rows;
   }
 
