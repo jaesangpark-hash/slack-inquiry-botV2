@@ -26,6 +26,12 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
   const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE || "작업자 DB!A:F";
   const workerSheetCache   = { loadedAt: 0, rows: [] };
 
+  // Totus 도메인 이메일이 시트 B열(Slack)과 달라 E열 폴백이 필요한 팀 계정 정적 오버라이드
+  // (E열 서버 미배포 또는 범위 미설정 대비 하드 폴백)
+  const WORKER_CHANNEL_OVERRIDE = {
+    "gwc.japaneseproject@gmail.com": { channelId: "C03QFTSRNCD", slackIds: "U04EMDBL1E1" },
+  };
+
   // ── 작업자 시트 조회: 이메일 → 채널 ID (5분 캐시) ────────
   async function _getWorkerChannelId(email) {
     try {
@@ -52,12 +58,24 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
       if (found) {
         const matchedBy = foundBySlack ? "B열(Slack)" : "E열(Totus)";
         console.log(`[retake] 매칭: ${matchedBy} / 채널: ${found[3] || "없음"} / SlackID: ${found[2] || "없음"}`);
-      } else {
-        console.log(`[retake] 매칭 실패 — 이메일 ${email} 없음`);
+        return { channelId: found[3]?.trim() || null, slackIds: found[2]?.trim() || null };
       }
-      return found ? { channelId: found[3]?.trim() || null, slackIds: found[2]?.trim() || null } : null;
+      // 시트 매칭 실패 → 정적 오버라이드 폴백 (Totus 도메인 팀 계정 대비)
+      const override = WORKER_CHANNEL_OVERRIDE[email.toLowerCase()];
+      if (override) {
+        console.log(`[retake] 정적 오버라이드 매칭: ${email} → 채널: ${override.channelId}`);
+        return { channelId: override.channelId, slackIds: override.slackIds };
+      }
+      console.log(`[retake] 매칭 실패 — 이메일 ${email} 없음`);
+      return null;
     } catch (e) {
       console.error("[retake] 작업자 시트 조회 실패:", e.message);
+      // 예외 발생 시에도 정적 오버라이드 시도
+      const override = WORKER_CHANNEL_OVERRIDE[email?.toLowerCase() || ""];
+      if (override) {
+        console.log(`[retake] 예외 후 오버라이드 매칭: ${email}`);
+        return { channelId: override.channelId, slackIds: override.slackIds };
+      }
       return null;
     }
   }
