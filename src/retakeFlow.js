@@ -1132,8 +1132,11 @@ ${msgText}
       return;
     }
 
-    const manualSlackId   = view.state.values.manual_slack_id_block?.value?.value?.trim() || '';
-    const manualChannelId = view.state.values.manual_channel_id_block?.value?.value?.trim() || '';
+    const manualSlackId = view.state.values.manual_slack_id_block?.value?.value?.trim() || '';
+    const rawChannelInput = view.state.values.manual_channel_id_block?.value?.value?.trim() || '';
+    // Slack 채널 URL(https://...slack.com/archives/CXXXXXXXX) 입력 시 ID만 추출
+    const channelUrlMatch = rawChannelInput.match(/\/archives\/(C[A-Z0-9]+)/i);
+    const manualChannelId = channelUrlMatch ? channelUrlMatch[1] : rawChannelInput;
 
     if (!manualChannelId) {
       await client.chat.postMessage({ channel: body.user.id, text: '⚠️ 채널 ID를 입력해줘.' });
