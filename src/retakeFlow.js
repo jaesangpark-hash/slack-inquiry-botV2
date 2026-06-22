@@ -23,7 +23,7 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
   }
 
   const WORKER_SHEET_ID    = process.env.WORKER_SHEET_ID;
-  const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE;
+  const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE || "작업자 DB!A:F";
   const workerSheetCache   = { loadedAt: 0, rows: [] };
 
   // ── 작업자 시트 조회: 이메일 → 채널 ID (5분 캐시) ────────
