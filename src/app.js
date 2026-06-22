@@ -13,6 +13,16 @@ assertTriggerEmoji();
 const { App } = require("@slack/bolt");
 const { GoogleGenAI } = require("@google/genai");
 const { google } = require("googleapis");
+
+// Node 22 + node-fetch 3.x 비호환(Premature close) 우회:
+// googleapis 내부 HTTP 레이어(gaxios)가 node-fetch 대신 Node 내장 fetch를 쓰도록 강제.
+// Node 18+에서만 globalThis.fetch가 존재하므로 조건 체크 후 주입.
+if (typeof globalThis.fetch === "function") {
+  try {
+    const gaxios = require("gaxios");
+    gaxios.instance.defaults.fetchImplementation = globalThis.fetch;
+  } catch (_) { /* gaxios 미설치 환경 무시 */ }
+}
 const cron = require("node-cron");
 const fs   = require("fs");
 const path = require("path");
