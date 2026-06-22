@@ -588,8 +588,13 @@ JSON만 출력. 코드블록 금지.
             resolvedChannelId  = workerInfo?.channelId || null;
             resolvedSlackIds   = workerInfo?.slackIds  || null;
             console.log(`[retake] 채널 ID: ${resolvedChannelId} / Slack IDs: ${resolvedSlackIds}`);
+            // endDate는 채널 발견 여부와 무관하게 항상 저장 (수동 입력 경로 포함 미정 방지)
+            draftStore.set(draftId, {
+              ...data,
+              endDate,
+              ...(resolvedChannelId ? { workerChannelId: resolvedChannelId, workerSlackIds: resolvedSlackIds } : {}),
+            });
             if (resolvedChannelId) {
-              draftStore.set(draftId, { ...data, workerChannelId: resolvedChannelId, workerSlackIds: resolvedSlackIds, endDate });
               console.log(`[retake] 작업자 채널 ID 확보 → ${resolvedChannelId}`);
             }
           }
