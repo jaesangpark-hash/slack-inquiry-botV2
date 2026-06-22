@@ -38,15 +38,14 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
       }
       const rows  = workerSheetCache.rows;
       console.log(`[retake] 작업자 시트 rows:${rows.length} / 찾는 이메일: ${email}`);
-      // B열(Slack 이메일) 또는 E열(Totus 이메일)로 매칭
+      // B열(Slack 이메일) 전체 탐색 우선 → 실패 시 E열(Totus 이메일) 폴백
+      // 순서 보장: E열이 다른 행에 잘못 기재돼 있어도 B열 정매칭 행이 우선 반환됨
       const target = email.toLowerCase();
-      const found = rows.find(row => {
-        const slackEmail = (row[1] || "").trim().toLowerCase();
-        const totusEmail = (row[4] || "").trim().toLowerCase();
-        return slackEmail === target || (totusEmail && totusEmail === target);
-      });
+      const foundBySlack = rows.find(row => (row[1] || "").trim().toLowerCase() === target);
+      const found = foundBySlack
+        || rows.find(row => { const t = (row[4] || "").trim().toLowerCase(); return t && t === target; });
       if (found) {
-        const matchedBy = (found[4] || "").trim().toLowerCase() === target ? "E열(Totus)" : "B열(Slack)";
+        const matchedBy = foundBySlack ? "B열(Slack)" : "E열(Totus)";
         console.log(`[retake] 매칭: ${matchedBy} / 채널: ${found[3] || "없음"} / SlackID: ${found[2] || "없음"}`);
       } else {
         console.log(`[retake] 매칭 실패 — 이메일 ${email} 없음`);
