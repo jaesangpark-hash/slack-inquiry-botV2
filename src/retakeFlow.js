@@ -540,6 +540,9 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
+    // endDate 선저장 — 이후 worker 조회 실패·예외 발생 시에도 수동 입력 경로에서 참조 가능
+    draftStore.set(draftId, { ...data, endDate });
+
     try {
       const reqBody = {
         operationUuid:     data.operationUuid,
@@ -606,12 +609,14 @@ JSON만 출력. 코드블록 금지.
             resolvedChannelId  = workerInfo?.channelId || null;
             resolvedSlackIds   = workerInfo?.slackIds  || null;
             console.log(`[retake] 채널 ID: ${resolvedChannelId} / Slack IDs: ${resolvedSlackIds}`);
-            // endDate는 채널 발견 여부와 무관하게 항상 저장 (수동 입력 경로 포함 미정 방지)
-            draftStore.set(draftId, {
-              ...data,
-              endDate,
-              ...(resolvedChannelId ? { workerChannelId: resolvedChannelId, workerSlackIds: resolvedSlackIds } : {}),
-            });
+            // 채널 정보만 추가 — endDate는 이미 선저장됨
+            if (resolvedChannelId) {
+              draftStore.set(draftId, {
+                ...(draftStore.get(draftId) || data),
+                workerChannelId: resolvedChannelId,
+                workerSlackIds:  resolvedSlackIds,
+              });
+            }
             if (resolvedChannelId) {
               console.log(`[retake] 작업자 채널 ID 확보 → ${resolvedChannelId}`);
             }
