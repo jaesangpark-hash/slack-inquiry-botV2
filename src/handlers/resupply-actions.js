@@ -123,32 +123,145 @@ module.exports = function registerResupplyActions(app, deps) {
         ],
       });
 
-      // ② PM 채널 메시지 스레드에 APM 멘션 + 작업자 완료 안내 버튼
-      if (apmUserId) {
-        const workerNotifyMeta = JSON.stringify({
-          originalChannelId, originalTs, apmUserId, workName, episode,
-        });
-        await client.chat.postMessage({
-          channel: body.channel.id,
-          thread_ts: body.message.ts,
-          text: `<@${apmUserId}> 원본 수급이 완료되었습니다. 파일 교체 후 아래 버튼으로 작업자에게 안내해줘.`,
-          blocks: [
-            { type: "section", text: { type: "mrkdwn",
-              text: `<@${apmUserId}> 원본 수급이 완료되었습니다.\n파일 교체 완료 후 아래 버튼으로 작업자에게 안내해줘.` } },
-            { type: "actions", elements: [
-              { type: "button", action_id: "resupply_notify_worker",
-                text: { type: "plain_text", text: "📢 작업자에게 완료 안내" },
-                style: "primary", value: workerNotifyMeta },
-            ]},
-          ],
-        });
-      }
+      // ② PM 채널 메시지 스레드에 APM 멘션 + 원본 이관·작업자 안내 버튼
+      const sharedMeta = JSON.stringify({
+        originalChannelId, originalTs, apmUserId, workName, episode,
+        resupplyRowIndex: meta.resupplyRowIndex || null,
+      });
+      const sectionText = apmUserId
+        ? `<@${apmUserId}> 원본 수급이 완료되었습니다.\n파일을 이 스레드에 올린 뒤 *원본 이관* 버튼을 눌러줘.`
+        : `⚠️ APM을 자동으로 찾지 못했어. 담당 APM을 직접 태그한 후 파일을 올리고 *원본 이관* 버튼을 눌러줘.\n*작품: ${workName || "-"} / ${episode || "-"}화*`;
+      await client.chat.postMessage({
+        channel: body.channel.id,
+        thread_ts: body.message.ts,
+        text: apmUserId
+          ? `<@${apmUserId}> 원본 수급이 완료되었습니다. 파일 이관 후 작업자에게 안내해줘.`
+          : `⚠️ APM을 찾지 못했어. 직접 태그하고 진행해줘.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: sectionText } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "resupply_upload_file",
+              text: { type: "plain_text", text: "📤 원본 이관" },
+              value: sharedMeta },
+            { type: "button", action_id: "resupply_notify_worker",
+              text: { type: "plain_text", text: "📢 작업자에게 완료 안내" },
+              style: "primary", value: sharedMeta },
+          ]},
+        ],
+      });
 
       // ③ 시트 취소선 처리
       if (meta.resupplyRowIndex) {
         await strikethroughResupplyRow(meta.resupplyRowIndex);
       }
     } catch (e) { console.error("file_resupply_done 오류:", e.message); }
+  });
+
+  // ── 원본 이관 버튼 ────────────────────────────────────────
+  app.action("resupply_upload_file", async ({ ack, body, client }) => {
+    await ack();
+    try {
+      const meta = JSON.parse(body.actions[0].value || "{}");
+      const { originalChannelId, originalTs, apmUserId, workName, episode } = meta;
+      const BASE  = process.env.PLATFORM_API_URL;
+      const TOKEN = process.env.PLATFORM_API_TOKEN;
+
+      // 1. 버튼이 속한 스레드에서 파일 스캔
+      const repliesRes = await client.conversations.replies({
+        channel: body.channel.id,
+        ts: body.message.thread_ts,
+      });
+      const files = (repliesRes.messages || []).flatMap(m => m.files || []);
+
+      if (!files.length) {
+        await client.chat.postMessage({
+          channel: body.channel.id,
+          thread_ts: body.message.thread_ts,
+          text: "⚠️ 스레드에 파일이 없어. 파일을 이 스레드에 첨부한 뒤 다시 눌러줘.",
+        });
+        return;
+      }
+
+      // 2. projectUuid 조회
+      const projRes  = await fetch(`${BASE}/api/v1/projects?name=${encodeURIComponent(workName || "")}`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      const projJson = await projRes.json();
+      if (!projJson.success || !projJson.data?.length) {
+        await client.chat.postMessage({
+          channel: body.channel.id,
+          thread_ts: body.message.thread_ts,
+          text: `⚠️ TOTUS에서 "${workName}" 프로젝트를 찾지 못했어. 작품명을 확인해줘.`,
+        });
+        return;
+      }
+      const projectUuid = projJson.data[0].uuid;
+
+      // 3. 파일별 다운로드 → TOTUS 업로드
+      const results = [];
+      for (const file of files) {
+        try {
+          const dlRes = await fetch(file.url_private_download, {
+            headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+          });
+          if (!dlRes.ok) throw new Error(`Slack 다운로드 실패 (${dlRes.status})`);
+          const buffer = Buffer.from(await dlRes.arrayBuffer());
+
+          const formData = new FormData();
+          formData.append("file", new Blob([buffer], { type: file.mimetype || "application/octet-stream" }), file.name);
+          formData.append("textLanguageCode", "LGC0003"); // 일본어 원본
+
+          const uploadRes  = await fetch(`${BASE}/api/v1/projects/${projectUuid}/files`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${TOKEN}` },
+            body: formData,
+          });
+          const uploadJson = await uploadRes.json();
+          if (!uploadJson.success) throw new Error(uploadJson.error?.message || "업로드 실패");
+
+          results.push({ name: file.name, ok: true });
+          console.log(`[resupply-upload] 이관 완료: ${file.name} → ${projectUuid}`);
+        } catch (err) {
+          results.push({ name: file.name, ok: false, error: err.message });
+          console.error(`[resupply-upload] 실패: ${file.name}`, err.message);
+        }
+      }
+
+      const succeeded = results.filter(r => r.ok);
+      const failed    = results.filter(r => !r.ok);
+      const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+
+      let resultText = "";
+      if (succeeded.length) resultText += `✅ 이관 완료: ${succeeded.map(r => r.name).join(", ")}`;
+      if (failed.length)    resultText += `${succeeded.length ? "\n" : ""}❌ 실패: ${failed.map(r => `${r.name} (${r.error})`).join(", ")}`;
+
+      const notifyMeta = JSON.stringify({ originalChannelId, originalTs, apmUserId, workName, episode });
+      await client.chat.update({
+        channel: body.channel.id,
+        ts: body.message.ts,
+        text: resultText,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: resultText } },
+          { type: "context", elements: [
+            { type: "mrkdwn", text: `📤 *원본 이관* — <@${body.user.id}> · ${now}` },
+          ]},
+          ...(succeeded.length ? [{ type: "actions", elements: [
+            { type: "button", action_id: "resupply_notify_worker",
+              text: { type: "plain_text", text: "📢 작업자에게 완료 안내" },
+              style: "primary", value: notifyMeta },
+          ]}] : []),
+        ],
+      });
+    } catch (e) {
+      console.error("resupply_upload_file 오류:", e.message);
+      try {
+        await client.chat.postMessage({
+          channel: body.channel.id,
+          thread_ts: body.message.thread_ts,
+          text: `⚠️ 원본 이관 중 오류: ${e.message}`,
+        });
+      } catch (_) {}
+    }
   });
 
   // ── 작업자에게 완료 안내 버튼 ─────────────────────────────
