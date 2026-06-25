@@ -30,6 +30,7 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
   // (E열 서버 미배포 또는 범위 미설정 대비 하드 폴백)
   const WORKER_CHANNEL_OVERRIDE = {
     "gwc.japaneseproject@gmail.com": { channelId: "C03QFTSRNCD", slackIds: "U04EMDBL1E1" },
+    "business@kisaient.com":         { channelId: "C09MC4FDZEH", slackIds: "U09N9STJ2P2" },
   };
 
   // ── 작업자 시트 조회: 이메일 → 채널 ID (5분 캐시) ────────
