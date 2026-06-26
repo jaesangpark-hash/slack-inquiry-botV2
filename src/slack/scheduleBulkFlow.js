@@ -32,20 +32,18 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     return `${parseInt(mm)}/${parseInt(dd)}`;
   }
 
-  // ── 그룹 텍스트 파서 ──────────────────────────────────────────────
-  // "1-4, 5-8, 9-10" → [{label:"1-4화", episodes:[1,2,3,4]}, ...]
-  function parseGroups(text) {
-    return (text || "").split(",").map(s => s.trim()).filter(Boolean).map(token => {
-      const m = token.match(/^(\d+)-(\d+)$/);
-      if (m) {
-        const [, a, b] = m;
-        const eps = [];
-        for (let i = +a; i <= +b; i++) eps.push(i);
-        return { label: `${a}-${b}화`, episodes: eps };
-      }
-      const n = parseInt(token, 10);
-      return isNaN(n) ? null : { label: `${n}화`, episodes: [n] };
-    }).filter(Boolean);
+  // ── 회차 범위 + 그룹당 회차 수 → 그룹 배열 ─────────────────────
+  // startEp=1, endEp=11, groupSize=3 → [{label:"1-3화",[1,2,3]}, ..., {label:"10-11화",[10,11]}]
+  function buildGroups(startEp, endEp, groupSize) {
+    const groups = [];
+    for (let i = startEp; i <= endEp; i += groupSize) {
+      const gEnd = Math.min(i + groupSize - 1, endEp);
+      const episodes = [];
+      for (let ep = i; ep <= gEnd; ep++) episodes.push(ep);
+      const label = i === gEnd ? `${i}화` : `${i}-${gEnd}화`;
+      groups.push({ label, episodes });
+    }
+    return groups;
   }
 
   // ── 일정 계산 ─────────────────────────────────────────────────────
@@ -66,9 +64,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         day = addDays(opEnd, 1);
       }
       const groupEnd = opSchedule.length ? opSchedule[opSchedule.length - 1].endDate : cursor;
-      result.push({ groupLabel: group.label, episodes: group.episodes, startDate: cursor, endDate: groupEnd, opSchedule });
-      // 다음 그룹 시작: 이 그룹 마감 익일 + gapDays
-      cursor = addDays(groupEnd, 1 + gapDays);
+      const groupStart = cursor;
+      result.push({ groupLabel: group.label, episodes: group.episodes, startDate: groupStart, endDate: groupEnd, opSchedule });
+      // 다음 그룹 시작 = 이 그룹 시작 + gapDays
+      // (같은 오퍼레이션 마감일 간격이 gap이 되도록: 그룹1 번역마감 + N일 = 그룹2 번역마감)
+      cursor = addDays(groupStart, gapDays);
     }
     return result;
   }
@@ -217,8 +217,8 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       });
       lines.push(`${"납품일".padEnd(8, " ")}  ${toMD(group.endDate)} ✅`);
       if (!isLast) {
-        const nextStart = addDays(group.endDate, 1 + gapDays);
-        lines.push(`↓ 다음 그룹: ${toMD(group.endDate)} 익일 + 갭 ${gapDays}일 = ${toMD(nextStart)}`);
+        const nextStart = addDays(group.startDate, gapDays);
+        lines.push(`↓ 다음 그룹 시작: ${toMD(group.startDate)} + 갭 ${gapDays}일 = ${toMD(nextStart)}`);
       }
 
       blocks.push({
@@ -282,10 +282,20 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
         },
         {
-          type: "input", block_id: "groups_text",
-          label: { type: "plain_text", text: "회차 그룹 구분" },
-          element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 1-4, 5-8, 9-10" } },
-          hint: { type: "plain_text", text: "쉼표로 구분, 연속 회차는 대시 (1-4 = 1·2·3·4화)" },
+          type: "input", block_id: "ep_start",
+          label: { type: "plain_text", text: "시작 화수" },
+          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+        },
+        {
+          type: "input", block_id: "ep_end",
+          label: { type: "plain_text", text: "끝 화수" },
+          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+        },
+        {
+          type: "input", block_id: "group_size",
+          label: { type: "plain_text", text: "그룹당 회차 수" },
+          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "3", min_value: "1" },
+          hint: { type: "plain_text", text: "나머지 회차는 마지막 그룹으로 자동 묶음 (예: 1-11화, 3화 그룹 → 1-3 / 4-6 / 7-9 / 10-11)" },
         },
         {
           type: "input", block_id: "first_start",
@@ -296,7 +306,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           type: "input", block_id: "gap_days",
           label: { type: "plain_text", text: "그룹간 갭 (일)" },
           element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "7", min_value: "0", max_value: "365" },
-          hint: { type: "plain_text", text: "직전 그룹 마지막 날 익일 + N일 = 다음 그룹 시작일" },
+          hint: { type: "plain_text", text: "이전 그룹 시작일 + N일 = 다음 그룹 시작일 (번역 마감 기준 N일 간격)" },
         },
       ],
     };
@@ -399,12 +409,14 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const { draftId, dmChannelId } = JSON.parse(view.private_metadata || "{}");
     const v = view.state.values;
 
-    const workName   = v.work_name?.value?.value?.trim()    || "";
-    const groupsText = v.groups_text?.value?.value?.trim()  || "";
-    const firstStart = v.first_start?.value?.selected_date  || "";
-    const gapDays    = parseInt(v.gap_days?.value?.value    || "7", 10);
+    const workName   = v.work_name?.value?.value?.trim()   || "";
+    const epStart    = parseInt(v.ep_start?.value?.value   || "1", 10);
+    const epEnd      = parseInt(v.ep_end?.value?.value     || "1", 10);
+    const groupSize  = parseInt(v.group_size?.value?.value || "3", 10);
+    const firstStart = v.first_start?.value?.selected_date || "";
+    const gapDays    = parseInt(v.gap_days?.value?.value   || "7", 10);
 
-    const groups = parseGroups(groupsText);
+    const groups = buildGroups(epStart, epEnd, groupSize);
     if (!groups.length || !workName || !firstStart) return;
 
     // 즉시 로딩 모달 열기 (trigger_id는 제출 후 3초 유효)
