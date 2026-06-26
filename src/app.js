@@ -157,6 +157,8 @@ const { handleWorkerRelay } = require("./workerRelayFlow")(app, {
   matchWorkTitleFromSheet, generateDraftId, draftStore, sheetsClient,
 });
 
+require("./slack/scheduleBulkFlow")(app, { draftStore, generateDraftId });
+
 // 인증 방식: service account JSON 파일 대신 GOOGLE_CREDENTIALS env에 JSON 문자열을 직접 저장.
 // 형식: GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}'
 // .env 파일에 한 줄로 넣으면 되고, 별도 service-account.json 파일을 둘 필요가 없다.

@@ -153,20 +153,26 @@ module.exports = function (app, deps) {
       if (!linkInfo) {
         const BOT_KEYWORDS = {
           재수급봇:    { label: "원본 재수급 요청",   action: "direct_resupply_btn" },
-          스케줄봇:    { label: "스케줄 조회/변경",   action: "direct_schedule_btn" },
+          스케줄봇:    { label: "스케줄 조회/변경",   action: "direct_schedule_btn",
+                         extra: [{ label: "📅 일정 일괄 변경", action: "schbulk_open_basic_modal" }] },
           문의봇:      { label: "일반 문의 초안 작성", action: "direct_inquiry_btn" },
           파일순서봇:  { label: "파일 순서 수정",      action: "direct_fileorder_btn" },
           태스크생성봇: { label: "태스크 재생성",      action: "direct_retake_btn" },
         };
         const matched = Object.entries(BOT_KEYWORDS).find(([kw]) => userText.includes(kw));
         if (matched) {
-          const [kw, { label, action }] = matched;
+          const [kw, config] = matched;
+          const { label, action, extra } = config;
+          const extraBtns = (extra || []).map(e => ({
+            type: "button", action_id: e.action, text: { type: "plain_text", text: e.label }, value: "direct",
+          }));
           await app.client.chat.update({ channel: message.channel, ts: progressMsg.ts,
             text: `${kw} 소환됐어. 아래 버튼을 눌러서 정보를 입력해줘.`,
             blocks: [
               { type: "section", text: { type: "mrkdwn", text: `*${kw}* 소환됐어. 버튼을 눌러서 ${label} 정보를 입력해줘.` }},
               { type: "actions", elements: [
                 { type: "button", action_id: action, text: { type: "plain_text", text: `${label} 입력하기` }, style: "primary", value: "direct" },
+                ...extraBtns,
               ]},
             ],
           });
