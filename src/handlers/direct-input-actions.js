@@ -18,6 +18,7 @@
  *   postInquiryToTargetChannel: Function,
  *   TARGET_CHANNEL_ID: string,
  *   handleWorkerRelay: Function,
+ *   checkInquiryDone: Function,
  * }} deps
  */
 module.exports = function registerDirectInputActions(app, deps) {
@@ -35,6 +36,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     postInquiryToTargetChannel,
     TARGET_CHANNEL_ID,
     handleWorkerRelay,
+    checkInquiryDone,
   } = deps;
 
   // ── 문의봇 완료 버튼 ─────────────────────────────────────
@@ -56,6 +58,12 @@ module.exports = function registerDirectInputActions(app, deps) {
           ]},
         ],
       });
+
+      // 히스토리 시트 완료 체크박스 처리
+      const historyRowIndex = draft?.historyRowIndex || null;
+      if (historyRowIndex && typeof checkInquiryDone === "function") {
+        await checkInquiryDone(historyRowIndex);
+      }
 
       // PM 채널 메시지 스레드에 답변 작성 버튼 댓글 추가
       if (submitterId) {

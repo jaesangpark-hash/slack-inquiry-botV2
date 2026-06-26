@@ -73,32 +73,30 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
   }
 
   /**
-   * 재수급 완료 처리 — 시트 해당 행에 취소선을 적용한다.
+   * 재수급 완료 처리 — L열(index 11) 체크박스를 true로 변경한다.
    * @param {number|null} rowIndex  appendResupplyRecord 반환값
    */
-  async function strikethroughResupplyRow(rowIndex) {
+  async function checkResupplyDone(rowIndex) {
     if (!rowIndex) return;
     try {
-      await sheetsClient.batchUpdate(resupplySheetId, [
-        {
-          repeatCell: {
-            range: {
-              sheetId: resupplyGridSheetId,
-              startRowIndex: rowIndex - 1,
-              endRowIndex: rowIndex,
-              startColumnIndex: 0,
-              endColumnIndex: 8,
-            },
-            cell: { userEnteredFormat: { textFormat: { strikethrough: true } } },
-            fields: "userEnteredFormat.textFormat.strikethrough",
+      await sheetsClient.batchUpdate(resupplySheetId, [{
+        updateCells: {
+          range: {
+            sheetId: resupplyGridSheetId,
+            startRowIndex: rowIndex - 1,
+            endRowIndex: rowIndex,
+            startColumnIndex: 11,
+            endColumnIndex: 12,
           },
+          rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
+          fields: "userEnteredValue.boolValue",
         },
-      ]);
-      console.log("[resupply-sheet] 취소선 처리 완료 — row:", rowIndex);
+      }]);
+      console.log("[resupply-sheet] 완료 처리 — row:", rowIndex);
     } catch (e) {
-      console.error("[resupply-sheet] 취소선 실패:", e.message);
+      console.error("[resupply-sheet] 완료 처리 실패:", e.message);
     }
   }
 
-  return { appendResupplyRecord, strikethroughResupplyRow };
+  return { appendResupplyRecord, checkResupplyDone };
 };

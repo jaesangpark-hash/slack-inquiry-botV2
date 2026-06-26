@@ -19,7 +19,7 @@ module.exports = function registerResupplyActions(app, deps) {
     buildFileInquiryBlocks,
     buildFileInquiryMessage,
     appendResupplyRecord,
-    strikethroughResupplyRow,
+    checkResupplyDone,
     PM_REQUEST_CHANNEL_ID,
     // 납품일·APM 조회 (선택 주입 — 미주입 시 조회 skip)
     matchWorkTitleFromSheet,
@@ -150,9 +150,9 @@ module.exports = function registerResupplyActions(app, deps) {
         ],
       });
 
-      // ③ 시트 취소선 처리
+      // ③ 재수급 시트 완료 체크박스 처리
       if (meta.resupplyRowIndex) {
-        await strikethroughResupplyRow(meta.resupplyRowIndex);
+        await checkResupplyDone(meta.resupplyRowIndex);
       }
     } catch (e) { console.error("file_resupply_done 오류:", e.message); }
   });

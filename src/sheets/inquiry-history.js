@@ -1,33 +1,63 @@
-// 단일 책임: 문의 이력을 시트에 append한다 (KPI reservation)
+// 단일 책임: 문의 이력을 시트에 append·완료 처리한다
 "use strict";
 
 /**
  * @param {{
- *   sheetsClient: { append: function },
+ *   sheetsClient: { append: function, batchUpdate: function },
  *   historySheetId: string|undefined,
  *   historySheetRange: string|undefined,
+ *   historyGridSheetId: number,
  * }} deps
- *   - sheetsClient: sheets-client.js transport (append 메서드 보유)
- *   - historySheetId: INQUIRY_HISTORY_SHEET_ID env 값 (미설정 시 undefined → early return)
- *   - historySheetRange: INQUIRY_HISTORY_SHEET_RANGE env 값 (미설정 시 undefined → early return)
  */
-module.exports = function createInquiryHistory({ sheetsClient, historySheetId, historySheetRange }) {
+module.exports = function createInquiryHistory({ sheetsClient, historySheetId, historySheetRange, historyGridSheetId }) {
   /**
    * 문의 이력을 시트에 append한다.
-   * INQUIRY_HISTORY_SHEET_ID / INQUIRY_HISTORY_SHEET_RANGE 미설정 시 early return (KPI reservation).
-   * @param {object} draft
-   * @param {string} submitterId  Slack user ID
+   * @returns {Promise<number|null>} rowIndex (완료 처리용)
    */
   async function appendInquiryHistory(draft, submitterId) {
-    // 문의 이력 시트 미지정 — INQUIRY_HISTORY_SHEET_ID / INQUIRY_HISTORY_SHEET_RANGE 환경변수 추가 후 활성화
-    if (!historySheetId || !historySheetRange) return;
+    if (!historySheetId || !historySheetRange) return null;
     try {
       const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-      await sheetsClient.append(historySheetId, historySheetRange, [
-        [now, draft.workName||"", draft.workNameKo||"", draft.inquiryType||"", draft.summary||"", draft.actionRequired||"", draft.sourceLink||"", submitterId||""],
-      ], { valueInputOption: "USER_ENTERED" });
-    } catch (e) { console.error("이력 기록 실패:", e.message); }
+      const appendRes = await sheetsClient.append(historySheetId, historySheetRange, [
+        [now, draft.workName||"", draft.workNameKo||"", draft.inquiryType||"", draft.summary||"", draft.actionRequired||"", draft.sourceLink||"", submitterId||"", false],
+      ], { valueInputOption: "USER_ENTERED", insertDataOption: "INSERT_ROWS" });
+
+      const updatedRange = appendRes.data.updates?.updatedRange || "";
+      const rowMatch = updatedRange.match(/(\d+)$/);
+      const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
+      console.log("[inquiry-history] 기록 완료 — row:", rowIndex);
+      return rowIndex;
+    } catch (e) {
+      console.error("[inquiry-history] 기록 실패:", e.message);
+      return null;
+    }
   }
 
-  return { appendInquiryHistory };
+  /**
+   * 문의 완료 처리 — I열(index 8) 체크박스를 true로 변경한다.
+   * @param {number|null} rowIndex
+   */
+  async function checkInquiryDone(rowIndex) {
+    if (!rowIndex || !historySheetId || !historyGridSheetId) return;
+    try {
+      await sheetsClient.batchUpdate(historySheetId, [{
+        updateCells: {
+          range: {
+            sheetId: historyGridSheetId,
+            startRowIndex: rowIndex - 1,
+            endRowIndex: rowIndex,
+            startColumnIndex: 8,
+            endColumnIndex: 9,
+          },
+          rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
+          fields: "userEnteredValue.boolValue",
+        },
+      }]);
+      console.log("[inquiry-history] 완료 처리 — row:", rowIndex);
+    } catch (e) {
+      console.error("[inquiry-history] 완료 처리 실패:", e.message);
+    }
+  }
+
+  return { appendInquiryHistory, checkInquiryDone };
 };

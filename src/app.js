@@ -118,12 +118,13 @@ const processedMessageTs = new Set();
 const draftStore         = new Map();
 
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
-const { appendInquiryHistory } = createInquiryHistory({
+const { appendInquiryHistory, checkInquiryDone } = createInquiryHistory({
   sheetsClient,
   historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
   historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
+  historyGridSheetId: 268190314,
 });
-const { appendResupplyRecord, strikethroughResupplyRow } = createResupplyRecord({
+const { appendResupplyRecord, checkResupplyDone } = createResupplyRecord({
   sheetsClient,
   resupplySheetId: RESUPPLY_SHEET_ID,
   resupplySheetRange: RESUPPLY_SHEET_RANGE,
@@ -222,7 +223,7 @@ const {
 // matchWorkTitleFromSheet / matchWorkTitleByTokens / matchWorkTitleWithCandidates → src/sheets/title-matcher.js
 
 // ── 이력 기록 / 재수급 시트 write → src/sheets/inquiry-history.js + src/sheets/resupply-record.js ──
-// appendInquiryHistory / appendResupplyRecord / strikethroughResupplyRow (R4 수렴 완료 — sheetsClient 경유)
+// appendInquiryHistory / checkInquiryDone / appendResupplyRecord / checkResupplyDone (R4 수렴 완료 — sheetsClient 경유)
 
 // ── 납품 시트 조회 ────────────────────────────────────────
 // parseEpisodeNumbers / fetchDeliveryDate → src/sheets/delivery-date.js
@@ -238,7 +239,7 @@ require("./handlers/resupply-actions")(app, {
   buildFileInquiryBlocks,
   buildFileInquiryMessage,
   appendResupplyRecord,
-  strikethroughResupplyRow,
+  checkResupplyDone,
   PM_REQUEST_CHANNEL_ID,
   matchWorkTitleFromSheet,
   fetchDeliveryDate,
@@ -269,6 +270,7 @@ require("./handlers/direct-input-actions")(app, {
   postInquiryToTargetChannel,
   TARGET_CHANNEL_ID,
   handleWorkerRelay,
+  checkInquiryDone,
 });
 
 // ── 드래프트 UI ───────────────────────────────────────────
@@ -279,7 +281,10 @@ async function postInquiryToTargetChannel(client, draft, submitterId) {
   const msg = buildFinalMainMessage({ submitterId, workName: draft.workName, workNameKo: draft.workNameKo, episode: draft.episode, inquiryType: draft.inquiryType, inquiryContent: draft.inquiryContent, actionRequired: draft.actionRequired, draftId: draft.draftId });
   const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
   await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
-  await appendInquiryHistory(draft, submitterId);
+  const historyRowIndex = await appendInquiryHistory(draft, submitterId);
+  if (historyRowIndex && draft.draftId) {
+    draftStore.set(draft.draftId, { ...draft, historyRowIndex });
+  }
   return postRes;
 }
 
