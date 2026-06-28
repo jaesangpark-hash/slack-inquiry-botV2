@@ -374,8 +374,21 @@ JSON만 출력. 코드블록 금지.
     const requesterWorker = _detectRequesterOp(requesterEmail, workers);
     console.log(`[workerRelay] requesterWorker: ${JSON.stringify(requesterWorker)}`);
     if (!requesterWorker) {
+      const pendingId  = generateDraftId();
+      draftStore.set(pendingId, { _workerPick: true, data, workers, dmChannelId: dmChannel });
+      const workerBtns = workers.slice(0, 5).map((w, i) => ({
+        type: "button", action_id: `wr_pick_target_${i}`,
+        text: { type: "plain_text", text: `${w.opName} · ${w.workerName || w.workerEmail}`.slice(0, 75) },
+        value: JSON.stringify({ pendingId, idx: i }),
+      }));
       await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ 원문 작성자(${requesterName || requesterEmail})를 Totus 작업자 목록에서 찾을 수 없어. 직접 확인해줘.` });
+        text: `⚠️ 원문 작성자(${requesterName || requesterEmail})를 Totus 작업자 목록에서 찾지 못했어. 전달 대상을 직접 선택해줘.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `⚠️ *원문 작성자 미매핑* — 전달 대상을 아래서 선택해줘.\n_(원문 작성자: ${requesterName || requesterEmail})_` } },
+          { type: "actions", elements: workerBtns },
+        ],
+      });
       return;
     }
 
@@ -383,8 +396,22 @@ JSON만 출력. 코드블록 금지.
     const targetWorker = _resolveTargetWorker(requesterWorker.opCode, workers);
     console.log(`[workerRelay] targetWorker: ${JSON.stringify(targetWorker)}`);
     if (!targetWorker) {
+      const otherWorkers = workers.filter(w => w.workerEmail !== requesterWorker.workerEmail);
+      const pendingId    = generateDraftId();
+      draftStore.set(pendingId, { _workerPick: true, data, workers: otherWorkers, requesterWorker, dmChannelId: dmChannel });
+      const workerBtns = otherWorkers.slice(0, 5).map((w, i) => ({
+        type: "button", action_id: `wr_pick_target_${i}`,
+        text: { type: "plain_text", text: `${w.opName} · ${w.workerName || w.workerEmail}`.slice(0, 75) },
+        value: JSON.stringify({ pendingId, idx: i }),
+      }));
       await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ 전달 대상 작업자를 결정하지 못했어. Totus를 직접 확인해줘.` });
+        text: `⚠️ 전달 대상을 자동으로 결정하지 못했어. 아래서 직접 선택해줘.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `⚠️ *오퍼레이션 미매핑* — 전달 대상을 아래서 선택해줘.` } },
+          { type: "actions", elements: workerBtns },
+        ],
+      });
       return;
     }
 
@@ -648,64 +675,65 @@ JSON만 출력. 코드블록 금지.
     const targetDisplayName = _sid ? `<@${_sid}>` : (workerInfo?.name || data.targetWorkerName || data.targetWorkerEmail);
 
     if (!channelId) {
+      const retryId = generateDraftId();
+      draftStore.set(retryId, { _channelRetry: true, draftId, dmChannelId: data.dmChannelId, targetDisplayName, targetOpName: data.targetOpName });
       await client.chat.postMessage({ channel: data.dmChannelId,
-        text: `⚠️ ${targetDisplayName}의 채널 ID를 작업자 DB에서 찾을 수 없어. 직접 연락해줘.` });
-      draftStore.delete(draftId);
+        text: `⚠️ ${targetDisplayName}의 채널 ID를 작업자 DB에서 찾을 수 없어.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `⚠️ *${targetDisplayName}(${data.targetOpName})* 채널 ID가 DB에 없어. 채널 ID를 직접 입력하거나 직접 연락해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "wr_manual_channel_input", style: "primary",
+              text: { type: "plain_text", text: "📨 채널 직접 입력" },
+              value: retryId },
+          ]},
+        ],
+      });
       return;
     }
 
     // 채널 조인 시도
     try { await client.conversations.join({ channel: channelId }).catch(() => {}); } catch (_) {}
+    await _sendToWorkerChannel(client, data, channelId, targetDisplayName, draftId);
+  });
 
-    // B 작업자 채널에 메시지 전송
-    // - 번역 작업자 대상: 항상 일본어. action_required만 번역, corrections/missingItems 원문 그대로
-    // - 식자 작업자 대상: sourceLang (ko/en/ja) 에 맞는 언어로
-    let msgHeader, msgContent, msgReplyBtn;
+  // ── 작업자 채널 메시지 전송 헬퍼 (wr_send + 채널 직접 입력 공용) ──
+  async function _sendToWorkerChannel(client, data, channelId, targetDisplayName, draftId) {
     const srcLang = data.sourceLang || "ko";
+    let msgHeader, msgContent, msgReplyBtn;
 
     if (data.targetIsTranslator) {
-      // ── 번역 작업자 → 일본어 ──────────────────────────────
       const typeJa   = await _translateToJa(TYPE_LABEL[data.relayType] || data.relayType);
       const _epLabelJa = (data.episodeList || []).length > 1
         ? `${data.episodeList[0]}～${data.episodeList[data.episodeList.length-1]}話`
         : (data.episodeLabel?.replace("화","話") || `${data.episode || ""}話`);
       const _targetMentionJa = targetDisplayName.startsWith("<@") ? targetDisplayName : "";
       msgHeader = `${_targetMentionJa}\n*📨 ${typeJa}*\n*作品:* ${data.workNameJa || data.workName}　*話:* ${_epLabelJa}\n*担当者:* ${data.requesterMention}`;
-
-      // action_required만 일본어 번역, corrections/missingItems는 원문 그대로
       const _actionJa = await _translateToJa(data.actionRequired || data.inquiryDetail).catch(() => data.inquiryDetail);
       let _bodyJa = `*依頼内容*\n${_actionJa}`;
       if ((data.corrections || []).length > 0) {
         _bodyJa += "\n\n*修正内容*";
-        data.corrections.forEach(c => {
-          _bodyJa += `\n*修正前:*\n\`\`\`${c.before}\`\`\`\n*修正後:*\n\`\`\`${c.after}\`\`\``;
-        });
+        data.corrections.forEach(c => { _bodyJa += `\n*修正前:*\n\`\`\`${c.before}\`\`\`\n*修正後:*\n\`\`\`${c.after}\`\`\``; });
       }
       if ((data.missingItems || []).length > 0) {
-        // missingItems는 원문 그대로 (번역 제외)
         _bodyJa += "\n\n*不足箇所*\n" + (data.missingItems || []).map(m => `• ${m}`).join("\n");
       }
       msgContent  = _bodyJa;
       msgReplyBtn = JA_UI.replyBtn;
 
     } else if (srcLang === "en") {
-      // ── 식자 작업자 → 영어 ───────────────────────────────
-      const typeEn   = TYPE_LABEL[data.relayType] || data.relayType; // 유형은 그대로(한국어도 무방)
+      const typeEn = TYPE_LABEL[data.relayType] || data.relayType;
       const _epLabelEn = (data.episodeList || []).length > 1
         ? `Ep.${data.episodeList[0]}-${data.episodeList[data.episodeList.length-1]}`
         : `Ep.${data.episode || ""}`;
       const _targetMentionEn = targetDisplayName.startsWith("<@") ? targetDisplayName : "";
       const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : "";
       msgHeader = `${_targetMentionEn}\n*📨 ${typeEn}*\n*Title:* ${data.workName}　*Episode:* ${_epLabelEn}\n*Manager:* ${_apmMention}`;
-
-      // action_required 영어 번역
       const _actionEn = await _translateTo(data.actionRequired || data.inquiryDetail, "en").catch(() => data.actionRequired || data.inquiryDetail);
       let _bodyEn = `*Request*\n${_actionEn}`;
       if ((data.corrections || []).length > 0) {
         _bodyEn += "\n\n*Corrections*";
-        data.corrections.forEach(c => {
-          _bodyEn += `\n*Before:*\n\`\`\`${c.before}\`\`\`\n*After:*\n\`\`\`${c.after}\`\`\``;
-        });
+        data.corrections.forEach(c => { _bodyEn += `\n*Before:*\n\`\`\`${c.before}\`\`\`\n*After:*\n\`\`\`${c.after}\`\`\``; });
       }
       if ((data.missingItems || []).length > 0) {
         _bodyEn += "\n\n*Missing Items*\n" + (data.missingItems || []).map(m => `• ${m}`).join("\n");
@@ -714,20 +742,16 @@ JSON만 출력. 코드블록 금지.
       msgReplyBtn = EN_UI.replyBtn;
 
     } else {
-      // ── 식자 작업자 → 한국어 (ko 또는 ja 원문) ──────────
       const _epLabelKo = (data.episodeList || []).length > 1
         ? `${data.episodeList[0]}-${data.episodeList[data.episodeList.length-1]}화`
         : (data.episodeLabel || `${data.episode || ""}화`);
       const _targetMentionKo = targetDisplayName.startsWith("<@") ? targetDisplayName : "";
       const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : "";
       msgHeader = `${_targetMentionKo}\n*📨 ${TYPE_LABEL[data.relayType] || data.relayType}*\n*작품:* ${data.workName}　*회차:* ${_epLabelKo}\n*담당자:* ${_apmMention}`;
-
       let _bodyKo = `*작업 요청*\n${data.actionRequired || data.inquiryDetail}`;
       if ((data.corrections || []).length > 0) {
         _bodyKo += "\n\n*수정 내용*";
-        data.corrections.forEach(c => {
-          _bodyKo += `\n*수정 전:*\n\`\`\`${c.before}\`\`\`\n*수정 후:*\n\`\`\`${c.after}\`\`\``;
-        });
+        data.corrections.forEach(c => { _bodyKo += `\n*수정 전:*\n\`\`\`${c.before}\`\`\`\n*수정 후:*\n\`\`\`${c.after}\`\`\``; });
       }
       if ((data.missingItems || []).length > 0) {
         _bodyKo += "\n\n*누락 위치*\n" + (data.missingItems || []).map(m => `• ${m}`).join("\n");
@@ -736,21 +760,17 @@ JSON만 출력. 코드블록 금지.
       msgReplyBtn = "✏️ 답변하기";
     }
 
-    // 메시지 블록 구성: Reply 버튼은 "번역문 누락"만 표시
     const messageBlocks = [
       { type: "section", text: { type: "mrkdwn", text: msgHeader } },
       { type: "divider" },
       { type: "section", text: { type: "mrkdwn", text: msgContent } },
     ];
-
-    // "번역문 누락"일 때만 Reply 버튼 추가
     if (data.relayType === "번역문 누락") {
       messageBlocks.push({
         type: "actions", elements: [
           { type: "button", action_id: "wr_worker_reply",
             text: { type: "plain_text", text: msgReplyBtn },
-            style: "primary",
-            value: draftId },
+            style: "primary", value: draftId },
         ]
       });
     }
@@ -761,7 +781,6 @@ JSON만 출력. 코드블록 금지.
       blocks: messageBlocks,
     });
 
-    // 이미지 — retakeFlow 방식 동일 (썸네일 실패 시 링크 fallback)
     const workerImageUrls = data.imageUrls || [];
     if (workerImageUrls.length > 0) {
       const sharp  = require("sharp");
@@ -818,7 +837,6 @@ JSON만 출력. 코드블록 금지.
       }
     }
 
-    // draftStore에 전송 TS 보존 + 전송한 본문 저장 (답변 완료 시 재사용)
     draftStore.set(draftId, {
       ...data,
       targetDisplayName,
@@ -830,6 +848,111 @@ JSON만 출력. 코드블록 금지.
 
     await client.chat.postMessage({ channel: data.dmChannelId,
       text: `✅ ${targetDisplayName}(${data.targetOpName}) 채널로 전달했어.` });
+  }
+
+  // ── 작업자 선택 버튼 핸들러 (wr_pick_target_0~4) ─────────────
+  app.action(/^wr_pick_target_\d+$/, async ({ ack, body, client }) => {
+    await ack();
+    const { pendingId, idx } = JSON.parse(body.actions[0].value || "{}");
+    const pending = draftStore.get(pendingId);
+    if (!pending) return;
+    draftStore.delete(pendingId);
+    const targetWorker = pending.workers[idx];
+    if (!targetWorker) return;
+    const reqWorker = pending.requesterWorker || { opCode: "unknown", opName: "미매핑", workerEmail: "" };
+    // 전달 대상 확정 후 draftStore 저장 + 초안 전송
+    const { data, dmChannelId } = pending;
+    const targetWorkerInfoPre  = await _getWorkerInfo(targetWorker.workerEmail).catch(() => null);
+    const targetSlackId        = targetWorkerInfoPre?.slackId || null;
+    const targetDisplayNamePre = targetSlackId
+      ? `<@${targetSlackId}>`
+      : (targetWorkerInfoPre?.name || targetWorker.workerName || targetWorker.workerEmail);
+    const draftId = generateDraftId();
+    const targetIsTranslator = (targetWorker.opCode === OP.TRANSLATION);
+    const _episodeLabel = data.episodeLabel || (data.episode ? `${data.episode}화` : "-");
+    draftStore.set(draftId, {
+      type: "worker_relay",
+      relayType: data.relayType, inquiryDetail: data.inquiryDetail,
+      actionRequired: data.actionRequired, corrections: data.corrections || [], missingItems: data.missingItems || [],
+      workName: data.workName, workNameJa: data.workNameJa || data.workName,
+      episode: data.episode, episodeList: data.episodeList || [], episodeLabel: _episodeLabel,
+      sourceLink: data.sourceLink, originalChannelId: data.originalChannelId, originalTs: data.originalTs,
+      imageUrls: data.imageUrls || [],
+      sourceLang: data.sourceLang || "ko",
+      requesterName: data.requesterName, requesterMention: data.requesterMention,
+      requesterOpName: reqWorker.opName,
+      requesterSlackId: data.requesterUserId || null,
+      apmUserId: data.requesterUserId || null,
+      targetWorkerEmail: targetWorker.workerEmail,
+      targetWorkerName:  targetWorker.workerName,
+      targetOpName:      targetWorker.opName,
+      targetIsTranslator,
+      dmChannelId,
+    });
+    if (!targetIsTranslator && (data.sourceLang || "ko") === "ko") {
+      await client.chat.postMessage({
+        channel: dmChannelId,
+        text: "🌐 식자 작업자에게 보낼 메시지 언어를 선택해줘.",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `*📨 작업자 TO 작업자 릴레이 — ${TYPE_LABEL[data.relayType] || data.relayType}*\n*작품:* ${data.workName} ${_episodeLabel}\n*전달 대상:* ${targetDisplayNamePre} (${targetWorker.opName})\n\n🌐 식자 작업자에게 보낼 메시지 언어를 선택해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "wr_lang_ko", text: { type: "plain_text", text: "🇰🇷 한국어" }, style: "primary", value: draftId },
+            { type: "button", action_id: "wr_lang_en", text: { type: "plain_text", text: "🇺🇸 영어" }, value: draftId },
+          ]},
+        ],
+      });
+      return;
+    }
+    draftStore.set(draftId, { ...draftStore.get(draftId), targetDisplayNamePre });
+    await _sendDraft(client, dmChannelId, draftId, { ...draftStore.get(draftId) });
+  });
+
+  // ── 채널 직접 입력 버튼 ──────────────────────────────────────
+  app.action("wr_manual_channel_input", async ({ ack, body, client }) => {
+    await ack();
+    const retryId = body.actions[0].value;
+    const retry   = draftStore.get(retryId);
+    if (!retry) return;
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal", callback_id: "wr_manual_channel_submit",
+        private_metadata: retryId,
+        title:  { type: "plain_text", text: "채널 직접 입력" },
+        submit: { type: "plain_text", text: "전송" },
+        close:  { type: "plain_text", text: "취소" },
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `*전달 대상:* ${retry.targetDisplayName} (${retry.targetOpName})` } },
+          { type: "input", block_id: "manual_channel_block",
+            label: { type: "plain_text", text: "채널 ID" },
+            element: { type: "plain_text_input", action_id: "value",
+              placeholder: { type: "plain_text", text: "예: C0A1B2C3D4E" } },
+            hint: { type: "plain_text", text: "C로 시작하는 Slack 채널 ID" } },
+        ],
+      },
+    });
+  });
+
+  app.view("wr_manual_channel_submit", async ({ ack, body, view, client }) => {
+    await ack();
+    const retryId = body.view.private_metadata;
+    const retry   = draftStore.get(retryId);
+    if (!retry) {
+      await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 세션이 만료됐어. 처음부터 다시 시도해줘." });
+      return;
+    }
+    draftStore.delete(retryId);
+    const channelId = (view.state.values.manual_channel_block?.value?.value || "").trim();
+    if (!channelId) return;
+    const data = draftStore.get(retry.draftId);
+    if (!data) {
+      await client.chat.postMessage({ channel: retry.dmChannelId, text: "⚠️ 세션이 만료됐어. 처음부터 다시 시도해줘." });
+      return;
+    }
+    try { await client.conversations.join({ channel: channelId }).catch(() => {}); } catch (_) {}
+    await _sendToWorkerChannel(client, data, channelId, retry.targetDisplayName, retry.draftId);
   });
 
   // ── [내용 수정] 버튼 → 모달 ─────────────────────────────
