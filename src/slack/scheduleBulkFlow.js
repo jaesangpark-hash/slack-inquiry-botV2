@@ -35,6 +35,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ── 회차 범위 + 그룹당 회차 수 → 그룹 배열 ─────────────────────
   // startEp=1, endEp=11, groupSize=3 → [{label:"1-3화",[1,2,3]}, ..., {label:"10-11화",[10,11]}]
   function buildGroups(startEp, endEp, groupSize) {
+    if (!(groupSize >= 1)) groupSize = 3; // 0/음수/NaN 방어
     const groups = [];
     for (let i = startEp; i <= endEp; i += groupSize) {
       const gEnd = Math.min(i + groupSize - 1, endEp);
@@ -417,7 +418,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const gapDays    = parseInt(v.gap_days?.value?.value   || "7", 10);
 
     const groups = buildGroups(epStart, epEnd, groupSize);
-    if (!groups.length || !workName || !firstStart) return;
+    if (!groups.length || !workName || !firstStart) {
+      if (dmChannelId) await client.chat.postMessage({
+        channel: dmChannelId,
+        text: "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명·시작일 필수).",
+      }).catch(e => console.error("[scheduleBulk] 입력검증 DM 실패:", e.message));
+      return;
+    }
 
     // 즉시 로딩 모달 열기 (trigger_id는 제출 후 3초 유효)
     let loadingViewId = null;
@@ -443,7 +450,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           type: "modal", title: { type: "plain_text", text: "오류" },
           blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ *${workName}* 프로젝트를 찾지 못했어. 작품명을 확인해줘.` } }],
         };
-        if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(() => {});
+        if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(e => console.error("[scheduleBulk] 프로젝트미발견 errView update 실패:", e.message));
         else await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ TOTUS에서 *${workName}* 프로젝트를 찾지 못했어.` });
         return;
       }
@@ -464,7 +471,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           type: "modal", title: { type: "plain_text", text: "오류" },
           blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ 조회된 오퍼레이션이 없어. 회차 번호를 확인해줘.` } }],
         };
-        if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(() => {});
+        if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(e => console.error("[scheduleBulk] 오퍼레이션0 errView update 실패:", e.message));
         return;
       }
 
@@ -475,7 +482,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       // 로딩 모달 → Modal B
       const modalB = buildModalBView(draftId, opList);
       if (loadingViewId) {
-        await client.views.update({ view_id: loadingViewId, view: modalB }).catch(() => {});
+        await client.views.update({ view_id: loadingViewId, view: modalB }).catch(e => console.error("[scheduleBulk] Modal B update 실패(사용자 로딩모달 정지 가능):", e.message));
       } else {
         // fallback: 로딩 모달 열기 실패 시 DM으로 안내
         await client.chat.postMessage({
@@ -486,7 +493,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     } catch (e) {
       console.error("[scheduleBulk] step1 오류:", e.message);
       if (dmChannelId) {
-        await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ 처리 중 오류: ${e.message}` }).catch(() => {});
+        await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ 처리 중 오류: ${e.message}` }).catch(e2 => console.error("[scheduleBulk] fallback DM 실패:", e2.message));
       }
     }
   });
@@ -533,6 +540,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     await _applySchedule(draft, client).catch(async e => {
       await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ 반영 중 오류: ${e.message}` });
     });
+    draftStore.delete(draftId);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -579,5 +587,6 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     await _applySchedule({ ...draft, calculatedSchedule: updatedSchedule }, client).catch(async e => {
       await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ 반영 중 오류: ${e.message}` });
     });
+    draftStore.delete(draftId);
   });
 };
