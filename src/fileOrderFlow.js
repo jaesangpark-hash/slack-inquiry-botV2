@@ -255,8 +255,32 @@ JSON만 출력. 코드블록 금지.
     }
 
     if (!fetchResult) {
-      await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ ${workName} ${episode}화 파일 목록을 가져올 수 없어. 작품명/화수를 확인해줘.` });
+      const pendingId = `fo_pending_${Date.now()}`;
+      draftStore.set(pendingId, {
+        type: "file_order_pending",
+        workName:    workName || "",
+        workNameKo:  info.workNameKo || workName || "",
+        episode:     episode || "",
+        pageNumbers: info.pageNumbers || [],
+        sourceLink:  info.sourceLink || "",
+        dmChannelId: dmChannel,
+        originalChannelId: info.originalChannelId || null,
+        originalTs:        info.originalTs        || null,
+        requesterUserId:   info.requesterUserId   || null,
+      });
+      await client.chat.postMessage({
+        channel: dmChannel,
+        text: `⚠️ ${workName} ${episode}화 파일 목록을 가져올 수 없어.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `*📁 원본 파일 순서 문의*\n⚠️ *${workName} ${episode}화* 파일 목록을 가져올 수 없어.\n작품명이나 화수가 다를 수 있어. 직접 입력해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "open_file_order_info_modal",
+              text: { type: "plain_text", text: "정보 직접 입력" },
+              style: "primary", value: pendingId },
+          ]},
+        ],
+      });
       return;
     }
 
