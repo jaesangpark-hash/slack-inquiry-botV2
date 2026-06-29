@@ -14,6 +14,7 @@
 
 const EXCLUDE_OP_CODES    = new Set(["OTC0087", "OTC0077"]); // 납품검수·피코마검수 제외
 const EXCLUDE_TASK_STATES = new Set(["COMPLETED", "DROP", "DELIVERED", "CONFIRMED"]);
+const TRANSLATION_OP      = "OTC0012"; // 번역 (리테이크 기준 오퍼레이션)
 
 module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDraftId }) {
   const BASE  = () => process.env.PLATFORM_API_URL;
@@ -142,6 +143,44 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
   }
 
+  // ── TOTUS: 태스크 재생성 + 날짜 반영 (execMode="retake") ──────────
+  async function _applyRetakeSchedule(draft, client) {
+    const { projectUuid, calculatedSchedule, dmChannelId } = draft;
+    const allEps = calculatedSchedule.flatMap(g => g.episodes);
+    let ok = 0, fail = 0;
+    for (const ep of allEps) {
+      try {
+        const taskMap = await _getTaskMap(projectUuid, ep);
+        const srcUuid = taskMap[TRANSLATION_OP];
+        if (!srcUuid) {
+          console.warn(`[scheduleBulk/retake] ep${ep} 번역 태스크 없음 — 스킵`);
+          fail++;
+          continue;
+        }
+        const res  = await fetch(`${BASE()}/api/v1/tasks/${srcUuid}/retake`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.message || "retake API 오류");
+        ok++;
+      } catch (e) {
+        console.error(`[scheduleBulk/retake] ep${ep} 실패:`, e.message);
+        fail++;
+      }
+    }
+    if (ok === 0) {
+      await client.chat.postMessage({ channel: dmChannelId,
+        text: "⚠️ 번역 태스크를 찾을 수 없어. 회차가 TOTUS에 등록되어 있는지 확인해줘." });
+      return;
+    }
+    if (fail > 0) {
+      await client.chat.postMessage({ channel: dmChannelId,
+        text: `⚠️ ${fail}화 리테이크 실패 — ${ok}화만 날짜 반영 진행할게.` });
+    }
+    await _applySchedule(draft, client);
+  }
+
   // ── TOTUS: 일정 일괄 반영 ─────────────────────────────────────────
   async function _applySchedule(draft, client) {
     const { projectUuid, calculatedSchedule, workName, dmChannelId } = draft;
@@ -194,17 +233,20 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
   // ── 시뮬레이션 DM 블록 빌더 ──────────────────────────────────────
   function buildSimBlocks(draft) {
-    const { workName, calculatedSchedule, opList, opDurations, gapDays, draftId } = draft;
+    const { workName, calculatedSchedule, opList, opDurations, gapDays, draftId, execMode = "schedule" } = draft;
+    const isRetake = execMode === "retake";
     const durSummary = (opList || [])
       .filter(op => (opDurations[op.opCode] || 0) > 0)
       .map(op => `${op.opName} ${opDurations[op.opCode]}일`)
       .join(" · ");
     const totalEps = (calculatedSchedule || []).reduce((s, g) => s + g.episodes.length, 0);
 
+    const simTitle = isRetake ? "태스크 재생성 시뮬레이션" : "일정 시뮬레이션";
+    const gapNote  = gapDays > 0 ? ` · 그룹간 갭 ${gapDays}일` : "";
     const blocks = [
       {
         type: "section",
-        text: { type: "mrkdwn", text: `*📋 ${workName} — 일정 시뮬레이션*\n${durSummary} · 그룹간 갭 ${gapDays}일` },
+        text: { type: "mrkdwn", text: `*📋 ${workName} — ${simTitle}*\n${durSummary}${gapNote}` },
       },
     ];
 
@@ -268,48 +310,63 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── Modal A 뷰 빌더 ───────────────────────────────────────────────
-  function buildModalAView(draftId, dmChannelId) {
+  // mode:    "single" | "multi" | "bulk"
+  // execMode: "schedule" | "retake"
+  function buildModalAView(draftId, dmChannelId, mode = "bulk", execMode = "schedule") {
+    const isSingle = mode === "single";
+    const isBulk   = mode === "bulk";
+    const titleText = execMode === "retake"
+      ? (isSingle ? "태스크 재생성" : "태스크 일괄 재생성")
+      : (isSingle ? "일정 변경"     : "일정 일괄 변경");
+
+    const blocks = [
+      {
+        type: "input", block_id: "work_name",
+        label: { type: "plain_text", text: "작품명" },
+        element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
+      },
+      {
+        type: "input", block_id: "ep_start",
+        label: { type: "plain_text", text: isSingle ? "화수" : "시작 화수" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+      },
+    ];
+    if (!isSingle) {
+      blocks.push({
+        type: "input", block_id: "ep_end",
+        label: { type: "plain_text", text: "끝 화수" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+      });
+    }
+    if (isBulk) {
+      blocks.push({
+        type: "input", block_id: "group_size",
+        label: { type: "plain_text", text: "그룹당 회차 수" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "3", min_value: "1" },
+        hint: { type: "plain_text", text: "나머지 회차는 마지막 그룹으로 자동 묶음 (예: 1-11화, 3화 그룹 → 1-3 / 4-6 / 7-9 / 10-11)" },
+      });
+    }
+    blocks.push({
+      type: "input", block_id: "first_start",
+      label: { type: "plain_text", text: isSingle ? "시작일" : "첫 번째 그룹 시작일" },
+      element: { type: "datepicker", action_id: "value" },
+    });
+    if (isBulk) {
+      blocks.push({
+        type: "input", block_id: "gap_days",
+        label: { type: "plain_text", text: "그룹간 갭 (일)" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "7", min_value: "0", max_value: "365" },
+        hint: { type: "plain_text", text: "이전 그룹 시작일 + N일 = 다음 그룹 시작일 (번역 마감 기준 N일 간격)" },
+      });
+    }
     return {
       type: "modal",
       callback_id: "schbulk_step1",
-      private_metadata: JSON.stringify({ draftId, dmChannelId }),
-      title: { type: "plain_text", text: "일정 일괄 변경" },
+      private_metadata: JSON.stringify({ draftId, dmChannelId, mode, execMode }),
+      title:  { type: "plain_text", text: titleText },
       submit: { type: "plain_text", text: "다음 →" },
       close:  { type: "plain_text", text: "취소" },
-      blocks: [
-        {
-          type: "input", block_id: "work_name",
-          label: { type: "plain_text", text: "작품명" },
-          element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
-        },
-        {
-          type: "input", block_id: "ep_start",
-          label: { type: "plain_text", text: "시작 화수" },
-          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
-        },
-        {
-          type: "input", block_id: "ep_end",
-          label: { type: "plain_text", text: "끝 화수" },
-          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
-        },
-        {
-          type: "input", block_id: "group_size",
-          label: { type: "plain_text", text: "그룹당 회차 수" },
-          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "3", min_value: "1" },
-          hint: { type: "plain_text", text: "나머지 회차는 마지막 그룹으로 자동 묶음 (예: 1-11화, 3화 그룹 → 1-3 / 4-6 / 7-9 / 10-11)" },
-        },
-        {
-          type: "input", block_id: "first_start",
-          label: { type: "plain_text", text: "첫 번째 그룹 시작일" },
-          element: { type: "datepicker", action_id: "value" },
-        },
-        {
-          type: "input", block_id: "gap_days",
-          label: { type: "plain_text", text: "그룹간 갭 (일)" },
-          element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "7", min_value: "0", max_value: "365" },
-          hint: { type: "plain_text", text: "이전 그룹 시작일 + N일 = 다음 그룹 시작일 (번역 마감 기준 N일 간격)" },
-        },
-      ],
+      blocks,
     };
   }
 
@@ -382,22 +439,57 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     };
   }
 
+  // ── 모드 선택 DM 전송 헬퍼 ─────────────────────────────────────
+  async function _sendModePicker(client, channelId, execMode) {
+    const header = execMode === "retake" ? "📋 태스크 재생성" : "📅 일정 일괄 변경";
+    await client.chat.postMessage({
+      channel: channelId,
+      text: `${header} — 화수 구성을 선택해줘.`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `*${header}* — 화수 구성을 선택해줘.` } },
+        { type: "actions", elements: [
+          { type: "button", action_id: "schbulk_mode_open",
+            text: { type: "plain_text", text: "단일 화수" },
+            value: JSON.stringify({ mode: "single", execMode }) },
+          { type: "button", action_id: "schbulk_mode_open",
+            text: { type: "plain_text", text: "복수 화수" },
+            value: JSON.stringify({ mode: "multi", execMode }) },
+          { type: "button", action_id: "schbulk_mode_open", style: "primary",
+            text: { type: "plain_text", text: "복수 + 그룹 갭" },
+            value: JSON.stringify({ mode: "bulk", execMode }) },
+        ]},
+      ],
+    });
+  }
+
   // ══════════════════════════════════════════════════════════════════
-  // Action: "일정 일괄 변경" 버튼 → Modal A 열기
+  // Action: "일정 일괄 변경" 버튼 → 모드 선택 DM
   // ══════════════════════════════════════════════════════════════════
   app.action("schbulk_open_basic_modal", async ({ ack, body, client }) => {
     await ack();
     try {
-      const dmRes = await client.conversations.open({ users: body.user.id });
-      const dmChannelId = dmRes.channel.id;
-      const draftId = generateDraftId();
-      draftStore.set(draftId, { draftId, dmChannelId, userId: body.user.id });
-      await client.views.open({
-        trigger_id: body.trigger_id,
-        view: buildModalAView(draftId, dmChannelId),
-      });
+      await _sendModePicker(client, body.user.id, "schedule");
     } catch (e) {
       console.error("[scheduleBulk] open_basic_modal 오류:", e.message);
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // Action: 모드 선택 버튼 → Modal A 열기
+  // ══════════════════════════════════════════════════════════════════
+  app.action("schbulk_mode_open", async ({ ack, body, client }) => {
+    await ack();
+    try {
+      const { mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");
+      const dmChannelId = body.user.id;
+      const draftId = generateDraftId();
+      draftStore.set(draftId, { draftId, dmChannelId, userId: body.user.id, execMode });
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: buildModalAView(draftId, dmChannelId, mode, execMode),
+      });
+    } catch (e) {
+      console.error("[scheduleBulk] mode_open 오류:", e.message);
     }
   });
 
@@ -407,15 +499,24 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ══════════════════════════════════════════════════════════════════
   app.view("schbulk_step1", async ({ ack, body, view, client }) => {
     await ack();
-    const { draftId, dmChannelId } = JSON.parse(view.private_metadata || "{}");
+    const { draftId, dmChannelId, mode = "bulk", execMode = "schedule" } = JSON.parse(view.private_metadata || "{}");
     const v = view.state.values;
 
-    const workName   = v.work_name?.value?.value?.trim()   || "";
-    const epStart    = parseInt(v.ep_start?.value?.value   || "1", 10);
-    const epEnd      = parseInt(v.ep_end?.value?.value     || "1", 10);
-    const groupSize  = parseInt(v.group_size?.value?.value || "3", 10);
+    const workName   = v.work_name?.value?.value?.trim() || "";
+    const epStart    = parseInt(v.ep_start?.value?.value || "1", 10);
     const firstStart = v.first_start?.value?.selected_date || "";
-    const gapDays    = parseInt(v.gap_days?.value?.value   || "7", 10);
+    let epEnd, groupSize, gapDays;
+    if (mode === "single") {
+      epEnd = epStart; groupSize = 1; gapDays = 0;
+    } else if (mode === "multi") {
+      epEnd     = parseInt(v.ep_end?.value?.value || String(epStart), 10);
+      groupSize = Math.max(1, epEnd - epStart + 1);
+      gapDays   = 0;
+    } else {
+      epEnd     = parseInt(v.ep_end?.value?.value     || "1", 10);
+      groupSize = parseInt(v.group_size?.value?.value || "3", 10);
+      gapDays   = parseInt(v.gap_days?.value?.value   || "7", 10);
+    }
 
     const groups = buildGroups(epStart, epEnd, groupSize);
     if (!groups.length || !workName || !firstStart) {
@@ -477,7 +578,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
       // draft 업데이트
       const prev = draftStore.get(draftId) || {};
-      draftStore.set(draftId, { ...prev, workName, projectUuid, groups, firstStart, gapDays, opList });
+      draftStore.set(draftId, { ...prev, workName, projectUuid, groups, firstStart, gapDays, opList, execMode });
 
       // 로딩 모달 → Modal B
       const modalB = buildModalBView(draftId, opList);
@@ -536,9 +637,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 세션이 만료됐어. 처음부터 다시 입력해줘." });
       return;
     }
-    await client.chat.postMessage({ channel: draft.dmChannelId, text: "⏳ TOTUS에 일정 반영 중..." });
-    await _applySchedule(draft, client).catch(async e => {
-      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ 반영 중 오류: ${e.message}` });
+    const isRetake = draft.execMode === "retake";
+    await client.chat.postMessage({ channel: draft.dmChannelId, text: isRetake ? "⏳ TOTUS에 태스크 재생성 중..." : "⏳ TOTUS에 일정 반영 중..." });
+    const applyFn = isRetake ? _applyRetakeSchedule : _applySchedule;
+    await applyFn(draft, client).catch(async e => {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ ${isRetake ? "재생성" : "반영"} 중 오류: ${e.message}` });
     });
     draftStore.delete(draftId);
   });
@@ -583,9 +686,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
     draftStore.set(draftId, { ...draft, calculatedSchedule: updatedSchedule });
 
-    await client.chat.postMessage({ channel: draft.dmChannelId, text: "⏳ TOTUS에 일정 반영 중..." });
-    await _applySchedule({ ...draft, calculatedSchedule: updatedSchedule }, client).catch(async e => {
-      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ 반영 중 오류: ${e.message}` });
+    const isRetake2 = draft.execMode === "retake";
+    await client.chat.postMessage({ channel: draft.dmChannelId, text: isRetake2 ? "⏳ TOTUS에 태스크 재생성 중..." : "⏳ TOTUS에 일정 반영 중..." });
+    const applyFn2 = isRetake2 ? _applyRetakeSchedule : _applySchedule;
+    await applyFn2({ ...draft, calculatedSchedule: updatedSchedule }, client).catch(async e => {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ ${isRetake2 ? "재생성" : "반영"} 중 오류: ${e.message}` });
     });
     draftStore.delete(draftId);
   });

@@ -691,45 +691,25 @@ JSON만 출력. 코드블록 금지.
   // ── DM 직접 소환: 리테이크봇 ─────────────────────────────
   app.action("direct_retake_btn", async ({ ack, body, client }) => {
     await ack();
-    const sourceLink = body.actions?.[0]?.value || "";
-    const pendingId  = `rt_pending_${Date.now()}`;
-    draftStore.set(pendingId, {
-      type:            "retake_pending",
-      workName:        "",
-      workNameKo:      "",
-      episode:         "",
-      sourceLink:      sourceLink !== "direct" ? sourceLink : "",
-      dmChannelId:     body.user.id,
-      originalText:    "",
-      requesterName:   "",
-      requesterUserId: body.user.id,
-    });
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: "modal", callback_id: "submit_retake_info_modal",
-        private_metadata: JSON.stringify({ pendingId }),
-        title:  { type: "plain_text", text: "태스크 재생성" },
-        submit: { type: "plain_text", text: "다음" },
-        close:  { type: "plain_text", text: "취소" },
-        blocks: [
-          { type: "input", block_id: "rt_work_block",
-            label: { type: "plain_text", text: "작품명 (한국어 또는 일본어)" },
-            optional: true,
-            element: { type: "plain_text_input", action_id: "value",
-              placeholder: { type: "plain_text", text: "예: 祭品新娘拐恶龙 / ゾンビさん / 서우전" } } },
-          { type: "input", block_id: "rt_pivoid_block",
-            label: { type: "plain_text", text: "pivoId (작품명 대신 입력 가능)" },
-            optional: true,
-            element: { type: "plain_text_input", action_id: "value",
-              placeholder: { type: "plain_text", text: "예: 38873" } } },
-          { type: "input", block_id: "rt_episode_block",
-            label: { type: "plain_text", text: "화수 (숫자만)" },
-            element: { type: "plain_text_input", action_id: "value",
-              placeholder: { type: "plain_text", text: "예: 3" } } },
-        ],
-      },
-    });
+    // 모드 선택 DM → scheduleBulkFlow의 schbulk_mode_open으로 라우팅
+    await client.chat.postMessage({
+      channel: body.user.id,
+      text: "📋 태스크 재생성 — 화수 구성을 선택해줘.",
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "*📋 태스크 재생성* — 화수 구성을 선택해줘." } },
+        { type: "actions", elements: [
+          { type: "button", action_id: "schbulk_mode_open",
+            text: { type: "plain_text", text: "단일 화수" },
+            value: JSON.stringify({ mode: "single", execMode: "retake" }) },
+          { type: "button", action_id: "schbulk_mode_open",
+            text: { type: "plain_text", text: "복수 화수" },
+            value: JSON.stringify({ mode: "multi", execMode: "retake" }) },
+          { type: "button", action_id: "schbulk_mode_open", style: "primary",
+            text: { type: "plain_text", text: "복수 + 그룹 갭" },
+            value: JSON.stringify({ mode: "bulk", execMode: "retake" }) },
+        ]},
+      ],
+    }).catch(e => console.error("[retake] direct_retake_btn 모드 선택 DM 실패:", e.message));
   });
 
   // ── 작품명·화수 수동 입력 모달 ────────────────────────────
