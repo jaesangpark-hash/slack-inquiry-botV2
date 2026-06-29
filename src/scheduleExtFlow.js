@@ -473,8 +473,20 @@ module.exports = function registerScheduleExtFlow(app, {
     // 어느 한 화수라도 task 없으면 실패
     const missingEps = episodes.filter(ep => !tasksByEpisode || !tasksByEpisode[ep] || tasksByEpisode[ep].length === 0);
     if (missingEps.length === episodes.length) {
+      const pendingId = generateDraftId();
+      draftStore.set(pendingId, { ...info, episodes, episodeLabel, dmChannelId: dmChannel });
       await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ ${workName} ${episodeLabel} 태스크를 Totus에서 찾을 수 없어. 직접 확인해줘.` });
+        text: `⚠️ ${workName} ${episodeLabel} 태스크를 Totus에서 찾을 수 없어.`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `⚠️ *${workName} ${episodeLabel}* 태스크를 Totus에서 찾을 수 없어.\nTotus를 확인한 후 재시도하거나 PIVO ID를 확인해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "schext_retry_proceed", style: "primary",
+              text: { type: "plain_text", text: "🔄 재시도" },
+              value: pendingId },
+          ]},
+        ],
+      });
       return;
     }
     if (missingEps.length > 0) {
@@ -882,6 +894,17 @@ ${taskLines}` } },
     await _applySchedule(client, body.user.id, draftId, data.simTasks);
   });
 
+  // ── TOTUS 태스크 조회 재시도 ──────────────────────────────
+  app.action("schext_retry_proceed", async ({ ack, body, client }) => {
+    await ack();
+    const pendingId = body.actions[0].value;
+    const pending   = draftStore.get(pendingId);
+    if (!pending) return;
+    draftStore.delete(pendingId);
+    const { dmChannelId, ...info } = pending;
+    await _proceedScheduleExt(client, dmChannelId, { ...info, preFetchedTasksByEpisode: null });
+  });
+
   // ── 일정 API 호출 (공통) ──────────────────────────────────
   async function _applySchedule(client, userId, draftId, simTasks) {
     const data = draftStore.get(draftId);
@@ -962,7 +985,17 @@ ${taskLines}` } },
     } catch (e) {
       console.error("[scheduleExt] 일정 반영 실패:", e.message);
       await client.chat.postMessage({ channel: data.dmChannelId,
-        text: `❌ 일정 반영 실패: ${e.message}` });
+        text: `❌ 일정 반영 실패: ${e.message}`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `❌ *일정 반영 실패*\n\`${e.message}\`\n\n초안은 유지되고 있어. 아래 버튼으로 재시도할 수 있어.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "schext_apply_all", style: "primary",
+              text: { type: "plain_text", text: "🔄 재시도" },
+              value: draftId },
+          ]},
+        ],
+      });
     }
   }
 
