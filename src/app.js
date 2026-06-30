@@ -26,7 +26,7 @@ if (typeof globalThis.fetch === "function") {
 const cron = require("node-cron");
 const fs   = require("fs");
 const path = require("path");
-const { loggedCall, cleanOldLogs, initAlertClient, sendAlert } = require("./apiLogger");
+const { loggedCall, logEvent, cleanOldLogs, initAlertClient, sendAlert } = require("./apiLogger");
 const { checkPermission } = require("./auth/permission-gate");
 const { isTriggerReaction } = require("./utils/trigger");
 const createSheetsClient = require("./clients/sheets-client");
@@ -281,11 +281,21 @@ function generateDraftId() { return `draft_${Date.now()}_${Math.random().toStrin
 
 async function postInquiryToTargetChannel(client, draft, submitterId) {
   const msg = buildFinalMainMessage({ submitterId, workName: draft.workName, workNameKo: draft.workNameKo, episode: draft.episode, inquiryType: draft.inquiryType, inquiryContent: draft.inquiryContent, actionRequired: draft.actionRequired, draftId: draft.draftId });
+  const _t0 = Date.now();
   const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
+  logEvent("inquiry", "/slack/inquiry-sent", Date.now() - _t0, true);
   await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
-  const historyRowIndex = await appendInquiryHistory(draft, submitterId);
-  if (historyRowIndex && draft.draftId) {
-    draftStore.set(draft.draftId, { ...draft, historyRowIndex });
+  try {
+    const historyRowIndex = await appendInquiryHistory(draft, submitterId);
+    if (historyRowIndex && draft.draftId) {
+      draftStore.set(draft.draftId, { ...draft, historyRowIndex });
+    }
+  } catch (e) {
+    console.error("[postInquiry] 히스토리 시트 기록 실패:", e.message);
+    const dmCh = draft.dmChannelId;
+    if (dmCh) {
+      await client.chat.postMessage({ channel: dmCh, text: `⚠️ 히스토리 시트 기록 실패: ${e.message}` }).catch(() => {});
+    }
   }
   return postRes;
 }

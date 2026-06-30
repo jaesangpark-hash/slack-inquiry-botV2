@@ -133,8 +133,30 @@ function cleanOldLogs() {
   }
 }
 
+/**
+ * 완료 이벤트 단건 기록.
+ * TOTUS API 래퍼 없이 Slack 발송 등 최종 액션을 로깅할 때 사용.
+ * @param {string} bot
+ * @param {string} endpoint
+ * @param {number} elapsedMs
+ * @param {boolean} success
+ */
+function logEvent(bot, endpoint, elapsedMs = 0, success = true) {
+  _appendLog({
+    ts: new Date().toISOString(),
+    endpoint,
+    bot,
+    params: {},
+    expectedCount: null,
+    returnedCount: null,
+    elapsedMs,
+    success,
+  });
+}
+
 module.exports = {
   loggedCall,
+  logEvent,
   cleanOldLogs,
   initAlertClient,
   sendAlert,

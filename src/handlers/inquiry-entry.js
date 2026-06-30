@@ -115,7 +115,7 @@ module.exports = function (app, deps) {
             sourceLink:  permalink,
             sourceMeta:  { channelId, ts },
             files:       targetMsg.files || [],
-            requesterUserId: targetMsg.user || null,
+            requesterUserId: (targetMsg.bot_id ? null : targetMsg.user) || null,
             // UD-2: reaction은 router 내부에서 reqName 조회 (requesterName은 "" 초기값)
             requesterName: "",
             userId,
@@ -215,7 +215,7 @@ module.exports = function (app, deps) {
           sourceLink:   linkInfo.url,
           sourceMeta:   { channelId: linkInfo.channelId, ts: linkInfo.ts },
           files:        linkedMessage.files || [],
-          requesterUserId: linkedMessage.user || null,
+          requesterUserId: (linkedMessage.bot_id ? null : linkedMessage.user) || null,
           // UD-2: message는 requesterName="" 빈문자 그대로
           requesterName: "",
           userId:       message.user,

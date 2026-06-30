@@ -282,17 +282,16 @@ JSON만 출력. 코드블록 금지.
     const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId } = info;
     const draftId = generateDraftId();
 
-    // 납품 시트 D열에서 실제 담당 APM 조회 (zh-ja 탭 → 미매칭 시 ko-ja 탭)
+    // 납품 시트 D열에서 실제 담당 APM 조회 — zh-ja·ko-ja 병렬 조회 후 첫 번째 APM 사용
     let actualApm   = null;
     let actualApmId = null;
     if (fetchDeliveryDate && episode) {
       try {
-        const dlv = await fetchDeliveryDate(workNameKo || workName, episode);
-        actualApm = (dlv?.apm || "").normalize("NFC").trim() || null;
-        if (!actualApm) {
-          const dlvKo = await fetchDeliveryDate(workNameKo || workName, episode, "ko-ja");
-          actualApm = (dlvKo?.apm || "").normalize("NFC").trim() || null;
-        }
+        const [dlvZhJa, dlvKoJa] = await Promise.all([
+          fetchDeliveryDate(workNameKo || workName, episode).catch(() => null),
+          fetchDeliveryDate(workNameKo || workName, episode, "ko-ja").catch(() => null),
+        ]);
+        actualApm = (dlvZhJa?.apm || "").normalize("NFC").trim() || (dlvKoJa?.apm || "").normalize("NFC").trim() || null;
       } catch (_) {}
     }
     if (actualApm) {
@@ -376,11 +375,12 @@ JSON만 출력. 코드블록 금지.
           t.작업자 != null  // 작업자 미배정 태스크 제외
         )
         .map(t => ({
-          code:      t.operationTypeCode,
-          name:      RETAKE_OPERATIONS.find(o => o.code === t.operationTypeCode)?.name || t.operationTypeName || t.operationTypeCode,
-          opUuid:    t.operationUuid,
-          taskUuid:  t.taskUuid,
-          hasWorker: true,
+          code:        t.operationTypeCode,
+          name:        RETAKE_OPERATIONS.find(o => o.code === t.operationTypeCode)?.name || t.operationTypeName || t.operationTypeCode,
+          opUuid:      t.operationUuid,
+          taskUuid:    t.taskUuid,
+          hasWorker:   true,
+          workerEmail: t.작업자?.이메일 || null,
         }));
 
       console.log(`[retake] availableOps (작업자 배정):`, JSON.stringify(availableOps));
@@ -407,7 +407,7 @@ JSON만 출력. 코드블록 금지.
             type: "button",
             action_id: `retake_pick_operation_${i}`,
             text: { type: "plain_text", text: op.name },
-            value: JSON.stringify({ draftId, operationCode: op.code, operationName: op.name, operationUuid: op.opUuid, sourceTaskUuid: op.taskUuid }),
+            value: JSON.stringify({ draftId, operationCode: op.code, operationName: op.name, operationUuid: op.opUuid, sourceTaskUuid: op.taskUuid, workerEmail: op.workerEmail || null }),
           }))},
         ],
       });
@@ -421,14 +421,14 @@ JSON만 출력. 코드블록 금지.
   // ── 작업 유형 인라인 버튼 선택 ──────────────────────────
   app.action(/^retake_pick_operation_\d+$/, async ({ ack, body, client }) => {
     await ack();
-    const { draftId, operationCode, operationName, operationUuid, sourceTaskUuid } =
+    const { draftId, operationCode, operationName, operationUuid, sourceTaskUuid, workerEmail } =
       JSON.parse(body.actions[0].value || "{}");
     const data = draftStore.get(draftId);
     if (!data) return;
 
     draftStore.set(draftId, {
       ...data, operationCode, operationName,
-      operationUuid, sourceTaskUuid,
+      operationUuid, sourceTaskUuid, workerEmail: workerEmail || null,
     });
 
     console.log(`[retake] 오퍼레이션 선택: ${operationName} (${operationCode}) / taskUuid: ${sourceTaskUuid}`);
@@ -569,62 +569,51 @@ JSON만 출력. 코드블록 금지.
 
       const createdUuids = json.data?.createdTaskUuids || [];
 
-      // 일정 할당: POST /api/v1/tasks/dates
-      if (createdUuids.length > 0 && startDate && endDate) {
-        try {
-          const dateJson = await _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
-            method:  "POST",
-            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              tasks: createdUuids.map(uuid => ({
-                taskUuid:  uuid,
-                startDate: startDate,
-                endDate:   endDate,
-              })),
-            }),
-          }, { bot: "retake", endpoint: "/tasks/dates", params: {}, expectedCount: null });
-          console.log("[retake] 일정 할당 응답:", JSON.stringify(dateJson));
-          if (dateJson.data?.실패 > 0) {
-            console.warn("[retake] 일정 할당 일부 실패:", JSON.stringify(dateJson.data.failedTaskUuids));
-          }
-        } catch (dateErr) {
-          console.error("[retake] 일정 할당 API 오류:", dateErr.message);
-        }
-      }
+      // 일정 할당 + 채널 조회 병렬 실행
+      // 작업자 이메일: 오퍼레이션 선택 시 delivery-target-task에서 미리 저장한 값 재사용
+      // (리테이크 태스크는 소스 태스크 작업자를 상속하므로 GET /tasks/{uuid} 생략)
+      const resolvedWorkerEmail = data.workerEmail || null;
+      console.log(`[retake] 작업자 이메일(pre-stored): ${resolvedWorkerEmail}`);
 
-      // 작업자 채널 선조회 후 초안 메시지 버튼 결정
-      let resolvedChannelId  = null;
-      let resolvedSlackIds   = null;
-      let resolvedWorkerEmail = null;
+      const [, workerInfo] = await Promise.all([
+        // 일정 할당: POST /api/v1/tasks/dates
+        (createdUuids.length > 0 && startDate && endDate)
+          ? _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
+              method:  "POST",
+              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                tasks: createdUuids.map(uuid => ({
+                  taskUuid:  uuid,
+                  startDate: startDate,
+                  endDate:   endDate,
+                })),
+              }),
+            }, { bot: "retake", endpoint: "/tasks/dates", params: {}, expectedCount: null })
+              .then(dateJson => {
+                console.log("[retake] 일정 할당 응답:", JSON.stringify(dateJson));
+                if (dateJson.data?.실패 > 0) {
+                  console.warn("[retake] 일정 할당 일부 실패:", JSON.stringify(dateJson.data.failedTaskUuids));
+                }
+              })
+              .catch(e => console.error("[retake] 일정 할당 API 오류:", e.message))
+          : Promise.resolve(null),
+        // 채널 조회
+        resolvedWorkerEmail
+          ? _getWorkerChannelId(resolvedWorkerEmail)
+              .catch(e => { console.error('[retake] 작업자 채널 선조회 실패:', e.message); return null; })
+          : Promise.resolve(null),
+      ]);
 
-      if (createdUuids.length > 0) {
-        try {
-          const taskJson = await _apiFetch(`${BASE()}/api/v1/tasks/${createdUuids[0]}`, {
-            headers: { Authorization: `Bearer ${TOKEN()}` },
-          }, { bot: "retake", endpoint: "/tasks/{uuid}", params: {}, expectedCount: 1 });
-          resolvedWorkerEmail = taskJson.data?.작업자?.이메일 || null;
-          console.log(`[retake] 작업자 이메일: ${resolvedWorkerEmail}`);
-
-          if (resolvedWorkerEmail) {
-            const workerInfo = await _getWorkerChannelId(resolvedWorkerEmail);
-            resolvedChannelId  = workerInfo?.channelId || null;
-            resolvedSlackIds   = workerInfo?.slackIds  || null;
-            console.log(`[retake] 채널 ID: ${resolvedChannelId} / Slack IDs: ${resolvedSlackIds}`);
-            // 채널 정보만 추가 — endDate는 이미 선저장됨
-            if (resolvedChannelId) {
-              draftStore.set(draftId, {
-                ...(draftStore.get(draftId) || data),
-                workerChannelId: resolvedChannelId,
-                workerSlackIds:  resolvedSlackIds,
-              });
-            }
-            if (resolvedChannelId) {
-              console.log(`[retake] 작업자 채널 ID 확보 → ${resolvedChannelId}`);
-            }
-          }
-        } catch (preErr) {
-          console.error('[retake] 작업자 채널 선조회 실패:', preErr.message);
-        }
+      let resolvedChannelId = workerInfo?.channelId || null;
+      let resolvedSlackIds  = workerInfo?.slackIds  || null;
+      console.log(`[retake] 채널 ID: ${resolvedChannelId} / Slack IDs: ${resolvedSlackIds}`);
+      if (resolvedChannelId) {
+        draftStore.set(draftId, {
+          ...(draftStore.get(draftId) || data),
+          workerChannelId: resolvedChannelId,
+          workerSlackIds:  resolvedSlackIds,
+        });
+        console.log(`[retake] 작업자 채널 ID 확보 → ${resolvedChannelId}`);
       }
 
       // APM에게 완료 메시지 — 채널 확보 여부에 따라 버튼 분기
@@ -656,29 +645,10 @@ JSON만 출력. 코드블록 금지.
         ],
       });
 
-      if (createdUuids.length > 0) {
-        try {
-          // 채널 조회 이미 완료 — 결과 재사용
-          const workerEmail     = resolvedWorkerEmail;
-          const workerChannelId = resolvedChannelId;
-          const workerSlackIds  = resolvedSlackIds;
-
-          if (workerEmail) {
-            if (workerChannelId) {
-              // 이미 draftStore 업데이트됨
-            } else {
-              // 채널 없음 — 버튼으로 이미 안내됨 (별도 메시지 불필요)
-            }
-          } else {
-            console.warn(`[retake] 작업자 미배정 또는 이메일 없음 — taskUuid: ${createdUuids[0]}`);
-            await client.chat.postMessage({ channel: data.dmChannelId,
-              text: `⚠️ 재생성된 태스크에 작업자가 배정되어 있지 않아. 직접 확인해줘.` });
-          }
-        } catch (dmErr) {
-          console.error("[retake] 작업자 채널 메시지 전송 실패:", dmErr.message);
-          await client.chat.postMessage({ channel: data.dmChannelId,
-            text: `⚠️ 작업자 채널 메시지 전송 실패: ${dmErr.message}` });
-        }
+      if (createdUuids.length > 0 && !resolvedWorkerEmail) {
+        console.warn(`[retake] 작업자 미배정 또는 이메일 없음 — taskUuid: ${createdUuids[0]}`);
+        await client.chat.postMessage({ channel: data.dmChannelId,
+          text: `⚠️ 재생성된 태스크에 작업자가 배정되어 있지 않아. 직접 확인해줘.` });
       }
     } catch (e) {
       console.error("[retake] 오류:", e.message);
@@ -692,8 +662,9 @@ JSON만 출력. 코드블록 금지.
   app.action("direct_retake_btn", async ({ ack, body, client }) => {
     await ack();
     // 모드 선택 DM → scheduleBulkFlow의 schbulk_mode_open으로 라우팅
+    const dmCh = body.channel?.id || body.user.id;
     await client.chat.postMessage({
-      channel: body.user.id,
+      channel: dmCh,
       text: "📋 태스크 재생성 — 화수 구성을 선택해줘.",
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: "*📋 태스크 재생성* — 화수 구성을 선택해줘." } },
@@ -873,7 +844,7 @@ JSON만 출력. 코드블록 금지.
 
     const senderCtxAuto = data.requesterUserId
       ? `발송자: <@${data.requesterUserId}>`
-      : data.requesterName ? `발송자: ${data.requesterName}` : null;
+      : data.requesterName ? `발송자: ${data.requesterName}` : `발송자: <@${body.user.id}>`;
     const _resolvedApmIdAuto = data.actualApmId || (resolveApmUserId && data.actualApm ? resolveApmUserId(data.actualApm) : null);
     const apmCtxAuto = _resolvedApmIdAuto
       ? `담당 APM: <@${_resolvedApmIdAuto}>`
@@ -1020,7 +991,7 @@ ${msgText}
       // - 담당 APM: 모달 입력값. U로 시작하면 멘션, 아니면 텍스트
       const senderCtx = data.requesterUserId
         ? `발송자: <@${data.requesterUserId}>`
-        : data.requesterName ? `발송자: ${data.requesterName}` : null;
+        : data.requesterName ? `발송자: ${data.requesterName}` : `발송자: <@${body.user.id}>`;
       const _apmEditedId = /^U[A-Z0-9]{6,}$/.test(apmEdited)
         ? apmEdited
         : (resolveApmUserId && apmEdited ? resolveApmUserId(apmEdited) : null);

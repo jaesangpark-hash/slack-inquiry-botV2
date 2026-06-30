@@ -78,7 +78,13 @@ module.exports = function registerResupplyActions(app, deps) {
       }
     }
     draftStore.set(draftId, draft);
-    const rowIndex = await appendResupplyRecord(draft, body.user.id, client);
+    let rowIndex;
+    try {
+      rowIndex = await appendResupplyRecord(draft, body.user.id, client);
+    } catch (e) {
+      console.error("[resupply] 시트 기록 실패:", e.message);
+      await client.chat.postMessage({ channel: draft.dmChannelId || body.user.id, text: `⚠️ 재수급 시트 기록 실패: ${e.message}` }).catch(() => {});
+    }
     draft.resupplyRowIndex = rowIndex;
     draftStore.set(draftId, draft);
     const msg = buildFileInquiryMessage(draft, body.user.id);
@@ -93,7 +99,13 @@ module.exports = function registerResupplyActions(app, deps) {
     await ack();
     const draft = draftStore.get(body.actions[0].value);
     if (!draft) return;
-    const rowIndex2 = await appendResupplyRecord(draft, body.user.id, client);
+    let rowIndex2;
+    try {
+      rowIndex2 = await appendResupplyRecord(draft, body.user.id, client);
+    } catch (e) {
+      console.error("[resupply] 시트 기록 실패:", e.message);
+      await client.chat.postMessage({ channel: draft.dmChannelId || body.user.id, text: `⚠️ 재수급 시트 기록 실패: ${e.message}` }).catch(() => {});
+    }
     draft.resupplyRowIndex = rowIndex2;
     draftStore.set(body.actions[0].value, draft);
     const msg = buildFileInquiryMessage(draft, body.user.id);

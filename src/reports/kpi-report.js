@@ -66,19 +66,33 @@ module.exports = function createKpiReport({ slackClient, reportChannelId, logDir
           issues.push(`🟠 *N+1 의심* \`${ep}\` [${bot}]\n  ${REPEAT_WIN}초 이내 최대 ${max}회 반복 → 배치 조회 또는 캐시 검토 필요`);
         }
       }
+      // ── 봇별 완료 건수 (최종 액션 기준) ──────────────────────
+      const COMPLETIONS = [
+        { label: "태스크재생성봇", bot: "retake",      endpoint: "/tasks/dates"            },
+        { label: "스케줄봇",       bot: "schedule",    endpoint: "/tasks/dates"            },
+        { label: "파일순서봇",     bot: "fileOrder",   endpoint: "/source-groups/complete" },
+        { label: "작업자봇",       bot: "workerRelay", endpoint: "/slack/relay-sent"       },
+        { label: "문의봇",         bot: "inquiry",     endpoint: "/slack/inquiry-sent"     },
+      ];
+      const completionCounts = COMPLETIONS.map(({ label, bot, endpoint }) => {
+        const count = logs.filter(l => l.bot === bot && l.endpoint === endpoint && l.success).length;
+        return { label, count };
+      });
+      const completionLine = completionCounts
+        .map(({ label, count }) => `${label} *${count}*회`)
+        .join("  ·  ");
+
       const total  = logs.length;
       const fail   = logs.filter(l => !l.success).length;
       const avgMs  = Math.round(logs.reduce((s, l) => s + (l.elapsedMs ?? 0), 0) / total);
-      const botMap = {};
-      for (const l of logs) botMap[l.bot] = (botMap[l.bot] ?? 0) + 1;
-      const botLine = Object.entries(botMap).map(([b, c]) => `${b} ${c}회`).join(" / ");
       const blocks = [
-        { type: "header", text: { type: "plain_text", text: `📊 API 호출 분석 리포트 — ${targetDate}` } },
+        { type: "header", text: { type: "plain_text", text: `📊 운영 리포트 — ${targetDate}` } },
+        { type: "section", text: { type: "mrkdwn", text: `*봇별 완료 건수*\n${completionLine || "-"}` } },
+        { type: "divider" },
         { type: "section", fields: [
-          { type: "mrkdwn", text: `*총 호출*\n${total}회` },
+          { type: "mrkdwn", text: `*총 API 호출*\n${total}회` },
           { type: "mrkdwn", text: `*실패*\n${fail}회` },
           { type: "mrkdwn", text: `*평균 응답*\n${avgMs}ms` },
-          { type: "mrkdwn", text: `*봇별*\n${botLine || "-"}` },
         ]},
         { type: "divider" },
         ...(issues.length === 0
@@ -88,7 +102,7 @@ module.exports = function createKpiReport({ slackClient, reportChannelId, logDir
       ];
       await slackClient.chat.postMessage({
         channel: reportChannelId,
-        text   : `📊 API 호출 분석 리포트 — ${targetDate}`,
+        text   : `📊 운영 리포트 — ${targetDate}`,
         blocks,
       });
       console.log("[apiAnalyzer] 리포트 전송 완료");

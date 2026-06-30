@@ -33,7 +33,7 @@ module.exports = function registerWorkerRelayFlow(app, {
   const BASE        = () => process.env.PLATFORM_API_URL;
   const TOKEN       = () => process.env.PLATFORM_API_TOKEN;
   const PM_SLACK_ID = () => process.env.PM_SLACK_ID;
-  const { loggedCall } = require("./apiLogger");
+  const { loggedCall, logEvent } = require("./apiLogger");
 
   // ── 오퍼레이션 코드 ──────────────────────────────────────
   const OP = {
@@ -775,11 +775,13 @@ JSON만 출력. 코드블록 금지.
       });
     }
 
+    const _t0 = Date.now();
     const sent = await client.chat.postMessage({
       channel: channelId,
       text: `📨 ${data.workName} ${data.episodeLabel || data.episode + "화"} — ${TYPE_LABEL[data.relayType] || data.relayType}`,
       blocks: messageBlocks,
     });
+    logEvent("workerRelay", "/slack/relay-sent", Date.now() - _t0, true);
 
     const workerImageUrls = data.imageUrls || [];
     if (workerImageUrls.length > 0) {

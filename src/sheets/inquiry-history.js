@@ -16,21 +16,16 @@ module.exports = function createInquiryHistory({ sheetsClient, historySheetId, h
    */
   async function appendInquiryHistory(draft, submitterId) {
     if (!historySheetId || !historySheetRange) return null;
-    try {
-      const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-      const appendRes = await sheetsClient.append(historySheetId, historySheetRange, [
-        [now, draft.workName||"", draft.workNameKo||"", draft.inquiryType||"", draft.summary||"", draft.actionRequired||"", draft.sourceLink||"", submitterId||"", false],
-      ], { valueInputOption: "USER_ENTERED", insertDataOption: "INSERT_ROWS" });
+    const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    const appendRes = await sheetsClient.append(historySheetId, historySheetRange, [
+      [now, draft.workName||"", draft.workNameKo||"", draft.inquiryType||"", draft.summary||"", draft.actionRequired||"", draft.sourceLink||"", submitterId||"", false],
+    ], { valueInputOption: "USER_ENTERED", insertDataOption: "INSERT_ROWS" });
 
-      const updatedRange = appendRes.data.updates?.updatedRange || "";
-      const rowMatch = updatedRange.match(/(\d+)$/);
-      const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
-      console.log("[inquiry-history] 기록 완료 — row:", rowIndex);
-      return rowIndex;
-    } catch (e) {
-      console.error("[inquiry-history] 기록 실패:", e.message);
-      return null;
-    }
+    const updatedRange = appendRes.data.updates?.updatedRange || "";
+    const rowMatch = updatedRange.match(/(\d+)$/);
+    const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
+    console.log("[inquiry-history] 기록 완료 — row:", rowIndex);
+    return rowIndex;
   }
 
   /**

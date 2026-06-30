@@ -25,51 +25,46 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
    * @returns {Promise<number|null>} rowIndex (실패 시 null)
    */
   async function appendResupplyRecord(draft, submitterId, client) {
+    let requesterName = submitterId;
     try {
-      let requesterName = submitterId;
-      try {
-        const userInfo = await client.users.info({ user: submitterId });
-        requesterName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || submitterId;
-      } catch (_) {}
+      const userInfo = await client.users.info({ user: submitterId });
+      requesterName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || submitterId;
+    } catch (_) {}
 
-      const apmName = requesterName;
-      const fileNums = draft.fileNumbers?.length ? draft.fileNumbers.join(", ") : "-";
-      const episodeAndFiles = [
-        draft.episode ? `${draft.episode}화` : null,
-        fileNums !== "-" ? fileNums : null,
-      ].filter(Boolean).join(" / ");
+    const apmName = requesterName;
+    const fileNums = draft.fileNumbers?.length ? draft.fileNumbers.join(", ") : "-";
+    const episodeAndFiles = [
+      draft.episode ? `${draft.episode}화` : null,
+      fileNums !== "-" ? fileNums : null,
+    ].filter(Boolean).join(" / ");
 
-      const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-      const sourceLink = draft.sourceLink || "-";
+    const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    const sourceLink = draft.sourceLink || "-";
 
-      const appendRes = await sheetsClient.append(resupplySheetId, resupplySheetRange, [
-        [
-          requesterName,
-          apmName,
-          draft.workName || "-",
-          episodeAndFiles || "-",
-          draft.reason || "-",
-          now,
-          sourceLink,
-          draft.jpTitle || "-",
-        ],
-      ], {
-        valueInputOption: "USER_ENTERED",
-        includeValuesInResponse: false,
-        responseValueRenderOption: "UNFORMATTED_VALUE",
-        insertDataOption: "INSERT_ROWS",
-      });
+    const appendRes = await sheetsClient.append(resupplySheetId, resupplySheetRange, [
+      [
+        requesterName,
+        apmName,
+        draft.workName || "-",
+        episodeAndFiles || "-",
+        draft.reason || "-",
+        now,
+        sourceLink,
+        draft.jpTitle || "-",
+      ],
+    ], {
+      valueInputOption: "USER_ENTERED",
+      includeValuesInResponse: false,
+      responseValueRenderOption: "UNFORMATTED_VALUE",
+      insertDataOption: "INSERT_ROWS",
+    });
 
-      // 기록된 행 번호 추출 (취소선 처리용)
-      const updatedRange = appendRes.data.updates?.updatedRange || "";
-      const rowMatch = updatedRange.match(/(\d+)$/);
-      const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
-      console.log("[resupply-sheet] 완료 —", draft.workName, episodeAndFiles, "| row:", rowIndex);
-      return rowIndex;
-    } catch (e) {
-      console.error("[resupply-sheet] 실패:", e.message);
-      return null;
-    }
+    // 기록된 행 번호 추출 (취소선 처리용)
+    const updatedRange = appendRes.data.updates?.updatedRange || "";
+    const rowMatch = updatedRange.match(/(\d+)$/);
+    const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
+    console.log("[resupply-sheet] 완료 —", draft.workName, episodeAndFiles, "| row:", rowIndex);
+    return rowIndex;
   }
 
   /**
