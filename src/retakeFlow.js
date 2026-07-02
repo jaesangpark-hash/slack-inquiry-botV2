@@ -696,7 +696,10 @@ JSON만 출력. 코드블록 금지.
             value: JSON.stringify({ mode: "bulk", execMode: "retake" }) },
         ]},
       ],
-    }).catch(e => console.error("[retake] direct_retake_btn 모드 선택 DM 실패:", e.message));
+    }).catch(async e => {
+      console.error("[retake] direct_retake_btn 모드 선택 DM 실패:", e.message);
+      await client.chat.postMessage({ channel: body.user.id, text: `⚠️ 모드 선택 메시지 발송 실패: ${e.message}` }).catch(() => {});
+    });
   });
 
   // ── 작품명·화수 수동 입력 모달 ────────────────────────────
