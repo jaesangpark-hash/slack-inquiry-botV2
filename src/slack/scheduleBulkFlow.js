@@ -469,13 +469,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: `*${header}* — 화수 구성을 선택해줘.` } },
         { type: "actions", elements: [
-          { type: "button", action_id: "schbulk_mode_open",
+          { type: "button", action_id: "schbulk_mode_open_single",
             text: { type: "plain_text", text: "단일 화수" },
             value: JSON.stringify({ mode: "single", execMode }) },
-          { type: "button", action_id: "schbulk_mode_open",
+          { type: "button", action_id: "schbulk_mode_open_multi",
             text: { type: "plain_text", text: "복수 화수" },
             value: JSON.stringify({ mode: "multi", execMode }) },
-          { type: "button", action_id: "schbulk_mode_open", style: "primary",
+          { type: "button", action_id: "schbulk_mode_open_bulk", style: "primary",
             text: { type: "plain_text", text: "복수 + 그룹 갭" },
             value: JSON.stringify({ mode: "bulk", execMode }) },
         ]},
@@ -498,7 +498,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ══════════════════════════════════════════════════════════════════
   // Action: 모드 선택 버튼 → Modal A 열기
   // ══════════════════════════════════════════════════════════════════
-  app.action("schbulk_mode_open", async ({ ack, body, client }) => {
+  app.action(/^schbulk_mode_open/, async ({ ack, body, client }) => {
     await ack();
     try {
       const { mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");

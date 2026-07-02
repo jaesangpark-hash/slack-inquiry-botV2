@@ -685,13 +685,13 @@ JSON만 출력. 코드블록 금지.
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: "*📋 태스크 재생성* — 화수 구성을 선택해줘." } },
         { type: "actions", elements: [
-          { type: "button", action_id: "schbulk_mode_open",
+          { type: "button", action_id: "schbulk_mode_open_single",
             text: { type: "plain_text", text: "단일 화수" },
             value: JSON.stringify({ mode: "single", execMode: "retake" }) },
-          { type: "button", action_id: "schbulk_mode_open",
+          { type: "button", action_id: "schbulk_mode_open_multi",
             text: { type: "plain_text", text: "복수 화수" },
             value: JSON.stringify({ mode: "multi", execMode: "retake" }) },
-          { type: "button", action_id: "schbulk_mode_open", style: "primary",
+          { type: "button", action_id: "schbulk_mode_open_bulk", style: "primary",
             text: { type: "plain_text", text: "복수 + 그룹 갭" },
             value: JSON.stringify({ mode: "bulk", execMode: "retake" }) },
         ]},
