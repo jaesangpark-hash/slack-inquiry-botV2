@@ -198,6 +198,11 @@ module.exports = function registerResupplyActions(app, deps) {
       const projRes  = await fetch(`${BASE}/api/v1/projects?name=${encodeURIComponent(workName || "")}`, {
         headers: { Authorization: `Bearer ${TOKEN}` },
       });
+      // 비-JSON 응답(HTML 오류 페이지 등)은 파싱 전에 HTTP status·content-type을 담은 에러로 변환 (원인 판독성)
+      const projCt = projRes.headers.get("content-type") || "";
+      if (!projCt.includes("application/json")) {
+        throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${projRes.status}, content-type: ${projCt || "없음"}) — ${(await projRes.text()).slice(0, 200)}`);
+      }
       const projJson = await projRes.json();
       if (!projJson.success || !projJson.data?.length) {
         await client.chat.postMessage({
@@ -228,6 +233,10 @@ module.exports = function registerResupplyActions(app, deps) {
             headers: { Authorization: `Bearer ${TOKEN}` },
             body: formData,
           });
+          const upCt = uploadRes.headers.get("content-type") || "";
+          if (!upCt.includes("application/json")) {
+            throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${uploadRes.status}, content-type: ${upCt || "없음"}) — ${(await uploadRes.text()).slice(0, 200)}`);
+          }
           const uploadJson = await uploadRes.json();
           if (!uploadJson.success) throw new Error(uploadJson.error?.message || "업로드 실패");
 

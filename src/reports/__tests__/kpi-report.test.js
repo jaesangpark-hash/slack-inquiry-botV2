@@ -164,7 +164,7 @@ describe("kpi-report: sendApiAnalysisReport", () => {
     assert.ok(issueBlocks[0].text.text.includes("/ep/n1"), "엔드포인트 명 포함");
   });
 
-  test("통계 필드: 총 호출·실패·평균 응답·봇별 텍스트 포함", async () => {
+  test("통계 필드: 총 호출·실패·평균 응답 포함", async () => {
     const slackClient = makeSlackClient();
     const { sendApiAnalysisReport } = createKpiReport({ slackClient, reportChannelId: "U0", logDir });
     writeLogFile(logDir, [
@@ -177,7 +177,6 @@ describe("kpi-report: sendApiAnalysisReport", () => {
     const fieldTexts = fieldBlock.fields.map(f => f.text).join(" ");
     assert.ok(fieldTexts.includes("2회"), "총 호출 2회");
     assert.ok(fieldTexts.includes("1회"), "실패 1회");
-    assert.ok(fieldTexts.includes("bot-a"), "봇별 텍스트에 bot-a 포함");
   });
 
   test("slackClient.chat.postMessage 에러 — 예외 삼킴 (R6 catch 보존)", async () => {

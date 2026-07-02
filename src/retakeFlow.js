@@ -14,6 +14,12 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     let returnedCount = null;
     const result = await loggedCall(async () => {
       const res  = await fetch(url, options);
+      // 비-JSON 응답(HTML 오류 페이지 등)은 파싱 전에 HTTP status·content-type을 담은 에러로 변환 (원인 판독성)
+      const ct   = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        const head = (await res.text()).slice(0, 200);
+        throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${head}`);
+      }
       const json = await res.json();
       if (Array.isArray(json.data))       returnedCount = json.data.length;
       else if (json.data != null)         returnedCount = 1;

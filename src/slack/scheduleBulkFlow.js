@@ -81,6 +81,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       const res  = await fetch(`${BASE()}/api/v1/projects?name=${encodeURIComponent(workName)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
       });
+      // 비-JSON 응답(HTML 오류 페이지 등)은 파싱 전에 HTTP status·content-type을 담은 에러로 변환 (원인 판독성)
+      const ct   = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+      }
       const json = await res.json();
       if (!json.success || !json.data?.length) return null;
       return json.data[0]?.uuid || null;
@@ -96,6 +101,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
       });
+      const ct   = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+      }
       const json = await res.json();
       if (!json.success) return [];
       const job = (json.data || [])[0];
@@ -123,6 +132,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
       });
+      const ct   = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+      }
       const json = await res.json();
       if (!json.success) return {};
       const job = (json.data || [])[0];
@@ -161,6 +174,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           method: "POST",
           headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
         });
+        const ct   = res.headers.get("content-type") || "";
+        if (!ct.includes("application/json")) {
+          throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+        }
         const json = await res.json();
         if (!json.success) throw new Error(json.message || "retake API 오류");
         ok++;
@@ -213,6 +230,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN()}` },
       body:    JSON.stringify(payload),
     });
+    const applyCt = applyRes.headers.get("content-type") || "";
+    if (!applyCt.includes("application/json")) {
+      throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${applyRes.status}, content-type: ${applyCt || "없음"}) — ${(await applyRes.text()).slice(0, 200)}`);
+    }
     const applyJson = await applyRes.json();
 
     if (applyJson.success) {
