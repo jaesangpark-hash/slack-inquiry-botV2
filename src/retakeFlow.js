@@ -169,12 +169,17 @@ JSON만 출력. 코드블록 금지.
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-            { type: "actions", elements: candResult.multiple.map((r, i) => ({
-              type: "button", action_id: `retake_token_pick_${i}`,
-              text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-              value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
-            }))},
+            { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.` }},
+            { type: "actions", elements: [
+              ...candResult.multiple.slice(0, 4).map((r, i) => ({
+                type: "button", action_id: `retake_token_pick_${i}`,
+                text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
+                value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
+              })),
+              { type: "button", action_id: "open_retake_info_modal",
+                text: { type: "plain_text", text: "✏️ 직접 입력" },
+                value: pendingId },
+            ]},
           ],
         });
         return;
@@ -191,12 +196,17 @@ JSON만 출력. 코드블록 금지.
               channel: dmChannel,
               text: "작품 후보가 여러 개야. 선택해줘.",
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${tokenResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-                { type: "actions", elements: tokenResult.multiple.slice(0, 5).map((r, i) => ({
-                  type: "button", action_id: `retake_token_pick_${i}`,
-                  text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-                  value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
-                }))},
+                { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${tokenResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.` }},
+                { type: "actions", elements: [
+                  ...tokenResult.multiple.slice(0, 4).map((r, i) => ({
+                    type: "button", action_id: `retake_token_pick_${i}`,
+                    text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
+                    value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
+                  })),
+                  { type: "button", action_id: "open_retake_info_modal",
+                    text: { type: "plain_text", text: "✏️ 직접 입력" },
+                    value: pendingId },
+                ]},
               ],
             });
             return;
