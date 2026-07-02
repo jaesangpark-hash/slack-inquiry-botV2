@@ -481,7 +481,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     await ack();
     try {
       const { mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");
-      const dmChannelId = body.user.id;
+      const dmChannelId = body.channel?.id || body.user.id;
       const draftId = generateDraftId();
       draftStore.set(draftId, { draftId, dmChannelId, userId: body.user.id, execMode });
       await client.views.open({
