@@ -418,15 +418,16 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       { type: "divider" },
     ];
     for (const { opCode, opName } of opList) {
+      const elem = isRetake
+        ? { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1", max_value: "365" }
+        : { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "5", min_value: "0", max_value: "365" };
       blocks.push({
         type: "input",
         block_id: `op_${opCode}`,
+        optional: isRetake,
         label: { type: "plain_text", text: opName },
-        element: {
-          type: "number_input", is_decimal_allowed: false, action_id: "value",
-          initial_value: "5", min_value: isRetake ? "1" : "0", max_value: "365",
-        },
-        hint: { type: "plain_text", text: "일 단위" },
+        element: elem,
+        hint: { type: "plain_text", text: isRetake ? "비워두면 이 오퍼레이션 건너뜀" : "일 단위" },
       });
     }
     return {
