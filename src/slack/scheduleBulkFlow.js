@@ -379,11 +379,14 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         hint: { type: "plain_text", text: "나머지 회차는 마지막 그룹으로 자동 묶음 (예: 1-11화, 3화 그룹 → 1-3 / 4-6 / 7-9 / 10-11)" },
       });
     }
-    blocks.push({
-      type: "input", block_id: "first_start",
-      label: { type: "plain_text", text: isSingle ? "시작일" : "첫 번째 그룹 시작일" },
-      element: { type: "datepicker", action_id: "value" },
-    });
+    // 단일 retake는 시작일을 retakeFlow의 datepicker 모달에서 받으므로 스킵
+    if (!(isSingle && execMode === "retake")) {
+      blocks.push({
+        type: "input", block_id: "first_start",
+        label: { type: "plain_text", text: isSingle ? "시작일" : "첫 번째 그룹 시작일" },
+        element: { type: "datepicker", action_id: "value" },
+      });
+    }
     if (isBulk) {
       blocks.push({
         type: "input", block_id: "gap_days",
@@ -553,13 +556,17 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
 
     const groups = buildGroups(epStart, epEnd, groupSize);
-    const workIdentifier = execMode === "retake" ? (workName || pivoId) : workName;
-    if (!groups.length || !workIdentifier || !firstStart) {
+    const workIdentifier   = execMode === "retake" ? (workName || pivoId) : workName;
+    const isSingleRetake   = mode === "single" && execMode === "retake";
+    const needsStartDate   = !isSingleRetake;
+    if (!groups.length || !workIdentifier || (needsStartDate && !firstStart)) {
       if (dmChannelId) await client.chat.postMessage({
         channel: dmChannelId,
-        text: execMode === "retake"
-          ? "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명 또는 PIVO ID·시작일 필수)."
-          : "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명·시작일 필수).",
+        text: isSingleRetake
+          ? "⚠️ 입력을 확인해줘 (작품명 또는 PIVO ID·화수 필수)."
+          : execMode === "retake"
+            ? "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명 또는 PIVO ID·시작일 필수)."
+            : "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명·시작일 필수).",
       }).catch(e => console.error("[scheduleBulk] 입력검증 DM 실패:", e.message));
       return;
     }
@@ -594,7 +601,51 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         return;
       }
 
-      // 각 그룹 첫 회차에서 오퍼레이션 조회 (병렬 + union)
+      // 단일 화수 + retake → retakeFlow의 오퍼레이션 선택 경로로 라우팅
+      if (isSingleRetake) {
+        draftStore.set(draftId, {
+          type:            "retake",
+          workName:        displayName,
+          workNameKo:      displayName,
+          pivoId:          pivoId || null,
+          episode:         String(epStart),
+          sourceLink:      "",
+          requesterName:   "",
+          requesterUserId: null,
+          actualApm:       "",
+          actualApmId:     null,
+          dmChannelId,
+        });
+        if (loadingViewId) {
+          await client.views.update({
+            view_id: loadingViewId,
+            view: {
+              type:  "modal",
+              title: { type: "plain_text", text: "완료" },
+              close: { type: "plain_text", text: "닫기" },
+              blocks: [{ type: "section", text: { type: "mrkdwn", text: "✅ DM에서 작업 유형을 선택해줘." } }],
+            },
+          }).catch(e => console.error("[scheduleBulk] 단일retake 완료모달 실패:", e.message));
+        }
+        await client.chat.postMessage({
+          channel: dmChannelId,
+          text: `${displayName} ${epStart}화 태스크 재생성 — 작업 유형을 선택해줘.`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn",
+              text: `*🔄 태스크 재생성 요청*\n*작품명:* ${displayName}　*회차:* ${epStart}화\n\n내용을 확인하고 작업 유형을 선택해줘.` } },
+            { type: "actions", elements: [
+              { type: "button", action_id: "retake_select_operation",
+                text: { type: "plain_text", text: "작업 유형 선택" },
+                style: "primary", value: draftId },
+              { type: "button", action_id: "retake_close",
+                text: { type: "plain_text", text: "❌ 종료" }, value: draftId },
+            ]},
+          ],
+        });
+        return;
+      }
+
+      // 복수/그룹: 오퍼레이션 기간 조회 후 Modal B로 진행
       const sampleEps = groups.map(g => g.episodes[0]);
       const opSets    = await Promise.all(sampleEps.map(ep => _getOpsForEpisode(projectUuid, ep)));
       const seen = new Set();
