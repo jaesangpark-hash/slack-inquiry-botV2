@@ -362,6 +362,10 @@ cron.schedule("0 15 * * *", () => kpiReport.sendApiAnalysisReport(), { timezone:
 cleanOldLogs();
 console.log("[apiAnalyzer] 일일 분석 스케줄 등록 완료 (매일 15:00 KST)");
 
+// ── ToTalk 멘션 폴러 — 툰식이 테스트 완료 후 아래 주석 해제
+// const createTotalkMonitor = require("./totalk-monitor");
+// createTotalkMonitor({ cron, slackClient: app.client, sendAlert, sheetsClient }).register();
+
 // ── 서버 시작 ─────────────────────────────────────────────
 (async () => {
   await app.start();

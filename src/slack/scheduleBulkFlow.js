@@ -75,10 +75,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     return result;
   }
 
-  // ── TOTUS: projectUuid 조회 ────────────────────────────────────────
-  async function _getProjectUuid(workName) {
+  // ── TOTUS: projectUuid 조회 (작품명 또는 pivoId) ─────────────────────
+  async function _getProjectUuid(workName, pivoId) {
     try {
-      const res  = await fetch(`${BASE()}/api/v1/projects?name=${encodeURIComponent(workName)}`, {
+      const query = pivoId
+        ? `pivoId=${encodeURIComponent(pivoId)}`
+        : `name=${encodeURIComponent(workName)}`;
+      const res  = await fetch(`${BASE()}/api/v1/projects?${query}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
       });
       // 비-JSON 응답(HTML 오류 페이지 등)은 파싱 전에 HTTP status·content-type을 담은 에러로 변환 (원인 판독성)
@@ -344,14 +347,23 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       {
         type: "input", block_id: "work_name",
         label: { type: "plain_text", text: "작품명" },
+        optional: execMode === "retake",
         element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
       },
-      {
-        type: "input", block_id: "ep_start",
-        label: { type: "plain_text", text: isSingle ? "화수" : "시작 화수" },
-        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
-      },
     ];
+    if (execMode === "retake") {
+      blocks.push({
+        type: "input", block_id: "pivo_id",
+        label: { type: "plain_text", text: "PIVO ID (작품명 대신 입력 가능)" },
+        optional: true,
+        element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 38873" } },
+      });
+    }
+    blocks.push({
+      type: "input", block_id: "ep_start",
+      label: { type: "plain_text", text: isSingle ? "화수" : "시작 화수" },
+      element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+    });
     if (!isSingle) {
       blocks.push({
         type: "input", block_id: "ep_end",
@@ -524,6 +536,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const v = view.state.values;
 
     const workName   = v.work_name?.value?.value?.trim() || "";
+    const pivoId     = v.pivo_id?.value?.value?.trim() || "";
     const epStart    = parseInt(v.ep_start?.value?.value || "1", 10);
     const firstStart = v.first_start?.value?.selected_date || "";
     let epEnd, groupSize, gapDays;
@@ -540,10 +553,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
 
     const groups = buildGroups(epStart, epEnd, groupSize);
-    if (!groups.length || !workName || !firstStart) {
+    const workIdentifier = execMode === "retake" ? (workName || pivoId) : workName;
+    if (!groups.length || !workIdentifier || !firstStart) {
       if (dmChannelId) await client.chat.postMessage({
         channel: dmChannelId,
-        text: "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명·시작일 필수).",
+        text: execMode === "retake"
+          ? "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명 또는 PIVO ID·시작일 필수)."
+          : "⚠️ 입력을 확인해줘 (시작 화수 ≤ 끝 화수, 작품명·시작일 필수).",
       }).catch(e => console.error("[scheduleBulk] 입력검증 DM 실패:", e.message));
       return;
     }
@@ -566,14 +582,15 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
     // TOTUS 조회 (비동기)
     try {
-      const projectUuid = await _getProjectUuid(workName);
+      const displayName = workName || `PIVO ${pivoId}`;
+      const projectUuid = await _getProjectUuid(workName, pivoId);
       if (!projectUuid) {
         const errView = {
           type: "modal", title: { type: "plain_text", text: "오류" },
-          blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ *${workName}* 프로젝트를 찾지 못했어. 작품명을 확인해줘.` } }],
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ *${displayName}* 프로젝트를 찾지 못했어. 작품명 또는 PIVO ID를 확인해줘.` } }],
         };
         if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(e => console.error("[scheduleBulk] 프로젝트미발견 errView update 실패:", e.message));
-        else await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ TOTUS에서 *${workName}* 프로젝트를 찾지 못했어.` });
+        else await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ TOTUS에서 *${displayName}* 프로젝트를 찾지 못했어.` });
         return;
       }
 
@@ -599,7 +616,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
       // draft 업데이트
       const prev = draftStore.get(draftId) || {};
-      draftStore.set(draftId, { ...prev, workName, projectUuid, groups, firstStart, gapDays, opList, execMode });
+      draftStore.set(draftId, { ...prev, workName: displayName, projectUuid, groups, firstStart, gapDays, opList, execMode });
 
       // 로딩 모달 → Modal B
       const modalB = buildModalBView(draftId, opList);
