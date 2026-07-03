@@ -733,7 +733,7 @@ JSON만 출력. 코드블록 금지.
         ? `Ep.${data.episodeList[0]}-${data.episodeList[data.episodeList.length-1]}`
         : `Ep.${data.episode || ""}`;
       const _targetMentionEn = targetDisplayName.startsWith("<@") ? targetDisplayName : "";
-      const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : "";
+      const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : (data.requesterMention || "");
       msgHeader = `${_targetMentionEn}\n*📨 ${typeEn}*\n*Title:* ${data.workName}　*Episode:* ${_epLabelEn}\n*Manager:* ${_apmMention}`;
       const _actionEn = await _translateTo(data.actionRequired || data.inquiryDetail, "en").catch(() => data.actionRequired || data.inquiryDetail);
       let _bodyEn = `*Request*\n${_actionEn}`;
@@ -752,7 +752,7 @@ JSON만 출력. 코드블록 금지.
         ? `${data.episodeList[0]}-${data.episodeList[data.episodeList.length-1]}화`
         : (data.episodeLabel || `${data.episode || ""}화`);
       const _targetMentionKo = targetDisplayName.startsWith("<@") ? targetDisplayName : "";
-      const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : "";
+      const _apmMention = data.apmUserId ? `<@${data.apmUserId}>` : (data.requesterMention || "");
       msgHeader = `${_targetMentionKo}\n*📨 ${TYPE_LABEL[data.relayType] || data.relayType}*\n*작품:* ${data.workName}　*회차:* ${_epLabelKo}\n*담당자:* ${_apmMention}`;
       let _bodyKo = `*작업 요청*\n${data.actionRequired || data.inquiryDetail}`;
       if ((data.corrections || []).length > 0) {
