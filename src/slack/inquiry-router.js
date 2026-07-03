@@ -305,6 +305,7 @@ module.exports = function createInquiryRouter(deps) {
         relayText:       hasThreadContext ? threadContextText : originalText,
         relayImageUrls,
         requesterUserId: requesterUserId || null,
+        apmUserId: userId || null,
         originalText,
       });
       await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
@@ -334,7 +335,7 @@ module.exports = function createInquiryRouter(deps) {
         .filter(Boolean);
       // 스레드 맥락이 있으면 전체 텍스트, 없으면 단일 메시지
       const relayText = hasThreadContext ? threadContextText : originalText;
-      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls);
+      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls, userId || null);
       return;
     }
 

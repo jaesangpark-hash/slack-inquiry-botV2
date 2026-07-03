@@ -251,7 +251,7 @@ JSON만 출력. 코드블록 금지.
   // ══════════════════════════════════════════════════════════
   // 메인 핸들러
   // ══════════════════════════════════════════════════════════
-  async function handleWorkerRelay(client, dmChannel, analysis, sourceInfo, originalText, requesterUserId, imageUrls = []) {
+  async function handleWorkerRelay(client, dmChannel, analysis, sourceInfo, originalText, requesterUserId, imageUrls = [], apmUserId = null) {
 
     // 1. Gemini로 상세 파싱
     let parsed = {};
@@ -442,7 +442,7 @@ JSON만 출력. 코드블록 금지.
       sourceLang,
       requesterName, requesterMention, requesterOpName: requesterWorker.opName,
       requesterSlackId: requesterUserId || null,
-      apmUserId: requesterUserId || null, // APM User ID 저장
+      apmUserId: apmUserId || null,
       targetWorkerEmail: targetWorker.workerEmail,
       targetWorkerName:  targetWorker.workerName,
       targetOpName:      targetWorker.opName,
@@ -554,7 +554,7 @@ JSON만 출력. 코드블록 금지.
         { type: "section", fields: [
           { type: "mrkdwn", text: `*작품명*\n${workName}` },
           { type: "mrkdwn", text: `*회차*\n${_episodeLabel}` },
-          { type: "mrkdwn", text: `*담당자*\n${requesterMention}` },
+          { type: "mrkdwn", text: `*담당자*\n${data.apmUserId ? `<@${data.apmUserId}>` : requesterMention}` },
           { type: "mrkdwn", text: `*전달 대상*\n${targetDisplayNamePre} (${targetOpName})` },
         ]},
         ...linkSection,
@@ -890,7 +890,7 @@ JSON만 출력. 코드블록 금지.
       requesterName: data.requesterName, requesterMention: data.requesterMention,
       requesterOpName: reqWorker.opName,
       requesterSlackId: data.requesterUserId || null,
-      apmUserId: data.requesterUserId || null,
+      apmUserId: data.apmUserId || null,
       targetWorkerEmail: targetWorker.workerEmail,
       targetWorkerName:  targetWorker.workerName,
       targetOpName:      targetWorker.opName,

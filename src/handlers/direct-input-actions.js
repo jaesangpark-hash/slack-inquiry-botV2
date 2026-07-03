@@ -473,7 +473,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     await handleWorkerRelay(
       client, pending.dmChannel, pending.analysis,
       { url: pending.sourceLink, channelId: pending.channelId, ts: pending.ts },
-      pending.relayText, pending.requesterUserId, pending.relayImageUrls,
+      pending.relayText, pending.requesterUserId, pending.relayImageUrls, pending.apmUserId || null,
     );
   });
 
