@@ -99,7 +99,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: 단일 회차에서 오퍼레이션 목록 추출 ──────────────────────
-  async function _getOpsForEpisode(projectUuid, episode) {
+  async function _getOpsForEpisode(projectUuid, episode, excludeCompleted = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -118,6 +118,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         for (const task of (op.태스크 || [])) {
           const code = task.오퍼레이션유형;
           if (!code || EXCLUDE_OP_CODES.has(code) || seen.has(code)) continue;
+          if (excludeCompleted && EXCLUDE_TASK_STATES.has(task.상태)) continue;
           seen.add(code);
           ops.push({ opCode: code, opName: task.오퍼레이션유형명 || code });
         }
@@ -407,12 +408,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── Modal B 뷰 빌더 (TOTUS 오퍼레이션 기반, 동적 생성) ───────────
-  function buildModalBView(draftId, opList) {
+  function buildModalBView(draftId, opList, execMode = "schedule") {
+    const isRetake = execMode === "retake";
+    const headerText = isRetake
+      ? "그룹 내 모든 회차에 동일 적용. TOTUS에 활성 태스크가 있는 오퍼레이션만 표시돼."
+      : "그룹 내 모든 회차에 동일 적용. *0일*이면 해당 오퍼레이션 건너뜀.";
     const blocks = [
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: "그룹 내 모든 회차에 동일 적용. *0일*이면 해당 오퍼레이션 건너뜀." },
-      },
+      { type: "section", text: { type: "mrkdwn", text: headerText } },
       { type: "divider" },
     ];
     for (const { opCode, opName } of opList) {
@@ -422,7 +424,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         label: { type: "plain_text", text: opName },
         element: {
           type: "number_input", is_decimal_allowed: false, action_id: "value",
-          initial_value: "5", min_value: "0", max_value: "365",
+          initial_value: "5", min_value: isRetake ? "1" : "0", max_value: "365",
         },
         hint: { type: "plain_text", text: "일 단위" },
       });
@@ -647,7 +649,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
       // 복수/그룹: 오퍼레이션 기간 조회 후 Modal B로 진행
       const sampleEps = groups.map(g => g.episodes[0]);
-      const opSets    = await Promise.all(sampleEps.map(ep => _getOpsForEpisode(projectUuid, ep)));
+      const opSets    = await Promise.all(sampleEps.map(ep => _getOpsForEpisode(projectUuid, ep, execMode === "retake")));
       const seen = new Set();
       const opList = [];
       for (const ops of opSets) {
@@ -670,7 +672,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       draftStore.set(draftId, { ...prev, workName: displayName, projectUuid, groups, firstStart, gapDays, opList, execMode });
 
       // 로딩 모달 → Modal B
-      const modalB = buildModalBView(draftId, opList);
+      const modalB = buildModalBView(draftId, opList, execMode);
       if (loadingViewId) {
         await client.views.update({ view_id: loadingViewId, view: modalB }).catch(e => console.error("[scheduleBulk] Modal B update 실패(사용자 로딩모달 정지 가능):", e.message));
       } else {
