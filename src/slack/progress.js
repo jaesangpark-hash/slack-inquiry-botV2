@@ -27,27 +27,31 @@ module.exports = function createProgress({ slackClient, sendAlert }) {
     }
   }
 
-  async function withTimeout(fn, { dmChannel, client, label = "봇 처리" } = {}) {
-    const TIMEOUT_MS = 30000;
+  async function withTimeout(fn, { dmChannel, client, label = "봇 처리", timeoutMs } = {}) {
+    const TIMEOUT_MS = timeoutMs || 60000;
     let timer;
     const timeoutPromise = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error("TIMEOUT")), TIMEOUT_MS);
     });
+    const fnPromise = fn();
     try {
-      const result = await Promise.race([fn(), timeoutPromise]);
+      const result = await Promise.race([fnPromise, timeoutPromise]);
       clearTimeout(timer);
       return result;
     } catch (e) {
       clearTimeout(timer);
+      // fn()이 타임아웃 이후에도 백그라운드에서 실행 중일 수 있음.
+      // 나중에 reject되면 UnhandledPromiseRejection → 프로세스 종료로 이어지므로 silencing.
+      fnPromise.catch(() => {});
       if (e.message === "TIMEOUT") {
-        console.error(`[timeout] ${label} 30초 초과`);
+        console.error(`[timeout] ${label} ${TIMEOUT_MS / 1000}초 초과`);
         if (dmChannel && client) {
           await client.chat.postMessage({
             channel: dmChannel,
             text: `⏱ 처리 시간이 초과됐어. 다시 소환해줘.\n문제가 반복되면 담당자에게 문의해줘.`,
           }).catch(() => {});
         }
-        await sendAlert(`*타임아웃*\n• 위치: \`${label}\`\n• 30초 초과로 처리가 중단됐어.`).catch(() => {});
+        await sendAlert(`*타임아웃*\n• 위치: \`${label}\`\n• ${TIMEOUT_MS / 1000}초 초과로 처리가 중단됐어.`).catch(() => {});
       } else {
         // 타임아웃 외 일반 오류도 알럿
         await sendAlert(`*${label} 오류*\n${e.message}`).catch(() => {});
