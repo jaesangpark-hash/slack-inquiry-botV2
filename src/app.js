@@ -280,13 +280,11 @@ function generateDraftId() { return `draft_${Date.now()}_${Math.random().toStrin
 // PRIORITY_EMOJI / buildDraftPreviewBlocks / buildDraftPreviewText / buildFinalMainMessage / buildThreadMessage → src/slack/inquiry-blocks.js
 
 async function postInquiryToTargetChannel(client, draft, submitterId) {
-  const msg = buildFinalMainMessage({ submitterId, workName: draft.workName, workNameKo: draft.workNameKo, episode: draft.episode, inquiryType: draft.inquiryType, inquiryContent: draft.inquiryContent, actionRequired: draft.actionRequired, draftId: draft.draftId });
-  const _t0 = Date.now();
-  const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
-  logEvent("inquiry", "/slack/inquiry-sent", Date.now() - _t0, true);
-  await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
+  // 히스토리 시트 기록을 먼저 해서 rowIndex를 얻는다 — 완료 버튼 값에 직접 박아넣기 위함
+  // (draftStore는 인메모리라 프로세스 재시작 후 완료를 누르면 rowIndex를 잃어버림)
+  let historyRowIndex = null;
   try {
-    const historyRowIndex = await appendInquiryHistory(draft, submitterId);
+    historyRowIndex = await appendInquiryHistory(draft, submitterId);
     if (historyRowIndex && draft.draftId) {
       draftStore.set(draft.draftId, { ...draft, historyRowIndex });
     }
@@ -297,6 +295,11 @@ async function postInquiryToTargetChannel(client, draft, submitterId) {
       await client.chat.postMessage({ channel: dmCh, text: `⚠️ 히스토리 시트 기록 실패: ${e.message}` }).catch(() => {});
     }
   }
+  const msg = buildFinalMainMessage({ submitterId, workName: draft.workName, workNameKo: draft.workNameKo, episode: draft.episode, inquiryType: draft.inquiryType, inquiryContent: draft.inquiryContent, actionRequired: draft.actionRequired, draftId: draft.draftId, historyRowIndex });
+  const _t0 = Date.now();
+  const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
+  logEvent("inquiry", "/slack/inquiry-sent", Date.now() - _t0, true);
+  await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
   return postRes;
 }
 

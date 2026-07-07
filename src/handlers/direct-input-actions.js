@@ -44,7 +44,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     await ack();
     try {
       const meta = JSON.parse(body.actions[0].value || "{}");
-      const { submitterId, draftId } = meta;
+      const { submitterId, draftId, historyRowIndex: metaHistoryRowIndex } = meta;
       const draft = draftId ? draftStore.get(draftId) : null;
 
       // PM 채널 메시지 완료 처리 (버튼 제거 + 완료 context 추가)
@@ -60,7 +60,8 @@ module.exports = function registerDirectInputActions(app, deps) {
       });
 
       // 히스토리 시트 완료 체크박스 처리
-      const historyRowIndex = draft?.historyRowIndex || null;
+      // 버튼 값(메시지에 영속됨)을 우선 사용 — draftStore(인메모리)는 재시작 시 사라지므로 폴백으로만 사용
+      const historyRowIndex = metaHistoryRowIndex || draft?.historyRowIndex || null;
       if (historyRowIndex && typeof checkInquiryDone === "function") {
         await checkInquiryDone(historyRowIndex);
       }

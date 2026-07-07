@@ -179,10 +179,12 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     return [`*문의 초안*`, "", `• 작품명: ${draft.workName||"-"}${draft.workNameKo && draft.workNameKo !== draft.workName ? `  (${draft.workNameKo})` : ""}`, `• 회차: ${draft.episode ? draft.episode+"화" : "-"}`, `• 문의 유형: ${draft.inquiryType||"-"}`, `• 요약: ${draft.summary||"-"}`, `• 필요 액션: ${draft.actionRequired||"-"}`, `• 원문 링크: ${draft.sourceLink||"-"}`].join("\n");
   }
 
-  function buildFinalMainMessage({ submitterId, workName, workNameKo, episode, inquiryType, inquiryContent, actionRequired, draftId }) {
+  function buildFinalMainMessage({ submitterId, workName, workNameKo, episode, inquiryType, inquiryContent, actionRequired, draftId, historyRowIndex }) {
     const mentions = fixedMentionUserIds.map(id => `<@${id}>`).join(" ");
     const fallbackText = `${workName||"-"} | ${inquiryType||"-"} | <@${submitterId}>`;
-    const meta = JSON.stringify({ submitterId, draftId: draftId || null });
+    // historyRowIndex를 버튼 값에 직접 박아둔다 — draftStore(인메모리)는 프로세스 재시작 시 사라지므로,
+    // 완료 클릭이 며칠 뒤에 일어나도 시트 체크박스 처리가 가능하도록 메시지 자체에 영속시킨다.
+    const meta = JSON.stringify({ submitterId, draftId: draftId || null, historyRowIndex: historyRowIndex || null });
     return {
       text: fallbackText,
       blocks: [
