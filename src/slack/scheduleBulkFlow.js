@@ -12,9 +12,19 @@
 //                                       → TOTUS 반영
 // ══════════════════════════════════════════════════════════════════
 
-const EXCLUDE_OP_CODES    = new Set(["OTC0087", "OTC0077"]); // 납품검수·피코마검수 제외
-const EXCLUDE_TASK_STATES = new Set(["COMPLETED", "DROP", "DELIVERED", "CONFIRMED"]);
+const EXCLUDE_OP_CODES    = new Set(["OTC0087", "OTC0077"]); // 납품검수·피코마검수 제외 (일정변경 전용)
+const EXCLUDE_TASK_STATES = new Set(["COMPLETED", "DROP", "DELIVERED", "CONFIRMED"]); // 일정변경 전용 — 리테이크는 완료상태가 정상이라 미적용
 const TRANSLATION_OP      = "OTC0012"; // 번역 (리테이크 기준 오퍼레이션)
+
+// 리테이크 가능 오퍼레이션 고정 목록 (retakeFlow.js RETAKE_OPERATIONS와 동일) — 상태 무관, 작업자 배정 여부로만 판단
+const RETAKE_OP_CODES = new Map([
+  ["OTC0012", "번역"],
+  ["OTC0013", "번역검수"],
+  ["OTC0014", "식자"],
+  ["OTC0024", "식자번역검수"],
+  ["OTC0015", "식자검수"],
+  ["OTC0087", "납품검수"],
+]);
 
 module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDraftId }) {
   const BASE  = () => process.env.PLATFORM_API_URL;
@@ -99,7 +109,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: 단일 회차에서 오퍼레이션 목록 추출 ──────────────────────
-  async function _getOpsForEpisode(projectUuid, episode, excludeCompleted = false) {
+  // isRetake=true: 완료상태 여부와 무관하게 RETAKE_OP_CODES 화이트리스트 + 작업자 배정된 태스크만 추출
+  //                (리테이크 대상은 원래 완료·납품된 화라 상태 필터를 쓰면 항상 0건이 됨)
+  async function _getOpsForEpisode(projectUuid, episode, isRetake = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -117,10 +129,12 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       for (const op of (job.오퍼레이션 || [])) {
         for (const task of (op.태스크 || [])) {
           const code = task.오퍼레이션유형;
-          if (!code || EXCLUDE_OP_CODES.has(code) || seen.has(code)) continue;
-          if (excludeCompleted && EXCLUDE_TASK_STATES.has(task.상태)) continue;
+          if (!code || seen.has(code)) continue;
+          if (isRetake) {
+            if (!RETAKE_OP_CODES.has(code) || task.작업자 == null) continue;
+          } else if (EXCLUDE_OP_CODES.has(code)) continue;
           seen.add(code);
-          ops.push({ opCode: code, opName: task.오퍼레이션유형명 || code });
+          ops.push({ opCode: code, opName: RETAKE_OP_CODES.get(code) || task.오퍼레이션유형명 || code });
         }
       }
       return ops;
@@ -131,7 +145,8 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: 단일 회차의 opCode → taskUuid 맵 ───────────────────────
-  async function _getTaskMap(projectUuid, episode) {
+  // isRetake=true: 완료상태 태스크도 포함 (리테이크 대상 = 완료된 번역 태스크를 찾아 /retake 호출해야 함)
+  async function _getTaskMap(projectUuid, episode, isRetake = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -149,7 +164,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         for (const task of (op.태스크 || [])) {
           const code = task.오퍼레이션유형;
           if (!code || EXCLUDE_OP_CODES.has(code)) continue;
-          if (EXCLUDE_TASK_STATES.has(task.상태)) continue;
+          if (!isRetake && EXCLUDE_TASK_STATES.has(task.상태)) continue;
           if (!map[code]) map[code] = task.uuid; // 복수 태스크일 경우 첫 번째
         }
       }
@@ -167,7 +182,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     let ok = 0, fail = 0;
     for (const ep of allEps) {
       try {
-        const taskMap = await _getTaskMap(projectUuid, ep);
+        const taskMap = await _getTaskMap(projectUuid, ep, true);
         const srcUuid = taskMap[TRANSLATION_OP];
         if (!srcUuid) {
           console.warn(`[scheduleBulk/retake] ep${ep} 번역 태스크 없음 — 스킵`);
@@ -204,12 +219,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
   // ── TOTUS: 일정 일괄 반영 ─────────────────────────────────────────
   async function _applySchedule(draft, client) {
-    const { projectUuid, calculatedSchedule, workName, dmChannelId } = draft;
+    const { projectUuid, calculatedSchedule, workName, dmChannelId, execMode } = draft;
+    const isRetake = execMode === "retake";
 
     // 전 회차 taskMap 병렬 조회
     const allEps = calculatedSchedule.flatMap(g => g.episodes.map(ep => ({ ep, group: g })));
     const taskMaps = await Promise.all(
-      allEps.map(async ({ ep, group }) => ({ ep, group, taskMap: await _getTaskMap(projectUuid, ep) }))
+      allEps.map(async ({ ep, group }) => ({ ep, group, taskMap: await _getTaskMap(projectUuid, ep, isRetake) }))
     );
 
     const payload = [];
