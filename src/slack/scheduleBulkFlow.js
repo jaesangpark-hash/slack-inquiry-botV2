@@ -86,6 +86,8 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: projectUuid 조회 (작품명 또는 pivoId) ─────────────────────
+  // 반환: { uuid, resolvedName } | null — resolvedName은 PIVO ID만 입력했을 때 표시용
+  // (한일 기준 pivoOriginalTitle=한국어 원제 우선, 없으면 pivoTitle=일본어. 중일은 원제가 중국어로 오니 주의)
   async function _getProjectUuid(workName, pivoId) {
     try {
       const query = pivoId
@@ -101,7 +103,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       }
       const json = await res.json();
       if (!json.success || !json.data?.length) return null;
-      return json.data[0]?.uuid || null;
+      const proj   = json.data[0];
+      if (!proj?.uuid) return null;
+      const detail = proj._detail || proj.detail || {};
+      const resolvedName = detail.pivoOriginalTitle || detail.pivoTitle || null;
+      return { uuid: proj.uuid, resolvedName };
     } catch (e) {
       console.error("[scheduleBulk] projectUuid 조회 오류:", e.message);
       return null;
@@ -608,8 +614,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
     // TOTUS 조회 (비동기)
     try {
-      const displayName = workName || `PIVO ${pivoId}`;
-      const projectUuid = await _getProjectUuid(workName, pivoId);
+      const projectResult = await _getProjectUuid(workName, pivoId);
+      const displayName   = workName || projectResult?.resolvedName || `PIVO ${pivoId}`;
+      const projectUuid   = projectResult?.uuid || null;
       if (!projectUuid) {
         const errView = {
           type: "modal", title: { type: "plain_text", text: "오류" },
