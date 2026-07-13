@@ -17,6 +17,8 @@ module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWo
         throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${head}`);
       }
       const json = await res.json();
+      if (Array.isArray(json.data))       meta.returnedCount = json.data.length;
+      else if (json.data != null)         meta.returnedCount = 1;
       return json;
     }, meta);
   }

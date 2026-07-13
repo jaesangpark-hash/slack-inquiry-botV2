@@ -11,7 +11,8 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
 
   // fetch + loggedCall 통합 래퍼
   async function _apiFetch(url, options = {}, meta = {}) {
-    let returnedCount = null;
+    // meta는 참조 그대로 loggedCall에 넘겨야 콜백 안에서의 returnedCount mutation이 반영됨
+    // (스프레드로 새 객체를 만들면 fn() 실행 전 시점의 스냅샷이 찍혀 항상 null로 로깅됨)
     const result = await loggedCall(async () => {
       const res  = await fetch(url, options);
       // 비-JSON 응답(HTML 오류 페이지 등)은 파싱 전에 HTTP status·content-type을 담은 에러로 변환 (원인 판독성)
@@ -21,10 +22,10 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
         throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${head}`);
       }
       const json = await res.json();
-      if (Array.isArray(json.data))       returnedCount = json.data.length;
-      else if (json.data != null)         returnedCount = 1;
+      if (Array.isArray(json.data))       meta.returnedCount = json.data.length;
+      else if (json.data != null)         meta.returnedCount = 1;
       return json;
-    }, { ...meta, returnedCount });
+    }, meta);
     return result;
   }
 
