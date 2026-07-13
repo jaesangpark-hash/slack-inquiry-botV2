@@ -102,6 +102,7 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     const prompt = `
 아래 문의에서 정보를 추출해줘.
 괄호(「」『』<>《》【】 등)가 있으면 제거하고 작품명만 반환해.
+작품명은 원문 표기를 절대 바꾸지 말고 그대로 복사해. 조사·어미·문법을 "자연스럽게" 고치지 마 (예: "불린"을 "불리는"으로 바꾸는 것 금지).
 
 1) work_title_ja : 일본어 또는 중국어 작품명 (없으면 null)
 2) work_title_ko : 한국어 작품명 (없으면 null)
@@ -218,6 +219,19 @@ JSON만 출력. 코드블록 금지.
             return;
           }
         }
+      }
+    }
+
+    // 폴백: parsed 타이틀로 매칭 실패 시, analysis 원본 타이틀(다를 때만)로 1회 재시도
+    // — LLM 재파싱이 원문을 살짝 바꿔 쓰는 경우(예: "불린"→"불리는") 대비. 단건 매칭만 채택,
+    //   후보 여러 건이면 기존 "직접 입력" 폴백으로 넘겨 UI 분기를 늘리지 않음.
+    if (!matchedTitle && matchWorkTitleWithCandidates &&
+        (analysis.title_ja || analysis.title_ko) &&
+        (analysis.title_ja !== titleJa || analysis.title_ko !== titleKo)) {
+      const fallbackResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko).catch(() => null);
+      if (fallbackResult?.single) {
+        matchedTitle = fallbackResult.single;
+        console.log(`[retake] analysis 원본 타이틀 폴백 매칭 성공: ${matchedTitle.projectName}`);
       }
     }
 

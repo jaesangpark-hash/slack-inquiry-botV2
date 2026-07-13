@@ -615,7 +615,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     // TOTUS 조회 (비동기)
     try {
       const projectResult = await _getProjectUuid(workName, pivoId);
-      const displayName   = workName || projectResult?.resolvedName || `PIVO ${pivoId}`;
+      const displayName   = projectResult?.resolvedName || workName || `PIVO ${pivoId}`;
       const projectUuid   = projectResult?.uuid || null;
       if (!projectUuid) {
         const errView = {
