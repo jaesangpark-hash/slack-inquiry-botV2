@@ -9,6 +9,51 @@ module.exports = function registerMultipleInquiryFlow(app, {
   handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt, handleScheduleExtGrouped,
 }) {
 
+  const BASE  = () => process.env.PLATFORM_API_URL;
+  const TOKEN = () => process.env.PLATFORM_API_TOKEN;
+  const { loggedCall } = require("./apiLogger");
+
+  // 리테이크 항목 전용 pivoId 직접 입력 해석 — retakeFlow.js의 동일 로직 이식
+  // (Totus API 선 조회 → 실패/미확인 시 마스터 시트 폴백)
+  async function _resolvePivoIdForRetake(pivoId) {
+    let resolvedWorkName, resolvedWorkNameKo;
+    try {
+      const meta = { bot: "multi-retake", endpoint: "/projects", params: { pivoId }, expectedCount: 1 };
+      const _pivoRes = await loggedCall(async () => {
+        const res = await fetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivoId)}`, {
+          headers: { Authorization: `Bearer ${TOKEN()}` },
+        });
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.includes("application/json")) {
+          const head = (await res.text()).slice(0, 200);
+          throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}) — ${head}`);
+        }
+        const json = await res.json();
+        if (Array.isArray(json.data)) meta.returnedCount = json.data.length;
+        else if (json.data != null)   meta.returnedCount = 1;
+        return json;
+      }, meta);
+      const list = _pivoRes?.data || [];
+      const proj = list.find(p => {
+        const d = p._detail || p;
+        return d.진행상태 !== "CANCELED" && d.pivoId != null;
+      });
+      const totusName = proj?.name
+                     || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
+                     || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
+                     || null;
+      const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
+      resolvedWorkName   = matchedByPivo?.projectName || totusName || `(pivoId: ${pivoId})`;
+      resolvedWorkNameKo = matchedByPivo?.projectName || matchedByPivo?.ko || totusName || resolvedWorkName;
+    } catch (e) {
+      console.error(`[multi] pivoId 조회 실패 → 마스터 시트 폴백:`, e.message);
+      const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
+      resolvedWorkName   = matchedByPivo?.projectName || matchedByPivo?.ko || `(pivoId: ${pivoId})`;
+      resolvedWorkNameKo = matchedByPivo?.ko || resolvedWorkName;
+    }
+    return { projectName: resolvedWorkName, ko: resolvedWorkNameKo, pivoId };
+  }
+
   // ── 타입별 필수 필드 정의 ─────────────────────────────────
   const REQUIRED_FIELDS = {
     "스케줄":   ["work_title", "episode", "extend_or_date"],  // extend_days 또는 requested_date 중 하나
@@ -245,12 +290,21 @@ ${text}`.trim();
       { type: "section", text: { type: "mrkdwn", text: `*${typeLabel(item.type)}* — 누락된 정보를 입력해줘.` }},
     ];
 
+    const isRetakePivoEligible = item.type === "리테이크" && missing.includes("work_title");
     if (missing.includes("work_title")) {
       blocks.push({ type: "input", block_id: "mi_work_block",
         label: { type: "plain_text", text: "작품명" },
+        optional: isRetakePivoEligible,
         element: { type: "plain_text_input", action_id: "value",
           initial_value: item.work_title_ko || item.work_title_ja || "",
           placeholder: { type: "plain_text", text: "한국어 또는 일본어 작품명" } } });
+      if (isRetakePivoEligible) {
+        blocks.push({ type: "input", block_id: "mi_pivoid_block",
+          label: { type: "plain_text", text: "pivoId (작품명 대신 입력 가능)" },
+          optional: true,
+          element: { type: "plain_text_input", action_id: "value",
+            placeholder: { type: "plain_text", text: "예: 38873" } } });
+      }
     }
     if (missing.includes("episode")) {
       blocks.push({ type: "input", block_id: "mi_episode_block",
@@ -306,8 +360,9 @@ ${text}`.trim();
     const multiPending = draftStore.get(multiPendingId);
     if (!multiPending) return;
 
-    const v    = view.state.values;
-    const item = multiPending.items[itemIndex];
+    const v         = view.state.values;
+    const item      = multiPending.items[itemIndex];
+    const pivoInput = v.mi_pivoid_block?.value?.value?.trim() || "";
 
     // 입력값으로 항목 업데이트
     if (v.mi_work_block?.value?.value)    item.work_title_ko = v.mi_work_block.value.value.trim();
@@ -317,11 +372,18 @@ ${text}`.trim();
     if (v.mi_reason_block?.value?.value)  item.reason  = v.mi_reason_block.value.value.trim();
     if (v.mi_content_block?.value?.value) item.content = v.mi_content_block.value.value.trim();
 
+    if (v.mi_pivoid_block && !pivoInput && !item.work_title_ko && !item.work_title_ja) {
+      await client.chat.postMessage({ channel: body.user.id, text: `[항목 ${itemIndex + 1}] 작품명 또는 pivoId 중 하나는 입력해줘.` });
+      return;
+    }
+
     multiPending.items[itemIndex] = item;
     draftStore.set(multiPendingId, multiPending);
 
-    // 다시 매칭 시도 후 처리
-    const { matched, candidates } = await resolveTitle(item);
+    // pivoId 직접 입력(리테이크 전용) → 시트/토큰 매칭 우회하고 Totus API 선 조회
+    const { matched, candidates } = pivoInput && item.type === "리테이크"
+      ? { matched: await _resolvePivoIdForRetake(pivoInput), candidates: null }
+      : await resolveTitle(item);
 
     if (candidates) {
       // 복수 후보 → 선택 버튼

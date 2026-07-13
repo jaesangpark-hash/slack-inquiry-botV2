@@ -108,10 +108,22 @@ module.exports = function createInquiryRouter(deps) {
         console.log(`[retake-context] 스레드에서 추출 — title_ja: ${retakeAnalysis.title_ja} | title_ko: ${retakeAnalysis.title_ko} | episode: ${retakeAnalysis.episode}`);
       }
 
-      // 복수 항목 감지: 대괄호 작품명 또는 글머리기호가 2개 이상 별도 줄이면 복수
-      const lines     = originalText.split("\n").map(l => l.trim()).filter(l => l);
-      const itemLines = lines.filter(l => /^\[.+\]|^\*\s|^・|^•/.test(l));
-      if (itemLines.length >= 2) {
+      // 복수 항목 감지 ① — "{pivoId} | [브랜드] 작품명 / 화수 PIVO 납품" 고정 헤더 템플릿에서
+      // 화수를 직접 추출해 헤더가 2개 이상이면 복수(서로 다른 화수 요청이 한 메시지에 묶인 경우).
+      // 파일N 라벨 개수와 무관하게 헤더 자체를 세므로, 화수 판단이 실제 화수 정보를 근거로 이뤄짐.
+      const lines        = originalText.split("\n").map(l => l.trim()).filter(l => l);
+      const HEADER_RE    = /^[-*・•]?\s*\d+\s*\|\s*\[.+?\]\s*.+?\/\s*(\d+)\s*PIVO\s*납품/;
+      const headerEpisodes = lines.map(l => l.match(HEADER_RE)).filter(Boolean).map(m => m[1]);
+
+      // 복수 항목 감지 ② — 위 헤더 템플릿에 안 맞는 메시지용 폴백: 대괄호 작품명 또는
+      // 글머리기호가 2개 이상 별도 줄이면 복수. 단, "파일N #M" 류 파일/컷 단위 라벨은 제외
+      // — 동일 화수 내 수정 포인트 구분용이지 별도 작품/화수가 아님.
+      const itemLines = lines.filter(l => {
+        if (!/^\[.+\]|^\*\s|^・|^•/.test(l)) return false;
+        const stripped = l.replace(/^[*・•]\s*/, "");
+        return !/^파일\s*\d+\s*#?\d*\s*$/.test(stripped);
+      });
+      if (headerEpisodes.length >= 2 || itemLines.length >= 2) {
         await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null);
       } else {
         await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink }, originalText, retakeRequesterName, requesterUserId || null);

@@ -157,6 +157,30 @@ describe("UD-1: RETAKE 채널 선행분기", () => {
     assert.equal(deps.flows.handleRetakeInquiry.callCount(), 0);
   });
 
+  it("reaction + RETAKE 채널, 동일 화수 내 파일N 라벨 3건 → handleRetakeInquiry 호출 (단건 유지)", async () => {
+    const deps = makeDeps();
+    const router = createInquiryRouter(deps);
+    const ctx = makeReactionCtx({
+      sourceMeta: { channelId: "RETAKE_CH1", ts: "100.000" },
+      originalText: "207075 | [카카오픽코마] 짐승의 발자국 / 26 PIVO 납품\n\n• 파일2 #3\n원문\n->\n수정문\n\n• 파일2 #3\n원문\n->\n수정문\n\n• 파일6 #3\n원문\n->\n수정문",
+    });
+    await router.routeInquiry(ctx);
+    assert.equal(deps.flows.handleRetakeInquiry.callCount(), 1);
+    assert.equal(deps.flows.handleMultipleInquiry.callCount(), 0);
+  });
+
+  it("reaction + RETAKE 채널, 서로 다른 화수 헤더 2건 → handleMultipleInquiry 호출 (화수별 분리)", async () => {
+    const deps = makeDeps();
+    const router = createInquiryRouter(deps);
+    const ctx = makeReactionCtx({
+      sourceMeta: { channelId: "RETAKE_CH1", ts: "100.000" },
+      originalText: "207075 | [카카오픽코마] 짐승의 발자국 / 26 PIVO 납품\n\n파일2 #3\n원문\n->\n수정문\n\n207075 | [카카오픽코마] 짐승의 발자국 / 27 PIVO 납품\n\n파일6 #3\n원문\n->\n수정문",
+    });
+    await router.routeInquiry(ctx);
+    assert.equal(deps.flows.handleMultipleInquiry.callCount(), 1);
+    assert.equal(deps.flows.handleRetakeInquiry.callCount(), 0);
+  });
+
   it("message + RETAKE 채널 → RETAKE 선행분기 진입 안 함 (UD-1 보존)", async () => {
     const deps = makeDeps();
     const router = createInquiryRouter(deps);
