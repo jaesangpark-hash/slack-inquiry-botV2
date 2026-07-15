@@ -118,13 +118,13 @@ const processedMessageTs = new Set();
 const draftStore         = new Map();
 
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
-const { appendInquiryHistory, checkInquiryDone } = createInquiryHistory({
+const { appendInquiryHistory, updateInquiryHistorySourceLink, checkInquiryDone } = createInquiryHistory({
   sheetsClient,
   historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
   historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
   historyGridSheetId: 268190314,
 });
-const { appendResupplyRecord, checkResupplyDone } = createResupplyRecord({
+const { appendResupplyRecord, updateResupplySourceLink, checkResupplyDone } = createResupplyRecord({
   sheetsClient,
   resupplySheetId: RESUPPLY_SHEET_ID,
   resupplySheetRange: RESUPPLY_SHEET_RANGE,
@@ -241,6 +241,7 @@ require("./handlers/resupply-actions")(app, {
   buildFileInquiryBlocks,
   buildFileInquiryMessage,
   appendResupplyRecord,
+  updateResupplySourceLink,
   checkResupplyDone,
   PM_REQUEST_CHANNEL_ID,
   matchWorkTitleFromSheet,
@@ -300,6 +301,17 @@ async function postInquiryToTargetChannel(client, draft, submitterId) {
   const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
   logEvent("inquiry", "/slack/inquiry-sent", Date.now() - _t0, true);
   await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
+
+  // 히스토리 시트 "원문 링크"를 원본 위치(작업자 채널 등) 대신 문의봇이 보낸 이 스레드로 갱신
+  // — 원본은 위 스레드 댓글에 이미 남아있어 정보 손실 없음, 시트에서 클릭했을 때 실제 대응 스레드로 이동하게 함
+  if (historyRowIndex) {
+    try {
+      const permalinkRes = await client.chat.getPermalink({ channel: TARGET_CHANNEL_ID, message_ts: postRes.ts });
+      await updateInquiryHistorySourceLink(historyRowIndex, permalinkRes.permalink);
+    } catch (e) {
+      console.error("[postInquiry] 히스토리 링크 갱신 실패:", e.message);
+    }
+  }
   return postRes;
 }
 

@@ -68,6 +68,34 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
   }
 
   /**
+   * G열(index 6, 메세지 링크)을 재수급봇이 실제로 PM 채널에 보낸 메시지의 퍼머링크로 갱신한다.
+   * append 시점엔 봇 메시지 ts를 아직 모르므로(rowIndex를 먼저 얻어 완료 버튼에 박아넣어야 함) 후속 호출로 덮어쓴다.
+   * @param {number|null} rowIndex
+   * @param {string} link
+   */
+  async function updateResupplySourceLink(rowIndex, link) {
+    if (!rowIndex || !link || !resupplySheetId || !resupplyGridSheetId) return;
+    try {
+      await sheetsClient.batchUpdate(resupplySheetId, [{
+        updateCells: {
+          range: {
+            sheetId: resupplyGridSheetId,
+            startRowIndex: rowIndex - 1,
+            endRowIndex: rowIndex,
+            startColumnIndex: 6,
+            endColumnIndex: 7,
+          },
+          rows: [{ values: [{ userEnteredValue: { stringValue: link } }] }],
+          fields: "userEnteredValue.stringValue",
+        },
+      }]);
+      console.log("[resupply-sheet] 링크 갱신 — row:", rowIndex);
+    } catch (e) {
+      console.error("[resupply-sheet] 링크 갱신 실패:", e.message);
+    }
+  }
+
+  /**
    * 재수급 완료 처리 — L열(index 11) 체크박스를 true로 변경한다.
    * @param {number|null} rowIndex  appendResupplyRecord 반환값
    */
@@ -93,5 +121,5 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
     }
   }
 
-  return { appendResupplyRecord, checkResupplyDone };
+  return { appendResupplyRecord, updateResupplySourceLink, checkResupplyDone };
 };

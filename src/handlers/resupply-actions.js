@@ -19,6 +19,7 @@ module.exports = function registerResupplyActions(app, deps) {
     buildFileInquiryBlocks,
     buildFileInquiryMessage,
     appendResupplyRecord,
+    updateResupplySourceLink,
     checkResupplyDone,
     PM_REQUEST_CHANNEL_ID,
     // 납품일·APM 조회 (선택 주입 — 미주입 시 조회 skip)
@@ -92,6 +93,14 @@ module.exports = function registerResupplyActions(app, deps) {
     if (draft.sourceLink && draft.sourceLink !== "-") {
       await client.chat.postMessage({ channel: PM_REQUEST_CHANNEL_ID, thread_ts: pmPost.ts, text: `🔗 원본 링크: ${draft.sourceLink}` });
     }
+    if (rowIndex && typeof updateResupplySourceLink === "function") {
+      try {
+        const permalinkRes = await client.chat.getPermalink({ channel: PM_REQUEST_CHANNEL_ID, message_ts: pmPost.ts });
+        await updateResupplySourceLink(rowIndex, permalinkRes.permalink);
+      } catch (e) {
+        console.error("[resupply] 링크 갱신 실패:", e.message);
+      }
+    }
     await client.chat.postMessage({ channel: draft.dmChannelId, text: `✅ <#${PM_REQUEST_CHANNEL_ID}> 채널에 재수급 요청을 전송했어.` });
   });
 
@@ -112,6 +121,14 @@ module.exports = function registerResupplyActions(app, deps) {
     const pmPost2 = await client.chat.postMessage({ channel: PM_REQUEST_CHANNEL_ID, ...msg });
     if (draft.sourceLink && draft.sourceLink !== "-") {
       await client.chat.postMessage({ channel: PM_REQUEST_CHANNEL_ID, thread_ts: pmPost2.ts, text: `🔗 원본 링크: ${draft.sourceLink}` });
+    }
+    if (rowIndex2 && typeof updateResupplySourceLink === "function") {
+      try {
+        const permalinkRes = await client.chat.getPermalink({ channel: PM_REQUEST_CHANNEL_ID, message_ts: pmPost2.ts });
+        await updateResupplySourceLink(rowIndex2, permalinkRes.permalink);
+      } catch (e) {
+        console.error("[resupply] 링크 갱신 실패:", e.message);
+      }
     }
     await client.chat.postMessage({ channel: draft.dmChannelId || body.user.id, text: `✅ <#${PM_REQUEST_CHANNEL_ID}> 채널에 재수급 요청을 전송했어.` });
   });
