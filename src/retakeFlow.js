@@ -362,7 +362,8 @@ JSON만 출력. 코드블록 금지.
     });
 
     const linkText     = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
-    const senderDisplay = requesterUserId ? `<@${requesterUserId}>` : requesterName;
+    // 발송자 = 실제로 이 요청을 실행한 사람(이모지를 달거나 직접 입력한 사람) — 원문 작성자(requesterUserId)가 아님
+    const senderDisplay = ownerUserId ? `<@${ownerUserId}>` : "";
     const senderText  = senderDisplay ? `\n*발송자:* ${senderDisplay}` : "";
     const apmDisplay  = actualApmId ? `<@${actualApmId}>` : actualApm;
     const apmText     = apmDisplay   ? `\n*담당 APM:* ${apmDisplay}`  : "";
@@ -975,9 +976,8 @@ JSON만 출력. 코드블록 금지.
 
     const msgText = `${data.workName} ${data.episode}화 작업을 다시 요청 드렸습니다.\n마감일 : ${endDateDisplay}`;
 
-    const senderCtxAuto = data.requesterUserId
-      ? `발송자: <@${data.requesterUserId}>`
-      : data.requesterName ? `발송자: ${data.requesterName}` : `발송자: <@${body.user.id}>`;
+    // 발송자 = 실제로 이 메시지 전송을 실행한 사람(이모지 소환자) — 원문 작성자(requesterUserId) 아님
+    const senderCtxAuto = `발송자: <@${data.ownerUserId || body.user.id}>`;
     const _resolvedApmIdAuto = data.actualApmId || (resolveApmUserId && data.actualApm ? resolveApmUserId(data.actualApm) : null);
     const apmCtxAuto = _resolvedApmIdAuto
       ? `담당 APM: <@${_resolvedApmIdAuto}>`
@@ -1120,11 +1120,9 @@ ${msgText}
       console.log("[retake] 💬 작업자 채널 전송 시도 — channel:", workerChannelId);
 
       // 발송자·담당 APM 컨텍스트 구성
-      // - 발송자: requesterUserId(Slack ID) 우선, 없으면 이름 텍스트
+      // - 발송자: ownerUserId(이모지 소환/직접 실행한 사람) 고정 — 원문 작성자(requesterUserId) 아님
       // - 담당 APM: 모달 입력값. U로 시작하면 멘션, 아니면 텍스트
-      const senderCtx = data.requesterUserId
-        ? `발송자: <@${data.requesterUserId}>`
-        : data.requesterName ? `발송자: ${data.requesterName}` : `발송자: <@${body.user.id}>`;
+      const senderCtx = `발송자: <@${data.ownerUserId || body.user.id}>`;
       const _apmEditedId = /^U[A-Z0-9]{6,}$/.test(apmEdited)
         ? apmEdited
         : (resolveApmUserId && apmEdited ? resolveApmUserId(apmEdited) : null);
