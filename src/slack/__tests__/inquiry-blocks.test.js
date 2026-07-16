@@ -24,7 +24,7 @@ describe("buildFileInquiryReason", () => {
   it("작품명+화수+사유 모두 있을 때 조합", () => {
     const result = blocks.buildFileInquiryReason(
       { work_title_ko: "테스트작품", episode: "5", reason_raw: "파일 손상" },
-      { projectName: "매칭작품" }
+      { koreanProjectName: "매칭작품" }
     );
     assert.equal(result, "매칭작품 5화 파일 손상");
   });
@@ -260,6 +260,10 @@ describe("buildFinalMainMessage", () => {
     inquiryContent: "내용 텍스트",
     actionRequired: "번역 완료 요청",
     draftId: "draft_99",
+    historyRowIndex: 31,
+    originalChannelId: "C_ORIGINAL",
+    originalTs: "111.222",
+    sourceLink: "https://slack.example/source",
   };
 
   it("fixedMentionUserIds 멘션 모두 포함", () => {
@@ -287,6 +291,19 @@ describe("buildFinalMainMessage", () => {
     assert.ok(actionsBlock);
     const ids = actionsBlock.elements.map(e => e.action_id);
     assert.ok(ids.includes("inquiry_done"));
+  });
+
+  it("inquiry_done metadata에 재시작 후 답변에 필요한 원문 맥락을 영속한다", () => {
+    const result = blocks.buildFinalMainMessage(params);
+    const doneButton = result.blocks
+      .flatMap(block => block.elements || [])
+      .find(element => element.action_id === "inquiry_done");
+    const metadata = JSON.parse(doneButton.value);
+
+    assert.equal(metadata.historyRowIndex, 31);
+    assert.equal(metadata.originalChannelId, "C_ORIGINAL");
+    assert.equal(metadata.originalTs, "111.222");
+    assert.equal(metadata.sourceLink, "https://slack.example/source");
   });
 });
 

@@ -3,15 +3,24 @@
 
 const { normalizeTitle, normalizeTitleKo, stripKariSuffix } = require("./normalize");
 
-// 시트 구조 (탭 '출판사 드라이브 링크'):
-//   A=APM, B=작품명(중국어), C=한국어타이틀, D=작품명(일본어), E=FIX 타이틀,
-//   F=미정, G=출판사, H=출판사 드라이브 링크, I=PIVO ID
-// 반환값: { ko, jaDisplay, jaNorm, koNorm, projectName, pivoId }
-//   projectName = C열 한국어타이틀 (한국어 매칭 키 + APM 표시용)
-//   pivoId      = I열 PIVO ID (Totus API 매핑용, 결과물 미노출)
+// 반환 행은 시트의 실제 언어·업무 의미를 필드명으로 드러낸다.
+// { chineseOriginalTitle, koreanProjectName, japaneseDisplayTitle,
+//   japaneseFixedTitle, normalizedChineseOriginalTitle,
+//   normalizedJapaneseDisplayTitle, pivoId }
 
 const ZHJA_SHEET_RANGE = "'출판사 드라이브 링크'!A:I";
 const CANDIDATE_MAX = 5;
+const MASTER_COLUMN_INDEX = Object.freeze({
+  CHINESE_ORIGINAL_TITLE: 1,
+  KOREAN_PROJECT_NAME: 2,
+  JAPANESE_DISPLAY_TITLE: 3,
+  JAPANESE_FIXED_TITLE: 4,
+  PIVO_ID: 8,
+});
+
+function readCell(row, columnIndex) {
+  return String(row[columnIndex] ?? "").trim();
+}
 
 /**
  * @param {{ google: object, getGoogleAuth: function, masterSheetId: string, alertOnError: function, sheetsClient: object }} deps
@@ -26,13 +35,29 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     );
     const rows = (res || []).slice(1); // 헤더 제외
     return rows.map(row => {
-      const pivoId      = (row[8] || "").trim();                        // I열 PIVO ID
-      const jpTitle     = (row[4] || "").trim();                        // E열 FIX 타이틀(정식 일본어)
-      const jaDisplay   = stripKariSuffix((row[3] || "").trim());       // D열 작품명(일본어), 仮 제거
-      const ko          = (row[1] || "").trim();                        // B열 작품명(중국어) — 매칭에 미사용
-      const projectName = (row[2] || "").trim();                        // C열 한국어타이틀
-      return { ko, jaDisplay, jpTitle, jaNorm: normalizeTitle(jaDisplay), koNorm: normalizeTitleKo(ko), projectName, pivoId };
-    }).filter(r => r.ko || r.jaDisplay);
+      const pivoId = readCell(row, MASTER_COLUMN_INDEX.PIVO_ID);
+      const japaneseFixedTitle = readCell(row, MASTER_COLUMN_INDEX.JAPANESE_FIXED_TITLE);
+      const japaneseDisplayTitle = stripKariSuffix(
+        readCell(row, MASTER_COLUMN_INDEX.JAPANESE_DISPLAY_TITLE)
+      );
+      const chineseOriginalTitle = readCell(row, MASTER_COLUMN_INDEX.CHINESE_ORIGINAL_TITLE);
+      const koreanProjectName = readCell(row, MASTER_COLUMN_INDEX.KOREAN_PROJECT_NAME);
+      return {
+        chineseOriginalTitle,
+        koreanProjectName,
+        japaneseDisplayTitle,
+        japaneseFixedTitle,
+        normalizedChineseOriginalTitle: normalizeTitleKo(chineseOriginalTitle),
+        normalizedJapaneseDisplayTitle: normalizeTitle(japaneseDisplayTitle),
+        pivoId,
+      };
+    }).filter(row =>
+      row.pivoId ||
+      row.koreanProjectName ||
+      row.chineseOriginalTitle ||
+      row.japaneseDisplayTitle ||
+      row.japaneseFixedTitle
+    );
   }
 
   async function loadTitleRowsFromSheet() {
@@ -48,39 +73,77 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     return titleCache.rows;
   }
 
-  async function matchWorkTitleFromSheet(titleJa, titleKo = null) {
-    if (!titleJa && !titleKo) return null;
+  /**
+   * @param {{ titleJa?: string|null, titleKo?: string|null, pivoId?: string|null }|string|null} queryOrTitleJa
+   * @param {string|null} legacyTitleKo
+   * @param {string|null} legacyPivoId
+   * @returns {Promise<{
+   *   chineseOriginalTitle: string,
+   *   koreanProjectName: string,
+   *   japaneseDisplayTitle: string,
+   *   japaneseFixedTitle: string,
+   *   normalizedChineseOriginalTitle: string,
+   *   normalizedJapaneseDisplayTitle: string,
+   *   pivoId: string,
+   * }|null>}
+   */
+  async function matchWorkTitleFromSheet(queryOrTitleJa, legacyTitleKo = null, legacyPivoId = null) {
+    const query = queryOrTitleJa && typeof queryOrTitleJa === "object"
+      ? {
+          titleJa: queryOrTitleJa.titleJa || null,
+          titleKo: queryOrTitleJa.titleKo || null,
+          pivoId:  queryOrTitleJa.pivoId  || null,
+        }
+      : {
+          titleJa: queryOrTitleJa || null,
+          titleKo: legacyTitleKo  || null,
+          pivoId:  legacyPivoId   || null,
+        };
+    const { titleJa, titleKo, pivoId } = query;
+    if (!titleJa && !titleKo && !pivoId) return null;
     const rows = await loadTitleRowsFromSheet();
 
-    // 1순위: 한국어 — G열(projectName) 완전 일치
-    if (titleKo) {
-      const needle = normalizeTitleKo(titleKo);
-      const exact  = rows.find(r => r.projectName && normalizeTitleKo(r.projectName) === needle);
-      if (exact) { console.log("[match] 한국어 G열 완전일치:", exact.projectName); return exact; }
-    }
-    // 2순위: 한국어 — G열(projectName) 부분 일치
-    if (titleKo) {
-      const needle = normalizeTitleKo(titleKo);
-      const partial = rows.find(r => r.projectName && (
-        normalizeTitleKo(r.projectName).includes(needle) ||
-        needle.includes(normalizeTitleKo(r.projectName))
-      ));
-      if (partial) { console.log("[match] 한국어 G열 부분일치:", partial.projectName); return partial; }
-    }
-    // 3순위: 일본어 — E열(jaDisplay) 완전 일치 (仮 제거 후)
-    if (titleJa) {
-      const needle = normalizeTitle(titleJa);
-      const exact  = rows.find(r => r.jaNorm === needle);
-      if (exact) { console.log("[match] 일본어 E열 완전일치:", exact.jaDisplay, "| pivoId:", exact.pivoId, "| projectName:", exact.projectName); return exact; }
-    }
-    // 4순위: 일본어 — E열(jaDisplay) 부분 일치 (仮 제거 후)
-    if (titleJa) {
-      const needle = normalizeTitle(titleJa);
-      const partial = rows.find(r => r.jaNorm && (r.jaNorm.includes(needle) || needle.includes(r.jaNorm)));
-      if (partial) { console.log("[match] 일본어 E열 부분일치:", partial.jaDisplay); return partial; }
+    // PIVO ID는 표시 작품명과 독립된 식별자이므로 제목보다 먼저 정확히 대조한다.
+    if (pivoId) {
+      const exactPivo = rows.find(row => row.pivoId === String(pivoId).trim());
+      if (exactPivo) {
+        console.log("[match] PIVO ID 완전일치:", exactPivo.pivoId, "| 한국어 프로젝트명:", exactPivo.koreanProjectName);
+        return exactPivo;
+      }
     }
 
-    console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo);
+    // 1순위: 한국어 프로젝트명 완전 일치
+    if (titleKo) {
+      const needle = normalizeTitleKo(titleKo);
+      const exact  = rows.find(row => row.koreanProjectName && normalizeTitleKo(row.koreanProjectName) === needle);
+      if (exact) { console.log("[match] 한국어 프로젝트명 완전일치:", exact.koreanProjectName); return exact; }
+    }
+    // 2순위: 한국어 프로젝트명 부분 일치
+    if (titleKo) {
+      const needle = normalizeTitleKo(titleKo);
+      const partial = rows.find(row => row.koreanProjectName && (
+        normalizeTitleKo(row.koreanProjectName).includes(needle) ||
+        needle.includes(normalizeTitleKo(row.koreanProjectName))
+      ));
+      if (partial) { console.log("[match] 한국어 프로젝트명 부분일치:", partial.koreanProjectName); return partial; }
+    }
+    // 3순위: 일본어 표시명 완전 일치 (仮 제거 후)
+    if (titleJa) {
+      const needle = normalizeTitle(titleJa);
+      const exact  = rows.find(row => row.normalizedJapaneseDisplayTitle === needle);
+      if (exact) { console.log("[match] 일본어 표시명 완전일치:", exact.japaneseDisplayTitle, "| pivoId:", exact.pivoId, "| 한국어 프로젝트명:", exact.koreanProjectName); return exact; }
+    }
+    // 4순위: 일본어 표시명 부분 일치 (仮 제거 후)
+    if (titleJa) {
+      const needle = normalizeTitle(titleJa);
+      const partial = rows.find(row => row.normalizedJapaneseDisplayTitle && (
+        row.normalizedJapaneseDisplayTitle.includes(needle) ||
+        needle.includes(row.normalizedJapaneseDisplayTitle)
+      ));
+      if (partial) { console.log("[match] 일본어 표시명 부분일치:", partial.japaneseDisplayTitle); return partial; }
+    }
+
+    console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo, "pivoId:", pivoId);
     return null;
   }
 
@@ -90,12 +153,12 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     if (!titleKo && !titleJa) return null;
     const rows = await loadTitleRowsFromSheet();
 
-    // 한국어 토큰 매칭 (G열 projectName)
+    // 한국어 프로젝트명 토큰 매칭
     if (titleKo) {
       const tokens = titleKo.split(/\s+/).map(t => normalizeTitleKo(t)).filter(t => t.length >= 2);
       if (tokens.length) {
-        const matched = rows.filter(r =>
-          r.projectName && tokens.every(token => normalizeTitleKo(r.projectName).includes(token))
+        const matched = rows.filter(row =>
+          row.koreanProjectName && tokens.every(token => normalizeTitleKo(row.koreanProjectName).includes(token))
         );
         console.log(`[match-token] 한국어 토큰:${JSON.stringify(tokens)} → ${matched.length}건`);
         if (matched.length === 1) return { single: matched[0] };
@@ -103,12 +166,12 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
       }
     }
 
-    // 일본어 토큰 매칭 (E열 jaNorm)
+    // 일본어 표시명 토큰 매칭
     if (titleJa) {
       const tokens = normalizeTitle(titleJa).split(/\s+/).filter(t => t.length >= 2);
       if (tokens.length) {
-        const matched = rows.filter(r =>
-          r.jaNorm && tokens.every(token => r.jaNorm.includes(token))
+        const matched = rows.filter(row =>
+          row.normalizedJapaneseDisplayTitle && tokens.every(token => row.normalizedJapaneseDisplayTitle.includes(token))
         );
         console.log(`[match-token] 일본어 토큰:${JSON.stringify(tokens)} → ${matched.length}건`);
         if (matched.length === 1) return { single: matched[0] };
@@ -129,15 +192,15 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     // 1순위: 한국어 완전일치 → 단건 확정
     if (titleKo) {
       const needle = normalizeTitleKo(titleKo);
-      const exact  = rows.find(r => r.projectName && normalizeTitleKo(r.projectName) === needle);
+      const exact  = rows.find(row => row.koreanProjectName && normalizeTitleKo(row.koreanProjectName) === needle);
       if (exact) return { single: exact };
     }
     // 2순위: 한국어 부분일치 → 복수 체크
     if (titleKo) {
       const needle  = normalizeTitleKo(titleKo);
-      const matched = rows.filter(r => r.projectName && (
-        normalizeTitleKo(r.projectName).includes(needle) ||
-        needle.includes(normalizeTitleKo(r.projectName))
+      const matched = rows.filter(row => row.koreanProjectName && (
+        normalizeTitleKo(row.koreanProjectName).includes(needle) ||
+        needle.includes(normalizeTitleKo(row.koreanProjectName))
       ));
       if (matched.length === 1) return { single: matched[0] };
       if (matched.length > 1 && matched.length <= CANDIDATE_MAX) return { multiple: matched };
@@ -146,13 +209,16 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     // 3순위: 일본어 완전일치 → 단건 확정
     if (titleJa) {
       const needle = normalizeTitle(titleJa);
-      const exact  = rows.find(r => r.jaNorm === needle);
+      const exact  = rows.find(row => row.normalizedJapaneseDisplayTitle === needle);
       if (exact) return { single: exact };
     }
     // 4순위: 일본어 부분일치 → 복수 체크
     if (titleJa) {
       const needle  = normalizeTitle(titleJa);
-      const matched = rows.filter(r => r.jaNorm && (r.jaNorm.includes(needle) || needle.includes(r.jaNorm)));
+      const matched = rows.filter(row => row.normalizedJapaneseDisplayTitle && (
+        row.normalizedJapaneseDisplayTitle.includes(needle) ||
+        needle.includes(row.normalizedJapaneseDisplayTitle)
+      ));
       if (matched.length === 1) return { single: matched[0] };
       if (matched.length > 1 && matched.length <= CANDIDATE_MAX) return { multiple: matched };
       if (matched.length > CANDIDATE_MAX) return { tooMany: true };

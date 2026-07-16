@@ -1,5 +1,10 @@
-// 단일 책임: 재수급 요청을 시트에 append·취소선 처리한다 (write 캡슐화, 부록 A P11)
+// 단일 책임: 재수급 요청을 시트에 append·완료 처리한다 (write 캡슐화, 부록 A P11)
 "use strict";
+
+const { requireSheetCompletionTarget } = require("./sheet-row-index");
+
+// 완료 체크박스 대상 컬럼 (L열)
+const COMPLETION_COLUMN = { startColumnIndex: 11, endColumnIndex: 12 };
 
 /**
  * @param {{
@@ -11,18 +16,18 @@
  *   - sheetsClient: sheets-client.js transport (append/batchUpdate 메서드 보유)
  *   - resupplySheetId: RESUPPLY_SHEET_ID env 값
  *   - resupplySheetRange: RESUPPLY_SHEET_RANGE env 값
- *   - resupplyGridSheetId: 취소선 대상 grid sheetId 숫자 (511152201 고정값을 DI로 주입)
+ *   - resupplyGridSheetId: 완료 체크박스 대상 grid sheetId 숫자 (511152201 고정값을 DI로 주입)
  */
 module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, resupplySheetRange, resupplyGridSheetId }) {
   /**
    * 재수급 요청을 시트에 append한다.
-   * 기록된 행 번호(rowIndex)를 반환한다 (취소선 처리용).
+   * 기록된 행 번호(rowIndex)를 반환한다 (완료 처리용).
    * Slack users.info 조회는 client 호출 인자로 전달받는다.
    *
    * @param {object} draft
    * @param {string} submitterId  Slack user ID
    * @param {{ users: { info: function } }} client  Slack Bolt client (users.info 조회용)
-   * @returns {Promise<number|null>} rowIndex (실패 시 null)
+   * @returns {Promise<number|null>} rowIndex (전송 실패 시 에러 전파)
    */
   async function appendResupplyRecord(draft, submitterId, client) {
     let requesterName = submitterId;
@@ -50,7 +55,7 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
         draft.reason || "-",
         now,
         sourceLink,
-        draft.jpTitle || "-",
+        draft.japaneseFixedTitle || "-",
       ],
     ], {
       valueInputOption: "USER_ENTERED",
@@ -59,7 +64,7 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
       insertDataOption: "INSERT_ROWS",
     });
 
-    // 기록된 행 번호 추출 (취소선 처리용)
+    // 기록된 행 번호 추출 (완료 처리용)
     const updatedRange = appendRes.data.updates?.updatedRange || "";
     const rowMatch = updatedRange.match(/(\d+)$/);
     const rowIndex = rowMatch ? parseInt(rowMatch[1]) : null;
@@ -97,28 +102,29 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
 
   /**
    * 재수급 완료 처리 — L열(index 11) 체크박스를 true로 변경한다.
-   * @param {number|null} rowIndex  appendResupplyRecord 반환값
-   */
+  * @param {number|null} rowIndex  appendResupplyRecord 반환값
+  */
   async function checkResupplyDone(rowIndex) {
-    if (!rowIndex) return;
-    try {
-      await sheetsClient.batchUpdate(resupplySheetId, [{
-        updateCells: {
-          range: {
-            sheetId: resupplyGridSheetId,
-            startRowIndex: rowIndex - 1,
-            endRowIndex: rowIndex,
-            startColumnIndex: 11,
-            endColumnIndex: 12,
-          },
-          rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
-          fields: "userEnteredValue.boolValue",
+    const completionTarget = requireSheetCompletionTarget({
+      rowIndex,
+      spreadsheetId: resupplySheetId,
+      gridSheetId: resupplyGridSheetId,
+      recordLabel: "재수급",
+    });
+    await sheetsClient.batchUpdate(completionTarget.spreadsheetId, [{
+      updateCells: {
+        range: {
+          sheetId: completionTarget.gridSheetId,
+          startRowIndex: completionTarget.rowIndex - 1,
+          endRowIndex: completionTarget.rowIndex,
+          startColumnIndex: COMPLETION_COLUMN.startColumnIndex,
+          endColumnIndex: COMPLETION_COLUMN.endColumnIndex,
         },
-      }]);
-      console.log("[resupply-sheet] 완료 처리 — row:", rowIndex);
-    } catch (e) {
-      console.error("[resupply-sheet] 완료 처리 실패:", e.message);
-    }
+        rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
+        fields: "userEnteredValue.boolValue",
+      },
+    }]);
+    console.log("[resupply-sheet] 완료 처리 — row:", rowIndex);
   }
 
   return { appendResupplyRecord, updateResupplySourceLink, checkResupplyDone };

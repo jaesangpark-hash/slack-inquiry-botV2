@@ -1,6 +1,11 @@
 // 단일 책임: 문의 이력을 시트에 append·완료 처리한다
 "use strict";
 
+const { requireSheetCompletionTarget } = require("./sheet-row-index");
+
+// 완료 체크박스 대상 컬럼 (I열)
+const COMPLETION_COLUMN = { startColumnIndex: 8, endColumnIndex: 9 };
+
 /**
  * @param {{
  *   sheetsClient: { append: function, batchUpdate: function },
@@ -58,28 +63,29 @@ module.exports = function createInquiryHistory({ sheetsClient, historySheetId, h
 
   /**
    * 문의 완료 처리 — I열(index 8) 체크박스를 true로 변경한다.
-   * @param {number|null} rowIndex
-   */
+  * @param {number|null} rowIndex
+  */
   async function checkInquiryDone(rowIndex) {
-    if (!rowIndex || !historySheetId || !historyGridSheetId) return;
-    try {
-      await sheetsClient.batchUpdate(historySheetId, [{
-        updateCells: {
-          range: {
-            sheetId: historyGridSheetId,
-            startRowIndex: rowIndex - 1,
-            endRowIndex: rowIndex,
-            startColumnIndex: 8,
-            endColumnIndex: 9,
-          },
-          rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
-          fields: "userEnteredValue.boolValue",
+    const completionTarget = requireSheetCompletionTarget({
+      rowIndex,
+      spreadsheetId: historySheetId,
+      gridSheetId: historyGridSheetId,
+      recordLabel: "문의 이력",
+    });
+    await sheetsClient.batchUpdate(completionTarget.spreadsheetId, [{
+      updateCells: {
+        range: {
+          sheetId: completionTarget.gridSheetId,
+          startRowIndex: completionTarget.rowIndex - 1,
+          endRowIndex: completionTarget.rowIndex,
+          startColumnIndex: COMPLETION_COLUMN.startColumnIndex,
+          endColumnIndex: COMPLETION_COLUMN.endColumnIndex,
         },
-      }]);
-      console.log("[inquiry-history] 완료 처리 — row:", rowIndex);
-    } catch (e) {
-      console.error("[inquiry-history] 완료 처리 실패:", e.message);
-    }
+        rows: [{ values: [{ userEnteredValue: { boolValue: true } }] }],
+        fields: "userEnteredValue.boolValue",
+      },
+    }]);
+    console.log("[inquiry-history] 완료 처리 — row:", rowIndex);
   }
 
   return { appendInquiryHistory, updateInquiryHistorySourceLink, checkInquiryDone };

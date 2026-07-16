@@ -7,10 +7,10 @@
  *
  * 검증 항목:
  *   matchWorkTitleFromSheet:
- *     - 1순위: 한국어 G열(projectName) 완전 일치
- *     - 2순위: 한국어 G열 부분 일치
- *     - 3순위: 일본어 E열 완전 일치 (仮 제거 후 normalizeTitle)
- *     - 4순위: 일본어 E열 부분 일치
+ *     - 1순위: 한국어 프로젝트명 완전 일치
+ *     - 2순위: 한국어 프로젝트명 부분 일치
+ *     - 3순위: 일본어 표시명 완전 일치 (仮 제거 후 normalizeTitle)
+ *     - 4순위: 일본어 표시명 부분 일치
  *     - 매칭 실패 → null
  *   matchWorkTitleByTokens:
  *     - 한국어 토큰 단건 → { single }
@@ -37,10 +37,24 @@ const createTitleMatcher = require("../title-matcher");
 
 // ── fake 빌더 ─────────────────────────────────────────────────────────────────
 // 마스터 시트 행 구조 (탭 '출판사 드라이브 링크', A:H):
-//   row[0]=A(APM), row[1]=B(중국어/ko), row[2]=C(한국어타이틀/projectName), row[3]=D(일본어/jaDisplay),
-//   row[4]=E(FIX 타이틀/jpTitle), row[5]=F(미정), row[6]=G(출판사), row[7]=H(드라이브 링크), row[8]=I(pivo_id)
-function makeRow({ pivoId = "p1", jpTitle = "", jaDisplay = "", ko = "", projectName = "" }) {
-  return ["", ko, projectName, jaDisplay, jpTitle, "", "", "", pivoId];
+//   row[0]=A(APM), row[1]=B(중국어 원제), row[2]=C(한국어 프로젝트명), row[3]=D(일본어 표시명),
+//   row[4]=E(일본어 FIX 타이틀), row[5]=F(미정), row[6]=G(출판사), row[7]=H(드라이브 링크), row[8]=I(PIVO ID)
+function makeRow({
+  pivoId = "p1",
+  japaneseFixedTitle = "",
+  japaneseDisplayTitle = "",
+  chineseOriginalTitle = "",
+  koreanProjectName = "",
+}) {
+  return [
+    "",
+    chineseOriginalTitle,
+    koreanProjectName,
+    japaneseDisplayTitle,
+    japaneseFixedTitle,
+    "", "", "",
+    pivoId,
+  ];
 }
 
 // fake sheetsClient: getValues → 헤더 포함 rows 반환 (slice(1)로 헤더 제거됨)
@@ -57,19 +71,19 @@ const fakeAlertOnError = async (_label, fn) => fn();
 // ── 테스트용 시트 데이터 ──────────────────────────────────────────────────────
 // 실 데이터 형태를 반영한 fixture (byte-거울 금지: needle과 다른 문자열로 구성)
 const FIXTURE_ROWS = [
-  makeRow({ pivoId: "p1", jaDisplay: "タイトルA（仮）",  ko: "중국어제목A", projectName: "작품A" }),
-  makeRow({ pivoId: "p2", jaDisplay: "タイトルB",        ko: "중국어제목B", projectName: "작품B 시즌1" }),
-  makeRow({ pivoId: "p3", jaDisplay: "別のタイトル",     ko: "다른제목",    projectName: "별도작품" }),
-  makeRow({ pivoId: "p4", jaDisplay: "부분 포함 작품",   ko: "",            projectName: "포함된작품이름" }),
-  makeRow({ pivoId: "p5", jaDisplay: "テスト作品X",       ko: "테스트X",     projectName: "테스트작품X" }),
-  makeRow({ pivoId: "p6", jaDisplay: "あいう",           ko: "나타1",       projectName: "나타1작품" }),
-  makeRow({ pivoId: "p7", jaDisplay: "",                ko: "나타2",       projectName: "나타2작품" }),
+  makeRow({ pivoId: "p1", japaneseDisplayTitle: "タイトルA（仮）", chineseOriginalTitle: "중국어제목A", koreanProjectName: "작품A" }),
+  makeRow({ pivoId: "p2", japaneseDisplayTitle: "タイトルB", chineseOriginalTitle: "중국어제목B", koreanProjectName: "작품B 시즌1" }),
+  makeRow({ pivoId: "p3", japaneseDisplayTitle: "別のタイトル", chineseOriginalTitle: "다른제목", koreanProjectName: "별도작품" }),
+  makeRow({ pivoId: "p4", japaneseDisplayTitle: "부분 포함 작품", koreanProjectName: "포함된작품이름" }),
+  makeRow({ pivoId: "p5", japaneseDisplayTitle: "テスト作品X", chineseOriginalTitle: "테스트X", koreanProjectName: "테스트작품X" }),
+  makeRow({ pivoId: "p6", japaneseDisplayTitle: "あいう", chineseOriginalTitle: "나타1", koreanProjectName: "나타1작품" }),
+  makeRow({ pivoId: "p7", chineseOriginalTitle: "나타2", koreanProjectName: "나타2작품" }),
 ];
 
 // CANDIDATE_MAX(5) 초과를 위한 추가 행 (부분 일치 tooMany 검증)
 const FIXTURE_ROWS_MANY = [
   ...Array.from({ length: 6 }, (_, i) =>
-    makeRow({ pivoId: `pm${i}`, jaDisplay: `マンガ${i}`, ko: "", projectName: `공통이름작품${i}` })
+    makeRow({ pivoId: `pm${i}`, japaneseDisplayTitle: `マンガ${i}`, koreanProjectName: `공통이름작품${i}` })
   ),
 ];
 
@@ -85,29 +99,29 @@ describe("matchWorkTitleFromSheet", () => {
     });
   });
 
-  test("1순위: 한국어 G열 projectName 완전 일치 → 해당 행 반환", async () => {
+  test("1순위: 한국어 프로젝트명 완전 일치 → 해당 행 반환", async () => {
     // needle: "작품A" → projectName 정확히 일치
     const result = await matcher.matchWorkTitleFromSheet(null, "작품A");
     assert.ok(result, "매칭 결과가 있어야 함");
     assert.strictEqual(result.pivoId, "p1");
-    assert.strictEqual(result.projectName, "작품A");
+    assert.strictEqual(result.koreanProjectName, "작품A");
   });
 
-  test("2순위: 한국어 G열 부분 일치 (needle이 projectName의 부분 문자열)", async () => {
+  test("2순위: 한국어 프로젝트명 부분 일치 (needle이 projectName의 부분 문자열)", async () => {
     // "시즌1"은 "작품B 시즌1"의 부분 — 완전일치 실패 후 부분일치 진입
     const result = await matcher.matchWorkTitleFromSheet(null, "시즌1");
     assert.ok(result, "부분 일치 결과가 있어야 함");
     assert.strictEqual(result.pivoId, "p2");
   });
 
-  test("3순위: 일본어 E열 완전 일치 (仮 제거 + normalizeTitle 적용)", async () => {
+  test("3순위: 일본어 표시명 완전 일치 (仮 제거 + normalizeTitle 적용)", async () => {
     // "タイトルA（仮）"의 仮가 제거된 후 normalizeTitle 일치
     const result = await matcher.matchWorkTitleFromSheet("タイトルA（仮）", null);
     assert.ok(result, "일본어 완전일치 결과가 있어야 함");
     assert.strictEqual(result.pivoId, "p1");
   });
 
-  test("4순위: 일본어 E열 부분 일치 (needle이 jaNorm의 부분 문자열)", async () => {
+  test("4순위: 일본어 표시명 부분 일치 (needle이 jaNorm의 부분 문자열)", async () => {
     // "別の"는 "別のタイトル" normalizeTitle 결과의 부분 — 부분 일치
     const result = await matcher.matchWorkTitleFromSheet("別の", null);
     assert.ok(result, "일본어 부분일치 결과가 있어야 함");
@@ -122,6 +136,69 @@ describe("matchWorkTitleFromSheet", () => {
   test("titleJa·titleKo 모두 null → null (조기 반환)", async () => {
     const result = await matcher.matchWorkTitleFromSheet(null, null);
     assert.strictEqual(result, null);
+  });
+
+  test("객체 계약: PIVO ID만으로 정확한 행을 찾는다", async () => {
+    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "p4" });
+    assert.ok(result);
+    assert.strictEqual(result.koreanProjectName, "포함된작품이름");
+  });
+
+  test("PIVO ID와 제목이 충돌하면 PIVO ID 정확 일치를 우선한다", async () => {
+    const result = await matcher.matchWorkTitleFromSheet({
+      pivoId: "p2",
+      titleKo: "작품A",
+    });
+    assert.ok(result);
+    assert.strictEqual(result.pivoId, "p2");
+  });
+
+  test("PIVO ID가 없으면 함께 전달한 제목으로 계속 찾는다", async () => {
+    const result = await matcher.matchWorkTitleFromSheet({
+      pivoId: "unknown",
+      titleJa: "別のタイトル",
+    });
+    assert.ok(result);
+    assert.strictEqual(result.pivoId, "p3");
+  });
+
+  test("레거시 세 번째 인자의 PIVO ID 계약도 호환한다", async () => {
+    const result = await matcher.matchWorkTitleFromSheet(null, null, "p5");
+    assert.ok(result);
+    assert.strictEqual(result.pivoId, "p5");
+  });
+
+  test("PIVO ID와 한국어 프로젝트명만 있는 sparse 행도 보존한다", async () => {
+    const sparseMatcher = createTitleMatcher({
+      masterSheetId: "fake-sheet-id",
+      alertOnError: fakeAlertOnError,
+      sheetsClient: makeFakeSheetsClient([
+        makeRow({ pivoId: "sparse-1", koreanProjectName: "희소 작품" }),
+      ]),
+    });
+    const result = await sparseMatcher.matchWorkTitleFromSheet({ pivoId: "sparse-1" });
+    assert.ok(result);
+    assert.strictEqual(result.koreanProjectName, "희소 작품");
+  });
+
+  test("반환 행은 실제 언어 의미가 드러나는 필드만 제공한다", async () => {
+    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "p1" });
+    assert.deepEqual(
+      {
+        chineseOriginalTitle: result.chineseOriginalTitle,
+        koreanProjectName: result.koreanProjectName,
+        japaneseDisplayTitle: result.japaneseDisplayTitle,
+        japaneseFixedTitle: result.japaneseFixedTitle,
+      },
+      {
+        chineseOriginalTitle: "중국어제목A",
+        koreanProjectName: "작품A",
+        japaneseDisplayTitle: "タイトルA",
+        japaneseFixedTitle: "",
+      }
+    );
+    assert.equal(Object.hasOwn(result, "ko"), false);
+    assert.equal(Object.hasOwn(result, "koNorm"), false);
   });
 });
 
@@ -251,7 +328,7 @@ describe("titleCache: factory 1회 호출로 단일 인스턴스", () => {
     const countingSheetsClient = {
       getValues: async (_spreadsheetId, _range) => {
         loadCount++;
-        return [["header"], makeRow({ pivoId: "c1", jaDisplay: "キャッシュテスト", ko: "캐시테스트", projectName: "캐시작품" })];
+        return [["header"], makeRow({ pivoId: "c1", japaneseDisplayTitle: "キャッシュテスト", chineseOriginalTitle: "캐시테스트", koreanProjectName: "캐시작품" })];
       },
     };
     const m = createTitleMatcher({

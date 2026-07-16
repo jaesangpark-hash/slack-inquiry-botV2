@@ -10,10 +10,10 @@ const PRIORITY_EMOJI = { 높음: "🔴", 보통: "🟡", 낮음: "🟢" };
 module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }) {
 
   // ── 재수급 reason 조립 ────────────────────────────────────
-  // matchedTitle: 시트 매칭 결과 { ko, jaDisplay } | null
+  // matchedTitle: 시트 매칭 결과 { koreanProjectName, japaneseDisplayTitle } | null
   // fileParsed: parseFileInquiry 결과
   function buildFileInquiryReason(fileParsed, matchedTitle) {
-    const workName = matchedTitle?.projectName || fileParsed.work_title_ko || fileParsed.work_title_ja || null;
+    const workName = matchedTitle?.koreanProjectName || fileParsed.work_title_ko || fileParsed.work_title_ja || null;
     const episode  = fileParsed.episode ? `${fileParsed.episode}화` : null;
     const rawReason = fileParsed.reason_raw || null;
 
@@ -70,8 +70,11 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     const meta = JSON.stringify({
       originalChannelId: draft.originalChannelId || null,
       originalTs: draft.originalTs || null,
+      sourceLink: draft.sourceLink || null,
       // 미매핑 시 null — 완료 처리 시 APM DM 전송 생략
       apmUserId: draft.apmUserId || null,
+      submitterId,
+      ownerUserId: draft.ownerUserId || submitterId,
       workName: draft.workName || "-",
       episode: draft.episode || "-",
       resupplyRowIndex: draft.resupplyRowIndex || null,
@@ -179,12 +182,33 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     return [`*문의 초안*`, "", `• 작품명: ${draft.workName||"-"}${draft.workNameKo && draft.workNameKo !== draft.workName ? `  (${draft.workNameKo})` : ""}`, `• 회차: ${draft.episode ? draft.episode+"화" : "-"}`, `• 문의 유형: ${draft.inquiryType||"-"}`, `• 요약: ${draft.summary||"-"}`, `• 필요 액션: ${draft.actionRequired||"-"}`, `• 원문 링크: ${draft.sourceLink||"-"}`].join("\n");
   }
 
-  function buildFinalMainMessage({ submitterId, workName, workNameKo, episode, inquiryType, inquiryContent, actionRequired, draftId, historyRowIndex }) {
+  function buildFinalMainMessage({
+    submitterId,
+    workName,
+    workNameKo,
+    episode,
+    inquiryType,
+    inquiryContent,
+    actionRequired,
+    draftId,
+    historyRowIndex,
+    originalChannelId,
+    originalTs,
+    sourceLink,
+  }) {
     const mentions = fixedMentionUserIds.map(id => `<@${id}>`).join(" ");
     const fallbackText = `${workName||"-"} | ${inquiryType||"-"} | <@${submitterId}>`;
     // historyRowIndex를 버튼 값에 직접 박아둔다 — draftStore(인메모리)는 프로세스 재시작 시 사라지므로,
     // 완료 클릭이 며칠 뒤에 일어나도 시트 체크박스 처리가 가능하도록 메시지 자체에 영속시킨다.
-    const meta = JSON.stringify({ submitterId, draftId: draftId || null, historyRowIndex: historyRowIndex || null });
+    const meta = JSON.stringify({
+      submitterId,
+      ownerUserId: submitterId,
+      draftId: draftId || null,
+      historyRowIndex: historyRowIndex || null,
+      originalChannelId: originalChannelId || null,
+      originalTs: originalTs || null,
+      sourceLink: sourceLink || null,
+    });
     return {
       text: fallbackText,
       blocks: [

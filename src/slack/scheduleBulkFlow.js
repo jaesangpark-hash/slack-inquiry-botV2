@@ -1,5 +1,15 @@
 "use strict";
 
+const {
+  assertGloballyUniqueCreatedTaskUuids,
+  assertCompleteMutationTargets,
+  assertNoAmbiguousMutationTargets,
+  decodeMutationResult,
+  isUnknownMutationOutcome,
+  requireCreatedTaskUuids,
+  toUnknownMutationOutcome,
+} = require("../clients/totus-mutation-result");
+
 // ══════════════════════════════════════════════════════════════════
 // scheduleBulkFlow.js — 여러 회차 일정 일괄 변경 플로우
 //
@@ -150,9 +160,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
   }
 
-  // ── TOTUS: 단일 회차의 opCode → taskUuid 맵 ───────────────────────
+  // ── TOTUS: 단일 회차의 opCode/정확 UUID → task 맵 ─────────────────
   // isRetake=true: 완료상태 태스크도 포함 (리테이크 대상 = 완료된 번역 태스크를 찾아 /retake 호출해야 함)
-  async function _getTaskMap(projectUuid, episode, isRetake = false) {
+  async function _getTaskInventory(projectUuid, episode, isRetake = false, preferredTaskUuids = null) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -162,65 +172,175 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
       }
       const json = await res.json();
-      if (!json.success) return {};
+      if (!json.success) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
       const job = (json.data || [])[0];
-      if (!job) return {};
-      const map = {};
+      if (!job) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
+      const byOpCode = {};
+      const byUuid = {};
+      const taskUuidsByOpCode = {};
+      const preferred = Array.isArray(preferredTaskUuids)
+        ? new Set(preferredTaskUuids)
+        : null;
       for (const op of (job.오퍼레이션 || [])) {
         for (const task of (op.태스크 || [])) {
           const code = task.오퍼레이션유형;
-          if (!code || EXCLUDE_OP_CODES.has(code)) continue;
+          if (!code || !task.uuid) continue;
+          if (preferred && !preferred.has(task.uuid)) continue;
+          if (!preferred && EXCLUDE_OP_CODES.has(code)) continue;
           if (!isRetake && EXCLUDE_TASK_STATES.has(task.상태)) continue;
-          if (!map[code]) map[code] = task.uuid; // 복수 태스크일 경우 첫 번째
+          byUuid[task.uuid] = task;
+          if (!taskUuidsByOpCode[code]) taskUuidsByOpCode[code] = [];
+          if (!taskUuidsByOpCode[code].includes(task.uuid)) {
+            taskUuidsByOpCode[code].push(task.uuid);
+          }
         }
       }
-      return map;
+      for (const [opCode, taskUuids] of Object.entries(taskUuidsByOpCode)) {
+        if (taskUuids.length === 1) byOpCode[opCode] = taskUuids[0];
+      }
+      return { byOpCode, byUuid, taskUuidsByOpCode };
     } catch (e) {
       console.error("[scheduleBulk] taskMap 조회 오류 (ep=" + episode + "):", e.message);
-      return {};
+      return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
     }
   }
 
   // ── TOTUS: 태스크 재생성 + 날짜 반영 (execMode="retake") ──────────
   async function _applyRetakeSchedule(draft, client) {
-    const { projectUuid, calculatedSchedule, dmChannelId } = draft;
+    const { projectUuid, calculatedSchedule } = draft;
     const allEps = calculatedSchedule.flatMap(g => g.episodes);
-    let ok = 0, fail = 0;
+    const createdTaskUuidsByEpisode = {
+      ...(draft.retakeCreatedTaskUuidsByEpisode || {}),
+    };
+    const completedEpisodes = new Set(
+      (draft.retakeCompletedEpisodes || [])
+        .map(Number)
+        .filter(ep => Number.isFinite(ep) && createdTaskUuidsByEpisode[ep]?.length)
+    );
+    const failedEpisodes = [];
+
+    // 생성 요청 전에 아직 생성되지 않은 모든 회차의 source 번역 태스크를 먼저 확인한다.
+    const pendingEpisodes = allEps.filter(ep => !completedEpisodes.has(Number(ep)));
+    const sourceInventories = await Promise.all(pendingEpisodes.map(async ep => ({
+      ep,
+      inventory: await _getTaskInventory(projectUuid, ep, true),
+    })));
+    const sourceUuidByEpisode = {};
+    const expectedSourceTargets = pendingEpisodes.map(ep => `${ep}화/${TRANSLATION_OP}`);
+    const actualSourceTargets = [];
+    const ambiguousSourceTargets = [];
+    for (const { ep, inventory } of sourceInventories) {
+      const sourceCandidates = inventory.taskUuidsByOpCode[TRANSLATION_OP] || [];
+      if (sourceCandidates.length > 1) {
+        ambiguousSourceTargets.push(`${ep}화/${TRANSLATION_OP}`);
+        continue;
+      }
+      const sourceTaskUuid = sourceCandidates[0];
+      if (!sourceTaskUuid) continue;
+      sourceUuidByEpisode[ep] = sourceTaskUuid;
+      actualSourceTargets.push(`${ep}화/${TRANSLATION_OP}`);
+    }
+    assertNoAmbiguousMutationTargets(
+      ambiguousSourceTargets,
+      "일괄 리테이크 source 태스크"
+    );
+    assertCompleteMutationTargets(
+      expectedSourceTargets,
+      actualSourceTargets,
+      "일괄 리테이크 source 태스크"
+    );
+
     for (const ep of allEps) {
+      if (completedEpisodes.has(Number(ep))) continue;
+
       try {
-        const taskMap = await _getTaskMap(projectUuid, ep, true);
-        const srcUuid = taskMap[TRANSLATION_OP];
-        if (!srcUuid) {
-          console.warn(`[scheduleBulk/retake] ep${ep} 번역 태스크 없음 — 스킵`);
-          fail++;
-          continue;
+        const srcUuid = sourceUuidByEpisode[ep];
+        let createdTaskUuids;
+        try {
+          const res = await fetch(`${BASE()}/api/v1/tasks/${srcUuid}/retake`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+          });
+          const ct = res.headers.get("content-type") || "";
+          if (!ct.includes("application/json")) {
+            throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+          }
+          const json = await res.json();
+          createdTaskUuids = requireCreatedTaskUuids(json, `${ep}화 리테이크 생성`);
+        } catch (error) {
+          if (error?.code === "CONFIRMED_MUTATION_FAILURE") throw error;
+          const unknownError = toUnknownMutationOutcome(error, `${ep}화 리테이크 생성`);
+          unknownError.episode = Number(ep);
+          unknownError.mutationStage = "retake_creation";
+          throw unknownError;
         }
-        const res  = await fetch(`${BASE()}/api/v1/tasks/${srcUuid}/retake`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+
+        const candidateTaskUuidsByEpisode = {
+          ...createdTaskUuidsByEpisode,
+          [ep]: createdTaskUuids,
+        };
+        try {
+          assertGloballyUniqueCreatedTaskUuids(
+            candidateTaskUuidsByEpisode,
+            "일괄 리테이크 생성"
+          );
+        } catch (error) {
+          error.episode = Number(ep);
+          error.mutationStage = "retake_identity";
+          error.unverifiedCreatedTaskUuids = createdTaskUuids;
+          throw error;
+        }
+
+        // 외부 변경 성공 직후 검증된 회차별 진행 상황을 저장한다. 이후 회차나 날짜 반영이
+        // 실패해도 재시도할 때 이미 생성된 리테이크 태스크를 다시 만들지 않는다.
+        completedEpisodes.add(Number(ep));
+        createdTaskUuidsByEpisode[ep] = createdTaskUuids;
+        const current = draftStore.get(draft.draftId) || draft;
+        draftStore.set(draft.draftId, {
+          ...current,
+          retakeCompletedEpisodes: [...completedEpisodes],
+          retakeCreatedTaskUuidsByEpisode: createdTaskUuidsByEpisode,
+          bulkMutationStatus: "applying",
         });
-        const ct   = res.headers.get("content-type") || "";
-        if (!ct.includes("application/json")) {
-          throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
-        }
-        const json = await res.json();
-        if (!json.success) throw new Error(json.message || "retake API 오류");
-        ok++;
       } catch (e) {
         console.error(`[scheduleBulk/retake] ep${ep} 실패:`, e.message);
-        fail++;
+        if (isUnknownMutationOutcome(e)) {
+          const current = draftStore.get(draft.draftId) || draft;
+          const unknownEpisodes = [...new Set([
+            ...(current.retakeUnknownOutcomeEpisodes || []),
+            Number(ep),
+          ])];
+          draftStore.set(draft.draftId, {
+            ...current,
+            retakeCompletedEpisodes: [...completedEpisodes],
+            retakeCreatedTaskUuidsByEpisode: createdTaskUuidsByEpisode,
+            ...(e.unverifiedCreatedTaskUuids ? {
+              retakeUnverifiedCreatedTaskUuidsByEpisode: {
+                ...(current.retakeUnverifiedCreatedTaskUuidsByEpisode || {}),
+                [ep]: e.unverifiedCreatedTaskUuids,
+              },
+            } : {}),
+            retakeUnknownOutcomeEpisodes: unknownEpisodes,
+            bulkMutationStatus: "review_required",
+          });
+          throw e;
+        }
+        failedEpisodes.push(ep);
       }
     }
-    if (ok === 0) {
-      await client.chat.postMessage({ channel: dmChannelId,
-        text: "⚠️ 번역 태스크를 찾을 수 없어. 회차가 TOTUS에 등록되어 있는지 확인해줘." });
-      return;
+
+    if (failedEpisodes.length > 0) {
+      throw new Error(
+        `리테이크 부분 실패 (${failedEpisodes.join(", ")}화). 성공한 회차는 저장했으므로 재시도하면 실패 회차부터 이어서 처리해.`
+      );
     }
-    if (fail > 0) {
-      await client.chat.postMessage({ channel: dmChannelId,
-        text: `⚠️ ${fail}화 리테이크 실패 — ${ok}화만 날짜 반영 진행할게.` });
-    }
-    await _applySchedule(draft, client);
+
+    const current = draftStore.get(draft.draftId) || draft;
+    await _applySchedule({
+      ...current,
+      retakeCompletedEpisodes: [...completedEpisodes],
+      retakeCreatedTaskUuidsByEpisode: createdTaskUuidsByEpisode,
+    }, client);
   }
 
   // ── TOTUS: 일정 일괄 반영 ─────────────────────────────────────────
@@ -228,27 +348,76 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const { projectUuid, calculatedSchedule, workName, dmChannelId, execMode } = draft;
     const isRetake = execMode === "retake";
 
-    // 전 회차 taskMap 병렬 조회
-    const allEps = calculatedSchedule.flatMap(g => g.episodes.map(ep => ({ ep, group: g })));
-    const taskMaps = await Promise.all(
-      allEps.map(async ({ ep, group }) => ({ ep, group, taskMap: await _getTaskMap(projectUuid, ep, isRetake) }))
-    );
-
-    const payload = [];
-    for (const { ep, group, taskMap } of taskMaps) {
-      for (const opSch of group.opSchedule) {
-        const taskUuid = taskMap[opSch.opCode];
-        if (!taskUuid) continue;
-        payload.push({ uuid: taskUuid, startDate: opSch.startDate, endDate: opSch.endDate });
+    if (isRetake) {
+      try {
+        assertGloballyUniqueCreatedTaskUuids(
+          draft.retakeCreatedTaskUuidsByEpisode,
+          "새 리테이크 태스크 일정"
+        );
+      } catch (error) {
+        error.mutationStage = "retake_identity";
+        throw error;
       }
     }
 
+    // 전 회차 taskMap 병렬 조회
+    const allEps = calculatedSchedule.flatMap(g => g.episodes.map(ep => ({ ep, group: g })));
+    const taskInventories = await Promise.all(allEps.map(async ({ ep, group }) => ({
+      ep,
+      group,
+      inventory: await _getTaskInventory(
+        projectUuid,
+        ep,
+        isRetake,
+        isRetake ? (draft.retakeCreatedTaskUuidsByEpisode?.[ep] || []) : null
+      ),
+    })));
+
+    const payload = [];
+    const expectedTargets = [];
+    const actualTargets = [];
+    const ambiguousTargets = [];
+    for (const { ep, group, inventory } of taskInventories) {
+      if (isRetake) {
+        for (const taskUuid of (draft.retakeCreatedTaskUuidsByEpisode?.[ep] || [])) {
+          const targetKey = `${ep}화/${taskUuid}`;
+          expectedTargets.push(targetKey);
+          const task = inventory.byUuid[taskUuid];
+          const opSchedule = group.opSchedule.find(item => item.opCode === task?.오퍼레이션유형);
+          if (!task || !opSchedule) continue;
+          actualTargets.push(targetKey);
+          payload.push({ uuid: taskUuid, startDate: opSchedule.startDate, endDate: opSchedule.endDate });
+        }
+        continue;
+      }
+      for (const opSchedule of group.opSchedule) {
+        const targetKey = `${ep}화/${opSchedule.opCode}`;
+        expectedTargets.push(targetKey);
+        const candidates = inventory.taskUuidsByOpCode[opSchedule.opCode] || [];
+        if (candidates.length > 1) {
+          ambiguousTargets.push(targetKey);
+          continue;
+        }
+        const taskUuid = candidates[0];
+        if (!taskUuid) continue;
+        actualTargets.push(targetKey);
+        payload.push({ uuid: taskUuid, startDate: opSchedule.startDate, endDate: opSchedule.endDate });
+      }
+    }
+
+    assertNoAmbiguousMutationTargets(
+      ambiguousTargets,
+      isRetake ? "새 리테이크 태스크 일정" : "일괄 일정"
+    );
+
+    assertCompleteMutationTargets(
+      expectedTargets,
+      actualTargets,
+      isRetake ? "새 리테이크 태스크 일정" : "일괄 일정"
+    );
+
     if (!payload.length) {
-      await client.chat.postMessage({
-        channel: dmChannelId,
-        text: "⚠️ 반영할 태스크를 찾지 못했어. 회차가 TOTUS에 등록되어 있는지 확인해줘.",
-      });
-      return;
+      throw new Error("반영할 태스크를 찾지 못했어. 회차가 TOTUS에 등록되어 있는지 확인해줘.");
     }
 
     const applyRes  = await fetch(`${BASE()}/api/v1/tasks/dates`, {
@@ -262,19 +431,23 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
     const applyJson = await applyRes.json();
 
-    if (applyJson.success) {
-      const groupSummary = calculatedSchedule.map((g, i) =>
-        `그룹 ${i + 1} (${g.groupLabel}) · 납품 ${toMD(g.endDate)} · ${g.episodes.length * g.opSchedule.length}개`
-      ).join("\n");
+    decodeMutationResult(applyJson, "TOTUS 일정 반영");
+
+    // 외부 변경이 모두 성공한 시점에 먼저 상태를 확정한다. 아래 Slack 완료 알림이
+    // 실패하더라도 사용자가 다시 눌러 외부 변경을 중복 수행하지 않게 한다.
+    const current = draftStore.get(draft.draftId) || draft;
+    draftStore.set(draft.draftId, { ...current, bulkMutationStatus: "applied" });
+
+    const groupSummary = calculatedSchedule.map((g, i) =>
+      `그룹 ${i + 1} (${g.groupLabel}) · 납품 ${toMD(g.endDate)} · ${g.episodes.length * g.opSchedule.length}개`
+    ).join("\n");
+    try {
       await client.chat.postMessage({
         channel: dmChannelId,
         text: `✅ *${workName} — 일정 반영 완료*\n${groupSummary}\n\n합계 ${payload.length}개 태스크`,
       });
-    } else {
-      await client.chat.postMessage({
-        channel: dmChannelId,
-        text: `❌ TOTUS 반영 중 오류: ${applyJson.error?.message || "알 수 없는 오류"}`,
-      });
+    } catch (noticeError) {
+      console.error("[scheduleBulk] 반영 완료 알림 실패:", noticeError.message);
     }
   }
 
@@ -544,7 +717,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       const { mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");
       const dmChannelId = body.channel?.id || body.user.id;
       const draftId = generateDraftId();
-      draftStore.set(draftId, { draftId, dmChannelId, userId: body.user.id, execMode });
+      draftStore.set(draftId, { draftId, ownerUserId: body.user.id, dmChannelId, userId: body.user.id, execMode });
       await client.views.open({
         trigger_id: body.trigger_id,
         view: buildModalAView(draftId, dmChannelId, mode, execMode),
@@ -631,6 +804,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       if (isSingleRetake) {
         draftStore.set(draftId, {
           type:            "retake",
+          ownerUserId:     body.user.id,
           workName:        displayName,
           workNameKo:      displayName,
           pivoId:          pivoId || null,
@@ -744,6 +918,41 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ══════════════════════════════════════════════════════════════════
   // Action: "✅ 이대로 일괄 반영"
   // ══════════════════════════════════════════════════════════════════
+  async function _runBulkMutation(draft, client) {
+    const applyingDraft = { ...draft, bulkMutationStatus: "applying" };
+    draftStore.set(draft.draftId, applyingDraft);
+    const isRetake = draft.execMode === "retake";
+    const apply = isRetake ? _applyRetakeSchedule : _applySchedule;
+
+    try {
+      await client.chat.postMessage({
+        channel: draft.dmChannelId,
+        text: isRetake ? "⏳ TOTUS에 태스크 재생성 중..." : "⏳ TOTUS에 일정 반영 중...",
+      });
+      await apply(applyingDraft, client);
+      draftStore.delete(draft.draftId);
+    } catch (error) {
+      const current = draftStore.get(draft.draftId) || applyingDraft;
+      const reviewRequired = (
+        isUnknownMutationOutcome(error)
+        && ["retake_creation", "retake_identity"].includes(error.mutationStage)
+      ) ||
+        current.bulkMutationStatus === "review_required";
+      if (current.bulkMutationStatus !== "applied") {
+        draftStore.set(draft.draftId, {
+          ...current,
+          bulkMutationStatus: reviewRequired ? "review_required" : "ready",
+        });
+      }
+      await client.chat.postMessage({
+        channel: draft.dmChannelId,
+        text: reviewRequired
+          ? "⚠️ 리테이크 생성 결과를 확인할 수 없어 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해야 해."
+          : `⚠️ ${isRetake ? "재생성" : "반영"} 중 오류: ${error.message}`,
+      }).catch(() => {});
+    }
+  }
+
   app.action("schbulk_apply", async ({ ack, body, client }) => {
     await ack();
     const draftId = body.actions[0].value;
@@ -752,13 +961,23 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 세션이 만료됐어. 처음부터 다시 입력해줘." });
       return;
     }
-    const isRetake = draft.execMode === "retake";
-    await client.chat.postMessage({ channel: draft.dmChannelId, text: isRetake ? "⏳ TOTUS에 태스크 재생성 중..." : "⏳ TOTUS에 일정 반영 중..." });
-    const applyFn = isRetake ? _applyRetakeSchedule : _applySchedule;
-    await applyFn(draft, client).catch(async e => {
-      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ ${isRetake ? "재생성" : "반영"} 중 오류: ${e.message}` });
-    });
-    draftStore.delete(draftId);
+    if (draft.bulkMutationStatus === "applying") {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: "⏳ 이미 처리 중이야. 잠시만 기다려줘." });
+      return;
+    }
+    if (draft.bulkMutationStatus === "applied") {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: "✅ 이미 TOTUS 반영이 완료됐어." });
+      return;
+    }
+    if (draft.bulkMutationStatus === "review_required") {
+      await client.chat.postMessage({
+        channel: draft.dmChannelId,
+        text: "⚠️ 이전 리테이크 생성 결과가 불확실해 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해줘.",
+      });
+      return;
+    }
+
+    await _runBulkMutation(draft, client);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -787,6 +1006,21 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const { draftId } = JSON.parse(view.private_metadata || "{}");
     const draft = draftStore.get(draftId);
     if (!draft) return;
+    if (draft.bulkMutationStatus === "applying") {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: "⏳ 이미 처리 중이야. 잠시만 기다려줘." });
+      return;
+    }
+    if (draft.bulkMutationStatus === "applied") {
+      await client.chat.postMessage({ channel: draft.dmChannelId, text: "✅ 이미 TOTUS 반영이 완료됐어." });
+      return;
+    }
+    if (draft.bulkMutationStatus === "review_required") {
+      await client.chat.postMessage({
+        channel: draft.dmChannelId,
+        text: "⚠️ 이전 리테이크 생성 결과가 불확실해 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해줘.",
+      });
+      return;
+    }
 
     const v = view.state.values;
     const updatedSchedule = (draft.calculatedSchedule || []).map((group, gi) => {
@@ -799,14 +1033,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       return { ...group, opSchedule, endDate };
     });
 
-    draftStore.set(draftId, { ...draft, calculatedSchedule: updatedSchedule });
-
-    const isRetake2 = draft.execMode === "retake";
-    await client.chat.postMessage({ channel: draft.dmChannelId, text: isRetake2 ? "⏳ TOTUS에 태스크 재생성 중..." : "⏳ TOTUS에 일정 반영 중..." });
-    const applyFn2 = isRetake2 ? _applyRetakeSchedule : _applySchedule;
-    await applyFn2({ ...draft, calculatedSchedule: updatedSchedule }, client).catch(async e => {
-      await client.chat.postMessage({ channel: draft.dmChannelId, text: `⚠️ ${isRetake2 ? "재생성" : "반영"} 중 오류: ${e.message}` });
-    });
-    draftStore.delete(draftId);
+    const adjustedDraft = {
+      ...draft,
+      calculatedSchedule: updatedSchedule,
+    };
+    await _runBulkMutation(adjustedDraft, client);
   });
 };

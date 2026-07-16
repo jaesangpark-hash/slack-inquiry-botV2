@@ -1,4 +1,14 @@
 // ══════════════════════════════════════════════════════════════════
+
+const {
+  decodeMutationResult,
+  isUnknownMutationOutcome,
+  requireCreatedTaskUuids,
+  toUnknownMutationOutcome,
+} = require("./clients/totus-mutation-result");
+const {
+  readKoreanProjectNameFromSelectionPayload,
+} = require("./slack/title-selection-payload");
 // retakeFlow.js — 수정·리테이크 플로우 (IB-04)
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
@@ -156,7 +166,7 @@ JSON만 출력. 코드블록 금지.
   }
 
   // ── 메인 핸들러: 수정&리테이크 문의 처리 ────────────────
-  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null) {
+  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null, ownerUserId = null) {
     let parsed;
     try { parsed = await parseRetakeInquiry(originalText); } catch (e) { parsed = {}; }
 
@@ -172,7 +182,7 @@ JSON만 출력. 코드블록 금지.
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
         const pendingId = `rt_pending_${Date.now()}`;
-        draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
+        draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
         await client.chat.postMessage({
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
@@ -181,8 +191,8 @@ JSON만 출력. 코드블록 금지.
             { type: "actions", elements: [
               ...candResult.multiple.slice(0, 4).map((r, i) => ({
                 type: "button", action_id: `retake_token_pick_${i}`,
-                text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-                value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
+                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
+                value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
               })),
               { type: "button", action_id: "open_retake_info_modal",
                 text: { type: "plain_text", text: "✏️ 직접 입력" },
@@ -199,7 +209,7 @@ JSON만 출력. 코드블록 금지.
             matchedTitle = tokenResult.single;
           } else if (tokenResult?.multiple) {
             const pendingId = `rt_pending_${Date.now()}`;
-            draftStore.set(pendingId, { type: "retake_pending", workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
+            draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
             await client.chat.postMessage({
               channel: dmChannel,
               text: "작품 후보가 여러 개야. 선택해줘.",
@@ -208,8 +218,8 @@ JSON만 출력. 코드블록 금지.
                 { type: "actions", elements: [
                   ...tokenResult.multiple.slice(0, 4).map((r, i) => ({
                     type: "button", action_id: `retake_token_pick_${i}`,
-                    text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-                    value: JSON.stringify({ pendingId, pivoId: r.pivoId, projectName: r.projectName }),
+                    text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
+                    value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
                   })),
                   { type: "button", action_id: "open_retake_info_modal",
                     text: { type: "plain_text", text: "✏️ 직접 입력" },
@@ -232,12 +242,12 @@ JSON만 출력. 코드블록 금지.
       const fallbackResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko).catch(() => null);
       if (fallbackResult?.single) {
         matchedTitle = fallbackResult.single;
-        console.log(`[retake] analysis 원본 타이틀 폴백 매칭 성공: ${matchedTitle.projectName}`);
+        console.log(`[retake] analysis 원본 타이틀 폴백 매칭 성공: ${matchedTitle.koreanProjectName}`);
       }
     }
 
-    const workNameDisplay = matchedTitle?.projectName || parsed.work_title_ko || parsed.work_title_ja || null;
-    const workNameKo      = matchedTitle?.projectName || parsed.work_title_ko || null;
+    const workNameDisplay = matchedTitle?.koreanProjectName || parsed.work_title_ko || parsed.work_title_ja || null;
+    const workNameKo      = matchedTitle?.koreanProjectName || parsed.work_title_ko || null;
     // parsed.episode 우선, 없으면 analysis에서 넘어온 값 사용 (복수 문의 경로에서 항목별 화수 보존)
     const episode         = parsed.episode || analysis?.episode || null;
 
@@ -246,6 +256,7 @@ JSON만 출력. 코드블록 금지.
       const pendingId = `rt_pending_${Date.now()}`;
       draftStore.set(pendingId, {
         type: "retake_pending",
+        ownerUserId,
         workName:    workNameDisplay || "",
         workNameKo:  workNameKo     || "",
         episode:     episode        || "",
@@ -280,37 +291,41 @@ JSON만 출력. 코드블록 금지.
 
     await _proceedRetakeOperationSelect(client, dmChannel, {
       workName: workNameDisplay,
-      workNameKo: workNameKo || workNameDisplay,
+      workNameKo,
       pivoId: matchedTitle?.pivoId || null,
       episode,
       sourceLink: linkInfo?.url || "",
       requesterName,
       requesterUserId: requesterUserId || null,
+      ownerUserId,
     });
   }
 
   // ── 토큰 매칭 후보 선택 버튼 ────────────────────────────
   app.action(/^retake_token_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
-    const { pendingId, pivoId, projectName } = JSON.parse(body.actions[0].value || "{}");
+    const selection = JSON.parse(body.actions[0].value || "{}");
+    const { pendingId, pivoId } = selection;
+    const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const pending = draftStore.get(pendingId);
     if (!pending) return;
 
     draftStore.delete(pendingId);
     await _proceedRetakeOperationSelect(client, pending.dmChannelId, {
-      workName:        projectName,
-      workNameKo:      projectName,
+      workName:        koreanProjectName,
+      workNameKo:      koreanProjectName,
       pivoId:          pivoId || null,
       episode:         pending.episode,
       sourceLink:      pending.sourceLink || "",
       requesterName:   pending.requesterName   || "",
       requesterUserId: pending.requesterUserId || null,
+      ownerUserId:     pending.ownerUserId     || null,
     });
   });
 
   // ── 오퍼레이션 선택 DM 표시 ──────────────────────────────
   async function _proceedRetakeOperationSelect(client, dmChannel, info) {
-    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId } = info;
+    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId, ownerUserId } = info;
     const draftId = generateDraftId();
 
     // 납품 시트 D열에서 실제 담당 APM 조회 — zh-ja·ko-ja 병렬 조회 후 첫 번째 APM 사용
@@ -337,6 +352,7 @@ JSON만 출력. 코드블록 금지.
 
     draftStore.set(draftId, {
       type: "retake",
+      ownerUserId,
       workName, workNameKo, pivoId: pivoId || null, episode, sourceLink,
       requesterName:   requesterName   || "",
       requesterUserId: requesterUserId || null,
@@ -572,33 +588,66 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    // endDate 선저장 — 이후 worker 조회 실패·예외 발생 시에도 수동 입력 경로에서 참조 가능
-    draftStore.set(draftId, { ...data, endDate });
+    if (data.retakeMutationStatus === "applying") {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "⏳ 이미 태스크 재생성을 처리 중이야." });
+      return;
+    }
+    if (data.retakeMutationStatus === "completed") {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "✅ 이 태스크 재생성은 이미 완료됐어." });
+      return;
+    }
+    if (data.retakeMutationStatus === "review_required") {
+      await client.chat.postMessage({
+        channel: data.dmChannelId,
+        text: "⚠️ 이전 생성 요청의 결과가 불확실해 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해줘.",
+      });
+      return;
+    }
+
+    // 생성된 UUID를 먼저 보존해 일정 재시도 시 retake API를 다시 호출하지 않는다.
+    let createdUuids = Array.isArray(data.createdTaskUuids) ? data.createdTaskUuids : [];
+    draftStore.set(draftId, { ...data, endDate, retakeMutationStatus: "applying" });
+    let mutationCompleted = false;
 
     try {
-      const reqBody = {
-        operationUuid:     data.operationUuid,
-        creationReason:    "RETAKE",
-        sourceTaskUuid:    data.sourceTaskUuid,
-        requiredSetting: {
-          taskType:  "NORMAL",
-          startDate: startDate,
-          endDate:   endDate,
-        },
-      };
+      if (!createdUuids.length) {
+        const reqBody = {
+          operationUuid:     data.operationUuid,
+          creationReason:    "RETAKE",
+          sourceTaskUuid:    data.sourceTaskUuid,
+          requiredSetting: {
+            taskType:  "NORMAL",
+            startDate,
+            endDate,
+          },
+        };
 
-      console.log("[retake] 요청 body:", JSON.stringify(reqBody, null, 2));
+        console.log("[retake] 요청 body:", JSON.stringify(reqBody, null, 2));
 
-      const json = await _apiFetch(`${BASE()}/api/v1/tasks/${data.sourceTaskUuid}/retake`, {
-        method:  "POST",
-        headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
-        body:    JSON.stringify(reqBody),
-      }, { bot: "retake", endpoint: "/tasks/{uuid}/retake", params: {}, expectedCount: null });
-      console.log("[retake] 응답:", JSON.stringify(json));
-
-      if (!json.success) throw new Error(json.error?.message || "태스크 재생성 실패");
-
-      const createdUuids = json.data?.createdTaskUuids || [];
+        let json;
+        try {
+          json = await _apiFetch(`${BASE()}/api/v1/tasks/${data.sourceTaskUuid}/retake`, {
+            method:  "POST",
+            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+            body:    JSON.stringify(reqBody),
+          }, { bot: "retake", endpoint: "/tasks/{uuid}/retake", params: {}, expectedCount: null });
+          createdUuids = requireCreatedTaskUuids(json, "태스크 재생성");
+        } catch (error) {
+          if (error?.code === "CONFIRMED_MUTATION_FAILURE") throw error;
+          const unknownError = toUnknownMutationOutcome(error, "태스크 재생성");
+          unknownError.mutationStage = "retake_creation";
+          throw unknownError;
+        }
+        console.log("[retake] 응답:", JSON.stringify(json));
+        draftStore.set(draftId, {
+          ...(draftStore.get(draftId) || data),
+          createdTaskUuids: createdUuids,
+          endDate,
+          retakeMutationStatus: "applying",
+        });
+      } else {
+        console.log(`[retake] 기존 생성 태스크 ${createdUuids.length}건 재사용 — retake API 재호출 생략`);
+      }
 
       // 일정 할당 + 채널 조회 병렬 실행
       // 작업자 이메일: 오퍼레이션 선택 시 delivery-target-task에서 미리 저장한 값 재사용
@@ -606,7 +655,7 @@ JSON만 출력. 코드블록 금지.
       const resolvedWorkerEmail = data.workerEmail || null;
       console.log(`[retake] 작업자 이메일(pre-stored): ${resolvedWorkerEmail}`);
 
-      const [, workerInfo] = await Promise.all([
+      const [dateJson, workerInfo] = await Promise.all([
         // 일정 할당: POST /api/v1/tasks/dates
         (createdUuids.length > 0 && startDate && endDate)
           ? _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
@@ -620,13 +669,10 @@ JSON만 출력. 코드블록 금지.
                 })),
               }),
             }, { bot: "retake", endpoint: "/tasks/dates", params: {}, expectedCount: null })
-              .then(dateJson => {
-                console.log("[retake] 일정 할당 응답:", JSON.stringify(dateJson));
-                if (dateJson.data?.실패 > 0) {
-                  console.warn("[retake] 일정 할당 일부 실패:", JSON.stringify(dateJson.data.failedTaskUuids));
-                }
+              .then(result => {
+                console.log("[retake] 일정 할당 응답:", JSON.stringify(result));
+                return result;
               })
-              .catch(e => console.error("[retake] 일정 할당 API 오류:", e.message))
           : Promise.resolve(null),
         // 채널 조회
         resolvedWorkerEmail
@@ -634,6 +680,16 @@ JSON만 출력. 코드블록 금지.
               .catch(e => { console.error('[retake] 작업자 채널 선조회 실패:', e.message); return null; })
           : Promise.resolve(null),
       ]);
+
+      decodeMutationResult(dateJson, "생성된 태스크 일정 반영");
+
+      mutationCompleted = true;
+      draftStore.set(draftId, {
+        ...(draftStore.get(draftId) || data),
+        createdTaskUuids: createdUuids,
+        endDate,
+        retakeMutationStatus: "completed",
+      });
 
       let resolvedChannelId = workerInfo?.channelId || null;
       let resolvedSlackIds  = workerInfo?.slackIds  || null;
@@ -683,8 +739,45 @@ JSON만 출력. 코드블록 금지.
       }
     } catch (e) {
       console.error("[retake] 오류:", e.message);
-      await client.chat.postMessage({ channel: data.dmChannelId,
-        text: `❌ 태스크 재생성 실패: ${e.message}` });
+      if (mutationCompleted) {
+        await client.chat.postMessage({ channel: data.dmChannelId,
+          text: `✅ 태스크와 일정은 반영됐지만 완료 안내 중 오류가 발생했어: ${e.message}` }).catch(() => {});
+        return;
+      }
+
+      const failedDraft = draftStore.get(draftId) || data;
+      if (isUnknownMutationOutcome(e) && e.mutationStage === "retake_creation") {
+        draftStore.set(draftId, {
+          ...failedDraft,
+          createdTaskUuids: [],
+          endDate,
+          retakeMutationStatus: "review_required",
+          retakeUnknownOutcome: { reason: e.message, recordedAt: new Date().toISOString() },
+        });
+        await client.chat.postMessage({
+          channel: data.dmChannelId,
+          text: "⚠️ 태스크 생성 요청 뒤 응답을 확인하지 못했어. 중복 생성을 막기 위해 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해야 해.",
+        });
+        return;
+      }
+      draftStore.set(draftId, { ...failedDraft, createdTaskUuids: createdUuids, endDate, retakeMutationStatus: "ready" });
+      const taskCreated = createdUuids.length > 0;
+      await client.chat.postMessage({
+        channel: data.dmChannelId,
+        text: taskCreated
+          ? `❌ 태스크는 생성됐지만 일정 반영에 실패했어: ${e.message}`
+          : `❌ 태스크 재생성 실패: ${e.message}`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: taskCreated
+              ? `❌ *태스크는 생성됐지만 일정 반영에 실패했어.*\n\`${e.message}\`\n\n재시도하면 태스크를 새로 만들지 않고 일정만 다시 반영해.`
+              : `❌ *태스크 재생성에 실패했어.*\n\`${e.message}\`\n\nTotus가 명시적으로 실패를 반환했으므로 안전하게 다시 시도할 수 있어.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "retake_open_date_modal",
+              text: { type: "plain_text", text: taskCreated ? "🔄 일정만 재시도" : "🔄 재시도" }, style: "primary", value: draftId },
+          ]},
+        ],
+      });
     }
   });
 
@@ -775,12 +868,13 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    let resolvedWorkName, resolvedWorkNameKo, resolvedPivoId;
+    let displayWorkName;
+    let koreanProjectName = null;
+    let resolvedPivoId;
 
     if (pivoId) {
       // pivoId 직접 입력 → Totus API 선 조회, 실패 시 마스터 시트 폴백
-      // ※ 한일 작품 전용: pivoOriginalTitle(한국어 원제) 우선 반환
-      //   중일 작품은 pivoOriginalTitle이 중국어로 오므로 마스터 시트를 통해 처리할 것
+      // Totus 작품명의 언어는 보장되지 않으며, 한국어명은 마스터 시트가 확인한 값만 사용한다.
       console.log(`[retake] pivoId 입력 → Totus API 선 조회 (pivoId: ${pivoId})`);
       try {
         const _pivoRes = await _apiFetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivoId)}`, {
@@ -791,51 +885,56 @@ JSON만 출력. 코드블록 금지.
           const d = p._detail || p;
           return d.진행상태 !== "CANCELED" && d.pivoId != null;
         });
-        // [한일 기준] 1순위: proj.name(Totus 설정 프로젝트명) → 2순위: pivoOriginalTitle(한국어 원제) → 3순위: pivoTitle(일본어)
-        // ※ 중일 작품은 추후 봇 분기 시 마스터 시트 우선으로 별도 처리 예정
-        const totusName = proj?.name
-                       || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
-                       || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
-                       || null;
+        const primaryWorkTitle = proj?.name
+                              || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
+                              || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
+                              || null;
 
-        if (totusName) {
+        if (primaryWorkTitle) {
           // Totus 조회 성공 → 마스터 시트에서 한국어 표시명 우선 확인
-          const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
-          resolvedWorkName   = matchedByPivo?.projectName || totusName;
-          resolvedWorkNameKo = matchedByPivo?.projectName || matchedByPivo?.ko || totusName;
-          console.log(`[retake] Totus 조회 성공: ${totusName} → 표시명: ${resolvedWorkName}`);
+          const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+          koreanProjectName = matchedByPivo?.koreanProjectName || null;
+          displayWorkName = koreanProjectName
+                         || matchedByPivo?.chineseOriginalTitle
+                         || primaryWorkTitle;
+          console.log(`[retake] Totus 조회 성공: ${primaryWorkTitle} → 표시명: ${displayWorkName}`);
         } else {
           // Totus에 이름 없음 → 마스터 시트 폴백
           console.log(`[retake] Totus 이름 없음 → 마스터 시트 폴백`);
-          const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
-          resolvedWorkName   = matchedByPivo?.projectName || matchedByPivo?.ko || `(pivoId: ${pivoId})`;
-          resolvedWorkNameKo = matchedByPivo?.ko || resolvedWorkName;
+          const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+          koreanProjectName = matchedByPivo?.koreanProjectName || null;
+          displayWorkName = koreanProjectName
+                         || matchedByPivo?.chineseOriginalTitle
+                         || `(pivoId: ${pivoId})`;
         }
       } catch (e) {
         // Totus API 실패 → 마스터 시트 폴백
         console.error(`[retake] Totus 조회 실패 → 마스터 시트 폴백:`, e.message);
-        const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
-        resolvedWorkName   = matchedByPivo?.projectName || matchedByPivo?.ko || `(pivoId: ${pivoId})`;
-        resolvedWorkNameKo = matchedByPivo?.ko || resolvedWorkName;
+        const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+        koreanProjectName = matchedByPivo?.koreanProjectName || null;
+        displayWorkName = koreanProjectName
+                       || matchedByPivo?.chineseOriginalTitle
+                       || `(pivoId: ${pivoId})`;
       }
       resolvedPivoId = pivoId;
     } else {
       const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
-      resolvedWorkName   = matchedTitle?.projectName || workName;
-      resolvedWorkNameKo = matchedTitle?.projectName || workName;
-      resolvedPivoId     = matchedTitle?.pivoId || null;
+      koreanProjectName = matchedTitle?.koreanProjectName || null;
+      displayWorkName = koreanProjectName || workName;
+      resolvedPivoId = matchedTitle?.pivoId || null;
     }
 
     draftStore.delete(pendingId);
 
     await _proceedRetakeOperationSelect(client, pending.dmChannelId, {
-      workName:      resolvedWorkName,
-      workNameKo:    resolvedWorkNameKo,
+      workName:      displayWorkName,
+      workNameKo:    koreanProjectName,
       pivoId:        resolvedPivoId,
       episode,
       sourceLink:      pending.sourceLink      || "",
       requesterName:   pending.requesterName   || "",
       requesterUserId: pending.requesterUserId || null,
+      ownerUserId:     pending.ownerUserId     || null,
     });
   });
 
