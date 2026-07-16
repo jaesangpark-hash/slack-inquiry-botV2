@@ -112,22 +112,27 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
     const pendingId = "sched_pending_1";
     draftStore.set(pendingId, {
       type: "schedule_pending",
+      ownerUserId: "U_OWNER",
       parsed: { episode: "5", work_title_ko: "테스트", work_title_ja: "" },
       sourceLink: "https://example.com",
     });
 
     const app = makeFakeApp();
     let schedExtCalled = false;
+    let forwardedParsed = null;
     const client = makeFakeClient({
       chat: { postMessage: async () => ({ ts: "ts1" }) },
     });
 
     registerScheduleActions(app, {
       draftStore,
-      loadTitleRowsFromSheet: async () => [{ pivoId: "P1", projectName: "Test Work" }],
+      loadTitleRowsFromSheet: async () => [{ pivoId: "P1", koreanProjectName: "Test Work" }],
       matchWorkTitleFromSheet: async () => null,
       fetchDeliveryDate: async () => ({ allSame: true, deliveryDate: "2026-06-01", episodeLabel: "5화" }),
-      handleScheduleExt: async () => { schedExtCalled = true; },
+      handleScheduleExt: async (_client, _channel, parsed) => {
+        schedExtCalled = true;
+        forwardedParsed = parsed;
+      },
       generateDraftId: () => "d_new",
       PM_SLACK_ID: "U_PM",
       SCHEDULE_CHANNEL_ID: "C_SCH",
@@ -144,6 +149,7 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
     });
 
     assert.equal(schedExtCalled, true);
+    assert.equal(forwardedParsed.ownerUserId, "U_OWNER");
     // draftStore에서 pendingId 삭제됐는지 확인
     assert.equal(draftStore.has(pendingId), false);
   });

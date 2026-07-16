@@ -34,6 +34,12 @@ module.exports = function registerWorkerRelayFlow(app, {
   const TOKEN       = () => process.env.PLATFORM_API_TOKEN;
   const PM_SLACK_ID = () => process.env.PM_SLACK_ID;
   const { loggedCall, logEvent } = require("./apiLogger");
+  const {
+    checkEntryGate,
+    readState,
+    reserveInProgress,
+    runCheckpointStages,
+  } = require("./slack/mutation-checkpoint");
 
   // ── 오퍼레이션 코드 ──────────────────────────────────────
   const OP = {
@@ -299,8 +305,9 @@ JSON만 출력. 코드블록 금지.
       const pendingId = `wr_pending_${Date.now()}`;
       draftStore.set(pendingId, {
         type: "worker_relay_pending",
+        ownerUserId: apmUserId,
         relayType, inquiryDetail, actionRequired, corrections, missingItems, sourceLang,
-        workName:          matchedTitle?.projectName || titleKo || titleJa || "",
+        workName:          matchedTitle?.koreanProjectName || titleKo || titleJa || "",
         pivoId:            matchedTitle?.pivoId      || null,
         episode:           episode || "",
         episodeList,
@@ -310,6 +317,7 @@ JSON만 출력. 코드블록 금지.
         originalTs:        sourceInfo.ts        || null,
         imageUrls,
         requesterUserId, requesterName, requesterEmail: requesterTotusEmail, requesterMention,
+        apmUserId,
         dmChannelId: dmChannel,
       });
 
@@ -333,18 +341,21 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    const workName = matchedTitle.projectName || titleKo || titleJa || "-";
+    const workName = matchedTitle.koreanProjectName || titleKo || titleJa || "-";
     const pivoId   = matchedTitle.pivoId;
 
     await _proceedWithData(client, dmChannel, {
       relayType, inquiryDetail, actionRequired, corrections, missingItems, sourceLang,
-      workName, workNameJa: matchedTitle.jaDisplay || matchedTitle.jpTitle || workName,
+      workName,
+      workNameJa: matchedTitle.japaneseDisplayTitle || matchedTitle.japaneseFixedTitle || workName,
       pivoId, episode, episodeList, episodeLabel,
       sourceLink:        sourceInfo.url       || null,
       originalChannelId: sourceInfo.channelId || null,
       originalTs:        sourceInfo.ts        || null,
       imageUrls,
       requesterUserId, requesterName, requesterEmail: requesterTotusEmail, requesterMention,
+      apmUserId,
+      ownerUserId: apmUserId,
     });
   }
 
@@ -356,7 +367,8 @@ JSON만 출력. 코드블록 금지.
             sourceLink, originalChannelId, originalTs,
             imageUrls = [],
             sourceLang = "ko",
-            requesterUserId, requesterName, requesterEmail, requesterMention = "" } = data;
+            requesterUserId, requesterName, requesterEmail, requesterMention = "",
+            apmUserId, ownerUserId } = data;
     const _episodeLabel = episodeLabel || (episode ? `${episode}화` : "-");
 
     // 4. Totus projectUuid
@@ -383,7 +395,7 @@ JSON만 출력. 코드블록 금지.
     console.log(`[workerRelay] requesterWorker: ${JSON.stringify(requesterWorker)}`);
     if (!requesterWorker) {
       const pendingId  = generateDraftId();
-      draftStore.set(pendingId, { _workerPick: true, data, workers, dmChannelId: dmChannel });
+      draftStore.set(pendingId, { _workerPick: true, ownerUserId, data, workers, dmChannelId: dmChannel });
       const workerBtns = workers.slice(0, 5).map((w, i) => ({
         type: "button", action_id: `wr_pick_target_${i}`,
         text: { type: "plain_text", text: `${w.opName} · ${w.workerName || w.workerEmail}`.slice(0, 75) },
@@ -406,7 +418,7 @@ JSON만 출력. 코드블록 금지.
     if (!targetWorker) {
       const otherWorkers = workers.filter(w => w.workerEmail !== requesterWorker.workerEmail);
       const pendingId    = generateDraftId();
-      draftStore.set(pendingId, { _workerPick: true, data, workers: otherWorkers, requesterWorker, dmChannelId: dmChannel });
+      draftStore.set(pendingId, { _workerPick: true, ownerUserId, data, workers: otherWorkers, requesterWorker, dmChannelId: dmChannel });
       const workerBtns = otherWorkers.slice(0, 5).map((w, i) => ({
         type: "button", action_id: `wr_pick_target_${i}`,
         text: { type: "plain_text", text: `${w.opName} · ${w.workerName || w.workerEmail}`.slice(0, 75) },
@@ -436,6 +448,7 @@ JSON만 출력. 코드블록 금지.
 
     draftStore.set(draftId, {
       type: "worker_relay",
+      ownerUserId,
       relayType, inquiryDetail, actionRequired, corrections, missingItems,
       workName, workNameJa: workNameJa || workName,
       episode, episodeList, episodeLabel: _episodeLabel,
@@ -447,6 +460,8 @@ JSON만 출력. 코드블록 금지.
       apmUserId: apmUserId || null,
       targetWorkerEmail: targetWorker.workerEmail,
       targetWorkerName:  targetWorker.workerName,
+      // 대상 선택 시점의 ID가 권한 SSOT다. 전송 시 재조회는 채널/표시명 보강에만 사용한다.
+      targetWorkerSlackIds: targetSlackId || "",
       targetOpName:      targetWorker.opName,
       targetIsTranslator,
       dmChannelId: dmChannel,
@@ -629,7 +644,7 @@ JSON만 출력. 코드블록 금지.
     let matched  = null;
     if (!pivoId && workInput) {
       matched = await matchWorkTitleFromSheet(workInput, workInput).catch(() => null);
-      if (matched) { pivoId = matched.pivoId; workName = matched.projectName || workInput; }
+      if (matched) { pivoId = matched.pivoId; workName = matched.koreanProjectName || workInput; }
       else { workName = workInput; }
     }
 
@@ -639,7 +654,7 @@ JSON만 출력. 코드블록 금지.
       relayType:         pending.relayType,
       inquiryDetail:     pending.inquiryDetail,
       workName,
-      workNameJa:        matched?.jaDisplay || matched?.jpTitle || workName,
+      workNameJa:        matched?.japaneseDisplayTitle || matched?.japaneseFixedTitle || workName,
       pivoId:            pivoId || "",
       episode,
       episodeList:       pending.episodeList || (episode ? [episode] : []),
@@ -653,38 +668,224 @@ JSON만 출력. 코드블록 금지.
       requesterEmail:    pending.requesterEmail,
       requesterMention:  pending.requesterMention || "",
       apmUserId:         pending.apmUserId || pending.requesterSlackId || null, // APM ID 유지
+      ownerUserId:       pending.ownerUserId || pending.apmUserId || null,
     });
   });
+
+  function _workerRelaySuccessPayload(data, channel, ts) {
+    return {
+      channel,
+      ts,
+      text: `✅ 전송 완료 — ${data.workName} ${data.episode}화`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn",
+          text: `*📨 작업자 TO 작업자 릴레이*\n*유형:* ${TYPE_LABEL[data.relayType] || data.relayType}\n*작품:* ${data.workName} ${data.episodeLabel || data.episode + "화"}\n*전달 대상:* ${data.targetDisplayName || data.targetWorkerName} (${data.targetOpName})\n\n✅ 전송 완료` } },
+      ],
+    };
+  }
+
+  async function _updateWorkerRelaySuccessUi(client, draftId, data, channel, ts) {
+    if (!channel || !ts) return;
+    await client.chat.update(_workerRelaySuccessPayload(data, channel, ts));
+    const current = draftStore.get(draftId) || data;
+    draftStore.set(draftId, { ...current, workerRelayUiPending: false });
+  }
+
+  async function _deliverWorkerRelay({
+    client,
+    draftId,
+    channelId,
+    targetDisplayName,
+    targetWorkerSlackIds,
+    previewChannelId,
+    previewMessageTs,
+    alreadyReserved = false,
+  }) {
+    let data = draftStore.get(draftId);
+    if (!data) return;
+
+    // workerRelaySendStatus/workerRelayUiPending을 draftStore 레코드 필드에 저장하는
+    // mutation-checkpoint stateStore 어댑터. get/set이 항상 최신 draftStore를 조회·병합해
+    // _sendToWorkerChannel이 직접 쓰는 다른 필드(targetWorkerSlackIds, workerMsgTs 등)를
+    // 덮어쓰지 않는다.
+    //
+    // [shape 관례 — 유지보수 주의] worker는 terminal(sent/review_required)과 in-progress를
+    // 모두 단일 status 필드(workerRelaySendStatus: sending/sent/review_required)로 표현한다.
+    // primitive의 inProgress boolean은 여기서 의도적으로 저장·조회하지 않는다 — set은
+    // value.inProgress를 버리고, get은 노출하지 않으며, in-progress marker는 아래 checkEntryGate의
+    // isInProgress가 status === "sending"으로 읽는다. reserveInProgress가 붙이는 inProgress:true는
+    // 이 어댑터에서 무시되지만, 같은 호출이 state.status를 "sending"으로 세우므로 선점은 성립한다.
+    // 따라서 primitive와 영속 state의 shape가 다르다 — inProgress를 배선하려 "정리"하지 말 것
+    // (publication-coordinator는 반대로 primitive의 inProgress를 그대로 쓴다).
+    const mutationStore = {
+      get: key => {
+        const rec = draftStore.get(key);
+        if (!rec) return undefined;
+        return { status: rec.workerRelaySendStatus, uiPending: !!rec.workerRelayUiPending };
+      },
+      set: (key, value) => {
+        const current = draftStore.get(key) || {};
+        const next = { ...current, workerRelaySendStatus: value.status };
+        if ("uiPending" in value) next.workerRelayUiPending = value.uiPending;
+        if ("reviewReason" in value) next.workerRelayReviewReason = value.reviewReason;
+        draftStore.set(key, next);
+        return value;
+      },
+    };
+
+    const savedState = readState(mutationStore, draftId);
+    const entryGate = checkEntryGate({
+      savedState,
+      isTerminal: state => state.status === "review_required" || state.status === "sent",
+      // alreadyReserved=true는 호출부(wr_send)가 첫 await 전에 이미 자신을 선점한 뒤 넘어온
+      // 호출이라는 뜻 — 동시 클릭 drop 대상이 아니므로 in-progress로 취급하지 않는다.
+      isInProgress: state => !alreadyReserved && state.status === "sending",
+      buildReplayResult: state => ({
+        reviewRequired: state.status === "review_required",
+        sent: state.status === "sent",
+        uiPending: !!state.uiPending,
+      }),
+      buildInProgressResult: () => null,
+    });
+    if (entryGate.done) {
+      if (entryGate.result?.reviewRequired) {
+        await client.chat.postMessage({
+          channel: data.dmChannelId,
+          text: "⚠️ 작업자 메시지 게시 결과가 불명확해 운영자 확인이 필요해. 전송 버튼을 다시 누르지 말아줘.",
+        }).catch(() => {});
+      } else if (entryGate.result?.sent && entryGate.result.uiPending) {
+        await _updateWorkerRelaySuccessUi(
+          client,
+          draftId,
+          data,
+          previewChannelId || data.previewChannelId,
+          previewMessageTs || data.previewMessageTs
+        ).catch(() => {});
+      }
+      return;
+    }
+
+    // 첫 await(worker 채널 postMessage) 전에 선점한다.
+    const reserved = reserveInProgress({
+      stateStore: mutationStore,
+      stateKey: draftId,
+      state: { status: "sending" },
+    });
+    data = {
+      ...draftStore.get(draftId),
+      previewChannelId: previewChannelId || data.previewChannelId || null,
+      previewMessageTs: previewMessageTs || data.previewMessageTs || null,
+    };
+    draftStore.set(draftId, data);
+
+    const stages = [
+      {
+        isDone: () => false,
+        // _sendToWorkerChannel이 ts 확인(if (!sent?.ts) throw)과 성공 시 draftStore 기록을
+        // 함께 수행한다 — outcome 분류만 여기서 primitive에 위임한다.
+        execute: () => _sendToWorkerChannel(
+          client,
+          data,
+          channelId,
+          targetDisplayName,
+          draftId,
+          targetWorkerSlackIds
+        ),
+        confirm: () => ({ status: "sent", uiPending: true }),
+        onOutcomeUnknown: () => {
+          const current = draftStore.get(draftId) || data;
+          return current.workerMsgTs
+            ? { status: "sent", uiPending: true }
+            : { status: "review_required", uiPending: false, reviewReason: "worker_message_outcome_unknown" };
+        },
+        buildError: error => error,
+      },
+    ];
+
+    try {
+      await runCheckpointStages({
+        state: reserved,
+        stages,
+        stateStore: mutationStore,
+        stateKey: draftId,
+      });
+    } catch (error) {
+      await client.chat.postMessage({
+        channel: data.dmChannelId,
+        text: `⚠️ 작업자 메시지 게시 결과를 확정할 수 없어. 운영자가 채널을 확인하고 다시 누르지 말아줘. (${error.message})`,
+      }).catch(() => {});
+      return;
+    }
+
+    const sentState = draftStore.get(draftId) || data;
+    await _updateWorkerRelaySuccessUi(
+      client,
+      draftId,
+      sentState,
+      previewChannelId || sentState.previewChannelId,
+      previewMessageTs || sentState.previewMessageTs
+    ).catch(() => {
+      const current = draftStore.get(draftId) || sentState;
+      draftStore.set(draftId, { ...current, workerRelayUiPending: true });
+    });
+  }
 
   // ── [전송] 버튼 → B 작업자 개인 채널로 전달 ─────────────
   app.action("wr_send", async ({ body, ack, client }) => {
     await ack();
     const draftId = body.actions[0].value;
-    const data    = draftStore.get(draftId);
+    let data = draftStore.get(draftId);
     if (!data) return;
 
-    // 초안 메시지 완료 처리
-    try {
-      await client.chat.update({
-        channel: body.channel.id, ts: body.message.ts,
-        text: `✅ 전송 완료 — ${data.workName} ${data.episode}화`,
-        blocks: [
-          { type: "section", text: { type: "mrkdwn",
-            text: `*📨 작업자 TO 작업자 릴레이*\n*유형:* ${TYPE_LABEL[data.relayType] || data.relayType}\n*작품:* ${data.workName} ${data.episodeLabel || data.episode + "화"}\n*전달 대상:* ${data.targetDisplayName || data.targetWorkerName} (${data.targetOpName})\n\n✅ 전송 완료` } },
-        ],
+    if (["sending", "sent", "review_required"].includes(data.workerRelaySendStatus)) {
+      await _deliverWorkerRelay({
+        client,
+        draftId,
+        channelId: data.workerChannelId,
+        targetDisplayName: data.targetDisplayName || data.targetWorkerName,
+        targetWorkerSlackIds: data.targetWorkerSlackIds,
+        previewChannelId: body.channel.id,
+        previewMessageTs: body.message.ts,
       });
-    } catch (_) {}
+      return;
+    }
 
-    // B 작업자 채널 조회
+    // 첫 await 전에 선점한다.
+    data = {
+      ...data,
+      workerRelaySendStatus: "sending",
+      previewChannelId: body.channel.id,
+      previewMessageTs: body.message.ts,
+    };
+    draftStore.set(draftId, data);
+
+    // B 작업자 채널 재조회는 채널/표시명 보강용이다. 첫 선택의 Slack ID를 덮어쓰지 않는다.
     const workerInfo = await _getWorkerInfo(data.targetWorkerEmail).catch(() => null);
     const channelId  = workerInfo?.channelId || null;
-    // 슬랙 ID 멘션으로 이름 표시
-    const _sid = workerInfo?.slackId || null;
-    const targetDisplayName = _sid ? `<@${_sid}>` : (workerInfo?.name || data.targetWorkerName || data.targetWorkerEmail);
+    const authorizedWorkerSlackIds = data.targetWorkerSlackIds || workerInfo?.slackId || "";
+    const targetDisplayName = authorizedWorkerSlackIds
+      ? `<@${String(authorizedWorkerSlackIds).split(",")[0].trim()}>`
+      : (workerInfo?.name || data.targetWorkerName || data.targetWorkerEmail);
 
     if (!channelId) {
+      draftStore.set(draftId, {
+        ...data,
+        workerRelaySendStatus: "awaiting_channel",
+        targetWorkerSlackIds: authorizedWorkerSlackIds,
+        targetDisplayName,
+      });
       const retryId = generateDraftId();
-      draftStore.set(retryId, { _channelRetry: true, draftId, dmChannelId: data.dmChannelId, targetDisplayName, targetOpName: data.targetOpName });
+      draftStore.set(retryId, {
+        _channelRetry: true,
+        ownerUserId: data.ownerUserId,
+        draftId,
+        dmChannelId: data.dmChannelId,
+        targetDisplayName,
+        targetOpName: data.targetOpName,
+        targetWorkerSlackIds: authorizedWorkerSlackIds,
+        previewChannelId: body.channel.id,
+        previewMessageTs: body.message.ts,
+      });
       await client.chat.postMessage({ channel: data.dmChannelId,
         text: `⚠️ ${targetDisplayName}의 채널 ID를 작업자 DB에서 찾을 수 없어.`,
         blocks: [
@@ -700,14 +901,25 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    // 채널 조인 시도
     try { await client.conversations.join({ channel: channelId }).catch(() => {}); } catch (_) {}
-    await _sendToWorkerChannel(client, data, channelId, targetDisplayName, draftId);
+    await _deliverWorkerRelay({
+      client,
+      draftId,
+      channelId,
+      targetDisplayName,
+      targetWorkerSlackIds: authorizedWorkerSlackIds,
+      previewChannelId: body.channel.id,
+      previewMessageTs: body.message.ts,
+      alreadyReserved: true,
+    });
   });
 
   // ── 작업자 채널 메시지 전송 헬퍼 (wr_send + 채널 직접 입력 공용) ──
-  async function _sendToWorkerChannel(client, data, channelId, targetDisplayName, draftId) {
+  async function _sendToWorkerChannel(client, data, channelId, targetDisplayName, draftId, targetWorkerSlackIds = "") {
     const srcLang = data.sourceLang || "ko";
+    const authorizedWorkerSlackIds = String(
+      data.targetWorkerSlackIds || targetWorkerSlackIds || ""
+    ).trim();
     let msgHeader, msgContent, msgReplyBtn;
 
     if (data.targetIsTranslator) {
@@ -773,7 +985,7 @@ JSON만 출력. 코드블록 금지.
       { type: "divider" },
       { type: "section", text: { type: "mrkdwn", text: msgContent } },
     ];
-    if (data.relayType === "번역문 누락") {
+    if (data.relayType === "번역문 누락" && authorizedWorkerSlackIds) {
       messageBlocks.push({
         type: "actions", elements: [
           { type: "button", action_id: "wr_worker_reply",
@@ -789,7 +1001,19 @@ JSON만 출력. 코드블록 금지.
       text: `📨 ${data.workName} ${data.episodeLabel || data.episode + "화"} — ${TYPE_LABEL[data.relayType] || data.relayType}`,
       blocks: messageBlocks,
     });
-    logEvent("workerRelay", "/slack/relay-sent", Date.now() - _t0, true);
+    if (!sent?.ts) throw new Error("작업자 메시지 ts를 확인할 수 없어.");
+    draftStore.set(draftId, {
+      ...data,
+      targetWorkerSlackIds: authorizedWorkerSlackIds,
+      targetDisplayName,
+      workerChannelId: channelId,
+      workerMsgTs: sent.ts,
+      sentMsgHeader: msgHeader,
+      sentMsgContent: msgContent,
+      workerRelaySendStatus: "sent",
+      workerRelayUiPending: true,
+    });
+    try { logEvent("workerRelay", "/slack/relay-sent", Date.now() - _t0, true); } catch (_) {}
 
     const workerImageUrls = data.imageUrls || [];
     if (workerImageUrls.length > 0) {
@@ -843,21 +1067,12 @@ JSON만 출력. 코드블록 금지.
               : srcLang === "en"
                 ? "⚠️ *Thumbnail generation failed — please check the original link*\n"
                 : "⚠️ *썸네일 생성 실패 — 원본 링크로 확인해주세요*\n") + failedLinks.join("\n") } }],
-        });
+        }).catch(() => {});
       }
     }
-
-    draftStore.set(draftId, {
-      ...data,
-      targetDisplayName,
-      workerChannelId:  channelId,
-      workerMsgTs:      sent.ts,
-      sentMsgHeader:    msgHeader,
-      sentMsgContent:   msgContent,
-    });
-
     await client.chat.postMessage({ channel: data.dmChannelId,
-      text: `✅ ${targetDisplayName}(${data.targetOpName}) 채널로 전달했어.` });
+      text: `✅ ${targetDisplayName}(${data.targetOpName}) 채널로 전달했어.` }).catch(() => {});
+    return sent;
   }
 
   // ── 작업자 선택 버튼 핸들러 (wr_pick_target_0~4) ─────────────
@@ -882,6 +1097,7 @@ JSON만 출력. 코드블록 금지.
     const _episodeLabel = data.episodeLabel || (data.episode ? `${data.episode}화` : "-");
     draftStore.set(draftId, {
       type: "worker_relay",
+      ownerUserId: data.ownerUserId || data.apmUserId || null,
       relayType: data.relayType, inquiryDetail: data.inquiryDetail,
       actionRequired: data.actionRequired, corrections: data.corrections || [], missingItems: data.missingItems || [],
       workName: data.workName, workNameJa: data.workNameJa || data.workName,
@@ -895,6 +1111,7 @@ JSON만 출력. 코드블록 금지.
       apmUserId: data.apmUserId || null,
       targetWorkerEmail: targetWorker.workerEmail,
       targetWorkerName:  targetWorker.workerName,
+      targetWorkerSlackIds: targetSlackId || "",
       targetOpName:      targetWorker.opName,
       targetIsTranslator,
       dmChannelId,
@@ -962,7 +1179,15 @@ JSON만 출력. 코드블록 금지.
       return;
     }
     try { await client.conversations.join({ channel: channelId }).catch(() => {}); } catch (_) {}
-    await _sendToWorkerChannel(client, data, channelId, retry.targetDisplayName, retry.draftId);
+    await _deliverWorkerRelay({
+      client,
+      draftId: retry.draftId,
+      channelId,
+      targetDisplayName: retry.targetDisplayName,
+      targetWorkerSlackIds: retry.targetWorkerSlackIds || "",
+      previewChannelId: retry.previewChannelId,
+      previewMessageTs: retry.previewMessageTs,
+    });
   });
 
   // ── [내용 수정] 버튼 → 모달 ─────────────────────────────

@@ -2,6 +2,24 @@
 
 "use strict";
 
+const {
+  COMPLETION_RECOVERY,
+  createCompletionFollowupMarker,
+  findMarkedFollowupMessage,
+  finalizeCompletion,
+} = require("../slack/completion-coordinator");
+const { requirePositiveSheetRowIndex } = require("../sheets/sheet-row-index");
+const {
+  readKoreanProjectNameFromSelectionPayload,
+} = require("../slack/title-selection-payload");
+const {
+  isPublicationLocked,
+  updateTerminalPublicationPreview,
+} = require("../slack/publication-ui");
+const {
+  PUBLICATION_RECOVERY,
+} = require("../slack/publication-coordinator");
+
 /**
  * @param {import("@slack/bolt").App} app
  * @param {{
@@ -44,49 +62,92 @@ module.exports = function registerDirectInputActions(app, deps) {
     await ack();
     try {
       const meta = JSON.parse(body.actions[0].value || "{}");
-      const { submitterId, draftId, historyRowIndex: metaHistoryRowIndex } = meta;
+      const {
+        submitterId,
+        draftId,
+        historyRowIndex: metaHistoryRowIndex,
+        originalChannelId: metadataOriginalChannelId,
+        originalTs: metadataOriginalTs,
+        sourceLink: metadataSourceLink,
+      } = meta;
       const draft = draftId ? draftStore.get(draftId) : null;
-
-      // PM 채널 메시지 완료 처리 (버튼 제거 + 완료 context 추가)
-      await client.chat.update({
-        channel: body.channel.id, ts: body.message.ts,
-        text: body.message.text,
-        blocks: [
-          ...body.message.blocks.filter(b => b.type !== "actions"),
-          { type: "context", elements: [
-            { type: "mrkdwn", text: `✅ *완료 처리됨* — <@${body.user.id}> · ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}` },
-          ]},
-        ],
-      });
-
-      // 히스토리 시트 완료 체크박스 처리
       // 버튼 값(메시지에 영속됨)을 우선 사용 — draftStore(인메모리)는 재시작 시 사라지므로 폴백으로만 사용
-      const historyRowIndex = metaHistoryRowIndex || draft?.historyRowIndex || null;
-      if (historyRowIndex && typeof checkInquiryDone === "function") {
-        await checkInquiryDone(historyRowIndex);
+      const historyRowIndex = requirePositiveSheetRowIndex(
+        metaHistoryRowIndex || draft?.historyRowIndex || null,
+        "문의 이력"
+      );
+      const completionStateKey = `inquiry_done:${body.channel.id}:${body.message.ts}`;
+      let reconciledFollowupMessageTs = null;
+      if (!draftStore.has(completionStateKey) && client.conversations?.replies) {
+        const replies = await client.conversations.replies({
+          channel: body.channel.id,
+          ts: body.message.ts,
+          limit: 100,
+        });
+        reconciledFollowupMessageTs = findMarkedFollowupMessage(
+          replies.messages,
+          completionStateKey
+        )?.ts || null;
       }
 
-      // PM 채널 메시지 스레드에 답변 작성 버튼 댓글 추가
-      if (submitterId) {
-        const replyMeta = JSON.stringify({
-          originalChannelId: draft?.originalChannelId || null,
-          originalTs:        draft?.originalTs        || null,
-          sourceLink:        draft?.sourceLink        || null,
-          submitterId:       submitterId,
-        });
-        await client.chat.postMessage({
+      await finalizeCompletion({
+        completionStateStore: draftStore,
+        completionStateKey,
+        reconciledFollowupMessageTs,
+        persistCompletion: async () => {
+          if (typeof checkInquiryDone !== "function") {
+            throw new Error("문의 완료 시트 기록 기능이 연결되지 않았어.");
+          }
+          await checkInquiryDone(historyRowIndex);
+        },
+        postFollowup: async () => {
+          if (!submitterId) return { ts: "not_required" };
+          const replyMeta = JSON.stringify({
+            originalChannelId: metadataOriginalChannelId || draft?.originalChannelId || null,
+            originalTs:        metadataOriginalTs        || draft?.originalTs        || null,
+            sourceLink:        metadataSourceLink        || draft?.sourceLink        || null,
+            submitterId,
+            ownerUserId:       submitterId,
+          });
+          return client.chat.postMessage({
+            channel: body.channel.id,
+            thread_ts: body.message.ts,
+            text: `<@${submitterId}> 답변 작성 버튼입니다.`,
+            blocks: [
+              { type: "section", block_id: createCompletionFollowupMarker(completionStateKey), text: { type: "mrkdwn", text: `<@${submitterId}> 원문 스레드에 답변을 남겨줘.` }},
+              { type: "actions", elements: [
+                { type: "button", action_id: "open_inquiry_reply_modal", text: { type: "plain_text", text: "✏️ 답변 작성" }, style: "primary", value: replyMeta },
+              ]},
+            ],
+          });
+        },
+        updateCompletionMessage: () => client.chat.update({
           channel: body.channel.id,
-          thread_ts: body.message.ts,
-          text: `<@${submitterId}> 답변 작성 버튼입니다.`,
+          ts: body.message.ts,
+          text: body.message.text,
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `<@${submitterId}> 원문 스레드에 답변을 남겨줘.` }},
-            { type: "actions", elements: [
-              { type: "button", action_id: "open_inquiry_reply_modal", text: { type: "plain_text", text: "✏️ 답변 작성" }, style: "primary", value: replyMeta },
+            ...body.message.blocks.filter(block => block.type !== "actions"),
+            { type: "context", elements: [
+              { type: "mrkdwn", text: `✅ *완료 처리됨* — <@${body.user.id}> · ${new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}` },
             ]},
           ],
-        });
-      }
-    } catch (e) { console.error("inquiry_done 오류:", e.message); }
+        }),
+      });
+    } catch (e) {
+      console.error("inquiry_done 오류:", e.message);
+      const guidance = e.completionRecovery === COMPLETION_RECOVERY.REVIEW_REQUIRED
+        ? "후속 메시지가 실제 게시됐는지 운영자가 확인해야 해. 다시 누르지 말아줘."
+        : e.completionRecovery === COMPLETION_RECOVERY.RETRY_UI_ONLY
+          ? "시트와 후속 메시지는 확인됐고 완료 화면만 남았어. 원래 버튼을 다시 누르면 화면 갱신만 재시도해."
+          : e.completionRecovery === COMPLETION_RECOVERY.RETRY_PERSISTENCE
+            ? "시트 완료 기록을 확정하지 못했어. 원래 완료 버튼을 다시 눌러줘."
+            : "완료 메타데이터와 시트 설정을 확인해줘.";
+      await client.chat.postMessage({
+        channel: body.channel.id,
+        thread_ts: body.message.ts,
+        text: `⚠️ 완료 처리를 확정하지 못했어. ${guidance} (${e.message})`,
+      }).catch(() => {});
+    }
   });
 
   // ── 문의봇 답변 작성 모달 ────────────────────────────────
@@ -156,7 +217,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       trigger_id: body.trigger_id,
       view: {
         type: "modal", callback_id: "direct_resupply_modal",
-        private_metadata: JSON.stringify({ sourceLink }),
+        private_metadata: JSON.stringify({ sourceLink, ownerUserId: body.user.id }),
         title:  { type: "plain_text", text: "원본 재수급 요청" },
         submit: { type: "plain_text", text: "초안 생성" },
         close:  { type: "plain_text", text: "취소" },
@@ -187,11 +248,14 @@ module.exports = function registerDirectInputActions(app, deps) {
     const sourceLink = v.dr_link_block?.value?.value?.trim() || _preLink || "";
 
     const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
-    const workNameKoRes = matchedTitle?.projectName || workName;
-    const deliveryQueryName = matchedTitle?.projectName || workName;
-    console.log("[resupply-manual] matchedTitle:", JSON.stringify({ ko: matchedTitle?.ko, projectName: matchedTitle?.projectName }), "| episode:", episode);
+    const workNameKoRes = matchedTitle?.koreanProjectName || workName;
+    const deliveryQueryName = matchedTitle?.koreanProjectName || workName;
+    console.log("[resupply-manual] matchedTitle:", JSON.stringify({
+      chineseOriginalTitle: matchedTitle?.chineseOriginalTitle,
+      koreanProjectName: matchedTitle?.koreanProjectName,
+    }), "| episode:", episode);
     const deliveryRes   = deliveryQueryName && episode && episode !== "-"
-      ? await fetchDeliveryDate(deliveryQueryName, episode, "zh-ja", matchedTitle?.projectName || null).catch((e) => { console.error("[resupply-manual] fetchDelivery 오류:", e.message); return null; })
+      ? await fetchDeliveryDate(deliveryQueryName, episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch((e) => { console.error("[resupply-manual] fetchDelivery 오류:", e.message); return null; })
       : null;
     console.log("[resupply-manual] deliveryRes:", JSON.stringify(deliveryRes));
     const deliveryDateRes = deliveryRes
@@ -200,6 +264,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const draftId = generateDraftId();
     const draft = {
       draftId, dmChannelId: body.user.id,
+      ownerUserId: body.user.id,
       originalChannelId: null, originalTs: null,
       sourceLink: sourceLink || "",
       workName:    workNameKoRes,
@@ -228,6 +293,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       trigger_id: body.trigger_id,
       view: {
         type: "modal", callback_id: "direct_schedule_modal",
+        private_metadata: JSON.stringify({ ownerUserId: body.user.id }),
         title:  { type: "plain_text", text: "스케줄 조회/변경" },
         submit: { type: "plain_text", text: "조회" },
         close:  { type: "plain_text", text: "취소" },
@@ -245,31 +311,39 @@ module.exports = function registerDirectInputActions(app, deps) {
 
   app.view("direct_schedule_modal", async ({ ack, body, view, client }) => {
     await ack();
+    const { ownerUserId } = JSON.parse(view.private_metadata || "{}");
     const v        = view.state.values;
     const workName = v.ds_work_block?.value?.value?.trim() || "";
     const episode  = v.ds_episode_block?.value?.value?.trim() || "";
     const extDays  = parseInt(v.ds_extdays_block?.value?.value?.trim() || "", 10) || null;
 
-    const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
-    const workNameKo   = matchedTitle?.projectName || workName;
+    const matchedTitle = await matchWorkTitleFromSheet(workName, "").catch(() => null);
+    const koreanProjectName = matchedTitle?.koreanProjectName || null;
+    const displayWorkName = koreanProjectName || workName;
+    const originalWorkTitle = workName || null;
     const delivery     = episode
-      ? await fetchDeliveryDate(workNameKo, episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+      ? await fetchDeliveryDate(displayWorkName, episode, "zh-ja", koreanProjectName).catch(() => null)
       : null;
 
     if (delivery) {
       await client.chat.postMessage({ channel: body.user.id,
         text: `납품 시트 확인 완료 — *${delivery.episodeLabel}* 납품일: *${delivery.allSame ? delivery.deliveryDate : delivery.episodes.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")}*` });
     } else {
-      await client.chat.postMessage({ channel: body.user.id, text: `납품 시트에서 *${workNameKo}* ${episode}화를 찾지 못했어. 직접 확인해줘.` });
+      await client.chat.postMessage({ channel: body.user.id, text: `납품 시트에서 *${displayWorkName}* ${episode}화를 찾지 못했어. 직접 확인해줘.` });
     }
 
     const parsed = {
-      work_title_ja: workName, work_title_ko: workNameKo,
+      displayWorkName,
+      originalWorkTitle,
+      koreanProjectName,
+      work_title_ja: originalWorkTitle,
+      work_title_ko: koreanProjectName,
       episode,
       worker_type: "불명",
       requested_date: null,
       extend_days: extDays,
       isDirectCall: true,
+      ownerUserId,
       originalChannelId: null, originalTs: null,
     };
     await handleScheduleExt(client, body.user.id, parsed, matchedTitle, delivery, "");
@@ -286,7 +360,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       trigger_id: body.trigger_id,
       view: {
         type: "modal", callback_id: "direct_inquiry_modal",
-        private_metadata: JSON.stringify({ sourceLink }),
+        private_metadata: JSON.stringify({ sourceLink, ownerUserId: body.user.id }),
         title:  { type: "plain_text", text: "일반 문의 초안 작성" },
         submit: { type: "plain_text", text: "초안 생성" },
         close:  { type: "plain_text", text: "취소" },
@@ -318,7 +392,6 @@ module.exports = function registerDirectInputActions(app, deps) {
     const { sourceLink: _preLink2 } = JSON.parse(view.private_metadata || "{}");
     const v          = view.state.values;
     const workName   = v.di_work_block?.value?.value?.trim() || "";
-    const workNameKo = workName; // 단일 필드 — 일본어 또는 한국어 입력값 그대로 사용
     const episode        = v.di_episode_block?.value?.value?.trim() || null;
     const inquiryType    = v.di_type_block?.value?.selected_option?.value || "기타";
     const inquiryContent = v.di_content_block?.value?.value?.trim() || "";
@@ -326,20 +399,27 @@ module.exports = function registerDirectInputActions(app, deps) {
     const actionRequired = v.di_action_block?.value?.value?.trim() || "내용 확인 후 회신 필요";
     const sourceLink     = v.di_link_block?.value?.value?.trim() || _preLink2 || "";
 
-    const matchedTitle = await matchWorkTitleFromSheet(workName, workNameKo).catch(() => null);
+    const matchedTitle = await matchWorkTitleFromSheet(workName, "").catch(() => null);
+    const koreanProjectName = matchedTitle?.koreanProjectName || null;
+    const displayWorkName = koreanProjectName || workName;
+    const originalWorkTitle = workName || null;
     const draftId = generateDraftId();
     const draft = {
       draftId, userId: body.user.id, dmChannelId: body.user.id,
+      ownerUserId: body.user.id,
       progressMessageTs: null,
       sourceLink: sourceLink || "",
       originalText: "",
-      workName:      matchedTitle?.projectName || workName,
-      workNameKo:    matchedTitle?.ko || workNameKo,
+      displayWorkName,
+      originalWorkTitle,
+      koreanProjectName,
+      workName:      displayWorkName,
+      workNameKo:    koreanProjectName,
       pivoId:        matchedTitle?.pivoId || null,
       episode:       episode || null,
-      inquiryType, inquiryContent, summary, actionRequired, sourceLang: "ko",
-      deliveryDate:  episode && matchedTitle?.projectName
-        ? await fetchDeliveryDate(matchedTitle.projectName, episode, "zh-ja", matchedTitle.projectName).catch(() => null).then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+      inquiryType, inquiryContent, summary, actionRequired, sourceLang: "unknown",
+      deliveryDate:  episode && matchedTitle?.koreanProjectName
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, episode, "zh-ja", matchedTitle.koreanProjectName).catch(() => null).then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
         : "-",
     };
     draftStore.set(draftId, draft);
@@ -357,7 +437,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       trigger_id: body.trigger_id,
       view: {
         type: "modal", callback_id: "direct_fileorder_modal",
-        private_metadata: JSON.stringify({ dmChannelId: body.user.id }),
+        private_metadata: JSON.stringify({ dmChannelId: body.user.id, ownerUserId: body.user.id }),
         title:  { type: "plain_text", text: "파일 순서 수정" },
         submit: { type: "plain_text", text: "확인" },
         close:  { type: "plain_text", text: "취소" },
@@ -373,7 +453,7 @@ module.exports = function registerDirectInputActions(app, deps) {
 
   app.view("direct_fileorder_modal", async ({ ack, body, view, client }) => {
     await ack();
-    const { dmChannelId } = JSON.parse(view.private_metadata || "{}");
+    const { dmChannelId, ownerUserId } = JSON.parse(view.private_metadata || "{}");
     const v        = view.state.values;
     const workName = v.dfo_work_block?.value?.value?.trim() || "";
     const episode  = v.dfo_episode_block?.value?.value?.trim() || "";
@@ -384,13 +464,21 @@ module.exports = function registerDirectInputActions(app, deps) {
       return;
     }
 
-    const matchedTitle       = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
-    const resolvedWorkNameKo = matchedTitle?.projectName || workName;
+    const matchedTitle = await matchWorkTitleFromSheet(workName, "").catch(() => null);
+    const koreanProjectName = matchedTitle?.koreanProjectName || null;
+    const displayWorkName = koreanProjectName || workName;
 
     await handleFileOrderInquiry(
       client, dmTarget,
-      { title_ja: workName, title_ko: resolvedWorkNameKo, episode },
-      { url: "", channelId: null, ts: null, requesterUserId: null },
+      {
+        displayWorkName,
+        originalWorkTitle: workName,
+        koreanProjectName,
+        title_ja: workName,
+        title_ko: koreanProjectName,
+        episode,
+      },
+      { url: "", channelId: null, ts: null, requesterUserId: null, ownerUserId },
       workName,
     );
   });
@@ -421,7 +509,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const workNameKo = vals.manual_work_name_ko?.value?.value?.trim() || "";
     const matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
     const draftId = generateDraftId();
-    const draft = { draftId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, workName: matchedManual?.projectName || workNameJa, workNameKo: matchedManual?.ko || workNameKo, pivoId: matchedManual?.pivoId || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
+    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
@@ -430,21 +518,23 @@ module.exports = function registerDirectInputActions(app, deps) {
   // ── 문의봇 후보 작품 선택 버튼 ───────────────────────────
   app.action(/^inquiry_cand_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
-    const { pendingId, pivoId, projectName } = JSON.parse(body.actions[0].value || "{}");
+    const selection = JSON.parse(body.actions[0].value || "{}");
+    const { pendingId, pivoId } = selection;
+    const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const pending = draftStore.get(pendingId);
     if (!pending) return;
 
-    const matchedTitle = { projectName, pivoId };
     const draftId = generateDraftId();
     const draft = {
       draftId,
+      ownerUserId:       pending.ownerUserId,
       userId:             pending.userId,
       dmChannelId:        pending.dmChannelId,
       progressMessageTs:  pending.progressTs,
       sourceLink:         pending.sourceLink,
       originalText:       pending.originalText,
-      workName:           projectName,
-      workNameKo:         projectName,
+      workName:           koreanProjectName,
+      workNameKo:         koreanProjectName,
       pivoId:             pivoId || null,
       inquiryType:        pending.inquiryType    || "기타",
       inquiryContent:     pending.inquiryContent || "",
@@ -494,6 +584,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const draftId = generateDraftId();
     const draft = {
       draftId,
+      ownerUserId:       pending.ownerUserId,
       userId:            body.user.id,
       dmChannelId:       pending.dmChannel,
       progressMessageTs: null,
@@ -501,8 +592,8 @@ module.exports = function registerDirectInputActions(app, deps) {
       originalText:      pending.originalText,
       originalChannelId: pending.channelId,
       originalTs:        pending.ts,
-      workName:      matchedTitle?.projectName || a.title_ko || a.title_ja || "",
-      workNameKo:    matchedTitle?.ko || "",
+      workName:      matchedTitle?.koreanProjectName || matchedTitle?.chineseOriginalTitle || a.title_ko || a.title_ja || "",
+      workNameKo:    matchedTitle?.koreanProjectName || a.title_ko || "",
       pivoId:        matchedTitle?.pivoId || null,
       episode:       a.episode || null,
       inquiryType:   "작업 관련 문의",
@@ -521,10 +612,20 @@ module.exports = function registerDirectInputActions(app, deps) {
   // ── 수정 모달 ─────────────────────────────────────────────
   app.action("open_inquiry_modal", async ({ ack, body, client }) => {
     await ack();
-    const draft = draftStore.get(body.actions?.[0]?.value);
+    const draftId = body.actions?.[0]?.value;
+    const draft = draftStore.get(draftId);
     if (!draft) { await client.chat.postMessage({ channel: body.user.id, text: "초안을 찾지 못했어." }); return; }
+    if (isPublicationLocked(draftStore, `inquiry_publication:${draftId}`)) {
+      await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 이 문의는 이미 전송됐거나 확인 중이야. 내용을 바꾸려면 새 문의를 만들어줘." });
+      return;
+    }
     await client.views.open({ trigger_id: body.trigger_id, view: {
-      type: "modal", callback_id: "submit_inquiry_modal", private_metadata: JSON.stringify({ draftId: body.actions[0].value }),
+      type: "modal", callback_id: "submit_inquiry_modal", private_metadata: JSON.stringify({
+        draftId,
+        draftVersion: draft.draftVersion || 1,
+        previewChannelId: body.channel?.id || draft.dmChannelId || null,
+        previewMessageTs: body.message?.ts || draft.progressMessageTs || null,
+      }),
       title: { type: "plain_text", text: "문의 수정" }, submit: { type: "plain_text", text: "전송" }, close: { type: "plain_text", text: "취소" },
       blocks: [
         { type: "input", block_id: "work_name_block", label: { type: "plain_text", text: "작품명 (일본어)" }, element: { type: "plain_text_input", action_id: "work_name_input", initial_value: draft.workName||"" }},
@@ -543,27 +644,108 @@ module.exports = function registerDirectInputActions(app, deps) {
     await ack();
     const draft = draftStore.get(body.actions?.[0]?.value);
     if (!draft) { await client.chat.postMessage({ channel: body.user.id, text: "초안을 찾지 못했어." }); return; }
-    await postInquiryToTargetChannel(client, draft, body.user.id);
-    await client.chat.postMessage({ channel: body.user.id, text: `<#${TARGET_CHANNEL_ID}> 에 전송 완료!` });
+    let publication;
+    try {
+      publication = await postInquiryToTargetChannel(client, draft, body.user.id, {
+        completionNoticeText: `<#${TARGET_CHANNEL_ID}> 에 전송 완료!`,
+      });
+    } catch (error) {
+      if (error.publicationRecovery !== PUBLICATION_RECOVERY.REVIEW_REQUIRED) {
+        throw error;
+      }
+      await updateTerminalPublicationPreview({
+        client,
+        channel: body.channel?.id,
+        ts: body.message?.ts,
+        text: body.message?.text,
+        blocks: body.message?.blocks,
+        label: "문의",
+        status: "review_required",
+        actorUserId: body.user.id,
+      }).catch(() => {});
+      return;
+    }
+    if (publication?.intentConflict) {
+      await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 이 초안은 이미 다른 내용으로 전송됐어. 변경 내용은 새 문의로 만들어줘." });
+      return;
+    }
+    if (["sent", "review_required"].includes(publication?.publicationStatus)) {
+      await updateTerminalPublicationPreview({
+        client,
+        channel: body.channel?.id,
+        ts: body.message?.ts,
+        text: body.message?.text,
+        blocks: body.message?.blocks,
+        label: "문의",
+        status: publication.publicationStatus,
+        actorUserId: body.user.id,
+      }).catch(() => {});
+    }
   });
 
   app.view("submit_inquiry_modal", async ({ ack, body, view, client }) => {
     await ack();
-    const { draftId } = JSON.parse(view.private_metadata || "{}");
+    const {
+      draftId,
+      draftVersion,
+      previewChannelId,
+      previewMessageTs,
+    } = JSON.parse(view.private_metadata || "{}");
     const draft = draftStore.get(draftId);
     if (!draft) { await client.chat.postMessage({ channel: body.user.id, text: "초안을 찾지 못했어." }); return; }
+    if (isPublicationLocked(draftStore, `inquiry_publication:${draftId}`)
+        || (draftVersion && (draft.draftVersion || 1) !== draftVersion)) {
+      await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 이 문의는 이미 전송됐거나 다른 수정본이 처리됐어. 변경 내용은 새 문의로 만들어줘." });
+      return;
+    }
     const v = view.state.values;
-    draft.workName       = v.work_name_block?.work_name_input?.value?.trim()             || "";
-    draft.workNameKo     = v.work_name_ko_block?.work_name_ko_input?.value?.trim()       || "";
-    draft.episode        = v.episode_block?.episode_input?.value?.trim()                 || "";
-    draft.inquiryType    = v.inquiry_type_block?.inquiry_type_input?.value?.trim()       || "";
-    draft.inquiryContent = v.inquiry_content_block?.inquiry_content_input?.value?.trim() || "";
-    draft.summary        = v.summary_block?.summary_input?.value?.trim()                 || "";
-    draft.actionRequired = v.action_block?.action_input?.value?.trim()                   || "";
-    draft.sourceLink     = v.link_block?.link_input?.value?.trim()                       || "";
-    draftStore.set(draftId, draft);
-    await postInquiryToTargetChannel(client, draft, body.user.id);
-    await client.chat.update({ channel: draft.dmChannelId, ts: draft.progressMessageTs, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
-    await client.chat.postMessage({ channel: body.user.id, text: `수정 내용으로 <#${TARGET_CHANNEL_ID}> 에 전송 완료!` });
+    const updatedDraft = {
+      ...draft,
+      draftVersion: (draft.draftVersion || 1) + 1,
+      workName: v.work_name_block?.work_name_input?.value?.trim() || "",
+      workNameKo: v.work_name_ko_block?.work_name_ko_input?.value?.trim() || "",
+      episode: v.episode_block?.episode_input?.value?.trim() || "",
+      inquiryType: v.inquiry_type_block?.inquiry_type_input?.value?.trim() || "",
+      inquiryContent: v.inquiry_content_block?.inquiry_content_input?.value?.trim() || "",
+      summary: v.summary_block?.summary_input?.value?.trim() || "",
+      actionRequired: v.action_block?.action_input?.value?.trim() || "",
+      sourceLink: v.link_block?.link_input?.value?.trim() || "",
+    };
+    draftStore.set(draftId, updatedDraft);
+    let publication;
+    try {
+      publication = await postInquiryToTargetChannel(client, updatedDraft, body.user.id, {
+        completionNoticeText: `수정 내용으로 <#${TARGET_CHANNEL_ID}> 에 전송 완료!`,
+      });
+    } catch (error) {
+      if (error.publicationRecovery !== PUBLICATION_RECOVERY.REVIEW_REQUIRED) {
+        throw error;
+      }
+      await updateTerminalPublicationPreview({
+        client,
+        channel: previewChannelId || updatedDraft.dmChannelId,
+        ts: previewMessageTs || updatedDraft.progressMessageTs,
+        text: buildDraftPreviewText(updatedDraft),
+        blocks: buildDraftPreviewBlocks(updatedDraft),
+        label: "문의",
+        status: "review_required",
+        actorUserId: body.user.id,
+      }).catch(() => {});
+      return;
+    }
+    if (publication?.intentConflict) {
+      await client.chat.postMessage({ channel: body.user.id, text: "⚠️ 이 초안은 이미 다른 내용으로 전송됐어. 변경 내용은 새 문의로 만들어줘." });
+      return;
+    }
+    await updateTerminalPublicationPreview({
+      client,
+      channel: previewChannelId || updatedDraft.dmChannelId,
+      ts: previewMessageTs || updatedDraft.progressMessageTs,
+      text: buildDraftPreviewText(updatedDraft),
+      blocks: buildDraftPreviewBlocks(updatedDraft),
+      label: "문의",
+      status: publication?.publicationStatus || "sent",
+      actorUserId: body.user.id,
+    }).catch(() => {});
   });
 };

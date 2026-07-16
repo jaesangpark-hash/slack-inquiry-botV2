@@ -42,9 +42,9 @@ function makeDeps(overrides = {}) {
   return {
     parseScheduleInquiry:        spy({ work_title_ja: "テスト", work_title_ko: "테스트" }),
     parseFileInquiry:            spy({ work_title_ja: "テスト", work_title_ko: "테스트", episode: "1", file_numbers: [1], reason_raw: "" }),
-    matchWorkTitleWithCandidates: spy({ single: { projectName: "테스트작품", ko: "테스트작품", pivoId: "p1" } }),
-    matchWorkTitleFromSheet:      spy({ projectName: "테스트작품", ko: "테스트작품", jpTitle: "テスト", pivoId: "p1" }),
-    matchWorkTitleByTokens:       spy({ single: { projectName: "테스트작품", ko: "테스트작품", pivoId: "p1" } }),
+    matchWorkTitleWithCandidates: spy({ single: { koreanProjectName: "테스트작품", chineseOriginalTitle: "测试作品", pivoId: "p1" } }),
+    matchWorkTitleFromSheet:      spy({ koreanProjectName: "테스트작품", chineseOriginalTitle: "测试作品", japaneseFixedTitle: "テスト", pivoId: "p1" }),
+    matchWorkTitleByTokens:       spy({ single: { koreanProjectName: "테스트작품", chineseOriginalTitle: "测试作品", pivoId: "p1" } }),
     fetchDeliveryDate:            spy({ episodeLabel: "1화", allSame: true, deliveryDate: "2026-06-01", episodes: [] }),
     generateDraftId:              spy("draft_test_001"),
     draftStore,
@@ -572,7 +572,7 @@ describe("wiring forward 검증", () => {
   it("matchWorkTitleByTokens: 후보 없을 때 토큰 매칭 호출됨", async () => {
     const deps = makeDeps({
       matchWorkTitleWithCandidates: spy(null), // null → 토큰 매칭 시도
-      matchWorkTitleByTokens: spy({ single: { projectName: "토큰매칭작품", ko: "토큰매칭작품", pivoId: "p2" } }),
+      matchWorkTitleByTokens: spy({ single: { koreanProjectName: "토큰매칭작품", chineseOriginalTitle: "令牌作品", pivoId: "p2" } }),
     });
     const router = createInquiryRouter(deps);
     const ctx = makeReactionCtx({ analysis: { inquiry_type: "스케줄 문의", title_ja: "テスト", title_ko: "테스트" } });

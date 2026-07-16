@@ -2,6 +2,10 @@
 // multipleInquiryFlow.js — 복수 문의 자동 분기 처리
 // ══════════════════════════════════════════════════════════════════
 
+const {
+  readKoreanProjectNameFromSelectionPayload,
+} = require("./slack/title-selection-payload");
+
 module.exports = function registerMultipleInquiryFlow(app, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, matchWorkTitleByTokens,
@@ -16,7 +20,8 @@ module.exports = function registerMultipleInquiryFlow(app, {
   // 리테이크 항목 전용 pivoId 직접 입력 해석 — retakeFlow.js의 동일 로직 이식
   // (Totus API 선 조회 → 실패/미확인 시 마스터 시트 폴백)
   async function _resolvePivoIdForRetake(pivoId) {
-    let resolvedWorkName, resolvedWorkNameKo;
+    let displayWorkName;
+    let koreanProjectName = null;
     try {
       const meta = { bot: "multi-retake", endpoint: "/projects", params: { pivoId }, expectedCount: 1 };
       const _pivoRes = await loggedCall(async () => {
@@ -38,20 +43,25 @@ module.exports = function registerMultipleInquiryFlow(app, {
         const d = p._detail || p;
         return d.진행상태 !== "CANCELED" && d.pivoId != null;
       });
-      const totusName = proj?.name
-                     || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
-                     || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
-                     || null;
-      const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
-      resolvedWorkName   = matchedByPivo?.projectName || totusName || `(pivoId: ${pivoId})`;
-      resolvedWorkNameKo = matchedByPivo?.projectName || matchedByPivo?.ko || totusName || resolvedWorkName;
+      const primaryWorkTitle = proj?.name
+                            || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
+                            || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
+                            || null;
+      const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+      koreanProjectName = matchedByPivo?.koreanProjectName || null;
+      displayWorkName = koreanProjectName
+                     || matchedByPivo?.chineseOriginalTitle
+                     || primaryWorkTitle
+                     || `(pivoId: ${pivoId})`;
     } catch (e) {
       console.error(`[multi] pivoId 조회 실패 → 마스터 시트 폴백:`, e.message);
-      const matchedByPivo = await matchWorkTitleFromSheet(null, null, pivoId).catch(() => null);
-      resolvedWorkName   = matchedByPivo?.projectName || matchedByPivo?.ko || `(pivoId: ${pivoId})`;
-      resolvedWorkNameKo = matchedByPivo?.ko || resolvedWorkName;
+      const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+      koreanProjectName = matchedByPivo?.koreanProjectName || null;
+      displayWorkName = koreanProjectName
+                     || matchedByPivo?.chineseOriginalTitle
+                     || `(pivoId: ${pivoId})`;
     }
-    return { projectName: resolvedWorkName, ko: resolvedWorkNameKo, pivoId };
+    return { koreanProjectName, displayWorkName, pivoId };
   }
 
   // ── 타입별 필수 필드 정의 ─────────────────────────────────
@@ -156,21 +166,25 @@ ${text}`.trim();
   }
 
   // ── 항목 처리: 각 봇 플로우 연결 ─────────────────────────
-  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId) {
-    // 한국어 표시명 우선: projectName > ko > work_title_ko > work_title_ja
-    const workName   = matchedTitle?.projectName || matchedTitle?.ko || item.work_title_ko || item.work_title_ja || "";
-    const workNameKo = matchedTitle?.projectName || matchedTitle?.ko || item.work_title_ko || workName;
-    const pivoId     = matchedTitle?.pivoId || null;
-    const episode    = item.episode || null;
+  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId) {
+    const koreanProjectName = matchedTitle?.koreanProjectName || item.work_title_ko || null;
+    const displayWorkName = koreanProjectName
+                         || matchedTitle?.displayWorkName
+                         || item.work_title_ja
+                         || "";
+    const primaryWorkTitle = koreanProjectName || displayWorkName;
+    const originalWorkTitle = item.work_title_ja
+                           || (!koreanProjectName ? displayWorkName : null);
+    const episode = item.episode || null;
 
     switch (item.type) {
       case "스케줄": {
-        const delivery = workNameKo && episode
-          ? await fetchDeliveryDate(workNameKo, episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+        const delivery = primaryWorkTitle && episode
+          ? await fetchDeliveryDate(primaryWorkTitle, episode, "zh-ja", koreanProjectName).catch(() => null)
           : null;
         const parsed = {
-          work_title_ko: workNameKo,
-          work_title_ja: item.work_title_ja || null,
+          work_title_ko: koreanProjectName,
+          work_title_ja: originalWorkTitle,
           episode,
           extend_days: item.extend_days || null,
           requested_date: item.requested_date || null,
@@ -178,21 +192,23 @@ ${text}`.trim();
           originalChannelId,
           originalTs,
           requesterUserId: null,
+          ownerUserId,
         };
         await handleScheduleExt(client, dmChannel, parsed, matchedTitle, delivery, sourceLink);
         break;
       }
 
       case "재수급": {
-        const delivery = workNameKo && episode
-          ? await fetchDeliveryDate(workNameKo, episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+        const delivery = primaryWorkTitle && episode
+          ? await fetchDeliveryDate(primaryWorkTitle, episode, "zh-ja", koreanProjectName).catch(() => null)
           : null;
         const draftId = generateDraftId();
         draftStore.set(draftId, {
           type: "file_inquiry",
           draftId,
-          workName,
-          workNameKo,
+          ownerUserId,
+          workName: displayWorkName,
+          workNameKo: koreanProjectName,
           episode: episode || "",
           fileNumbers: item.file_numbers || [],
           reason: item.reason || "",
@@ -205,9 +221,9 @@ ${text}`.trim();
         const fileNums = (item.file_numbers || []).join(", ") || "-";
         await client.chat.postMessage({
           channel: dmChannel,
-          text: `📦 *재수급 요청 초안* — ${workName} ${episode || "-"}화`,
+          text: `📦 *재수급 요청 초안* — ${displayWorkName} ${episode || "-"}화`,
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `*📦 재수급 요청 초안*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n*납품일:* ${delivery?.allSame ? delivery.deliveryDate : "-"}\n*파일/페이지 번호:* ${fileNums}\n*재수급 사유:* ${item.reason || "-"}` }},
+            { type: "section", text: { type: "mrkdwn", text: `*📦 재수급 요청 초안*\n*작품명:* ${displayWorkName}\n*회차:* ${episode ? episode+"화" : "-"}\n*납품일:* ${delivery?.allSame ? delivery.deliveryDate : "-"}\n*파일/페이지 번호:* ${fileNums}\n*재수급 사유:* ${item.reason || "-"}` }},
             { type: "actions", elements: [
               { type: "button", action_id: "open_file_inquiry_modal", text: { type: "plain_text", text: "수정" }, style: "primary", value: draftId },
               { type: "button", action_id: "send_file_inquiry_now",   text: { type: "plain_text", text: "전송" }, style: "danger",   value: draftId,
@@ -221,8 +237,8 @@ ${text}`.trim();
       case "파일순서": {
         await handleFileOrderInquiry(
           client, dmChannel,
-          { title_ja: item.work_title_ja, title_ko: workNameKo, episode },
-          { url: sourceLink, channelId: originalChannelId, ts: originalTs, requesterUserId: requesterUserId || null },
+          { title_ja: originalWorkTitle, title_ko: koreanProjectName, episode },
+          { url: sourceLink, channelId: originalChannelId, ts: originalTs, requesterUserId: requesterUserId || null, ownerUserId },
           item.work_title_ko || item.work_title_ja || "",
         );
         break;
@@ -231,22 +247,24 @@ ${text}`.trim();
       case "리테이크": {
         await handleRetakeInquiry(
           client, dmChannel,
-          { title_ja: item.work_title_ja, title_ko: workNameKo, episode },
+          { title_ja: originalWorkTitle, title_ko: koreanProjectName, episode },
           { url: sourceLink },
           item.work_title_ko || item.work_title_ja || "",
           requesterName || "",
+          requesterUserId || null,
+          ownerUserId,
         );
         break;
       }
 
       case "문의": {
         // 일반 문의는 초안 생성 없이 내용만 표시 + 문의봇 버튼
-        const btnValue = JSON.stringify({ sourceLink, workName, episode: episode || "" });
+        const btnValue = JSON.stringify({ sourceLink, workName: displayWorkName, episode: episode || "" });
         await client.chat.postMessage({
           channel: dmChannel,
-          text: `💬 *작업 문의* — ${workName} ${episode || "-"}화`,
+          text: `💬 *작업 문의* — ${displayWorkName} ${episode || "-"}화`,
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `*💬 작업 문의*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n*내용:* ${item.content || "-"}` }},
+            { type: "section", text: { type: "mrkdwn", text: `*💬 작업 문의*\n*작품명:* ${displayWorkName}\n*회차:* ${episode ? episode+"화" : "-"}\n*내용:* ${item.content || "-"}` }},
             { type: "actions", elements: [
               { type: "button", action_id: "direct_inquiry_btn", text: { type: "plain_text", text: "문의봇으로 처리" }, style: "primary", value: btnValue },
             ]},
@@ -256,12 +274,12 @@ ${text}`.trim();
       }
 
       default: {
-        const btnValue = JSON.stringify({ sourceLink, workName, episode: episode || "" });
+        const btnValue = JSON.stringify({ sourceLink, workName: displayWorkName, episode: episode || "" });
         await client.chat.postMessage({
           channel: dmChannel,
-          text: `❓ 유형을 특정할 수 없어. 직접 봇을 선택해줘. — ${workName} ${episode || "-"}화`,
+          text: `❓ 유형을 특정할 수 없어. 직접 봇을 선택해줘. — ${displayWorkName} ${episode || "-"}화`,
           blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `❓ *유형 불명*\n*작품명:* ${workName}\n*회차:* ${episode ? episode+"화" : "-"}\n직접 봇을 선택해줘.` }},
+            { type: "section", text: { type: "mrkdwn", text: `❓ *유형 불명*\n*작품명:* ${displayWorkName}\n*회차:* ${episode ? episode+"화" : "-"}\n직접 봇을 선택해줘.` }},
             { type: "actions", elements: [
               { type: "button", action_id: "direct_inquiry_btn",   text: { type: "plain_text", text: "문의봇" },    value: btnValue },
               { type: "button", action_id: "direct_resupply_btn",  text: { type: "plain_text", text: "재수급봇" },  value: btnValue },
@@ -394,8 +412,8 @@ ${text}`.trim();
           { type: "section", text: { type: "mrkdwn", text: `*[항목 ${itemIndex + 1}] ${typeLabel(item.type)}* — 작품 후보 ${candidates.length}건` }},
           { type: "actions", elements: candidates.slice(0, 5).map((r, i) => ({
             type: "button", action_id: `multi_token_pick_${i}`,
-            text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${i+1}` },
-            value: JSON.stringify({ multiPendingId, itemIndex, pivoId: r.pivoId, projectName: r.projectName }),
+            text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
+            value: JSON.stringify({ multiPendingId, itemIndex, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
           }))},
         ],
       });
@@ -406,27 +424,31 @@ ${text}`.trim();
       client, body.user.id, item, matched,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
+      multiPending.ownerUserId,
     );
   });
 
   app.action(/^multi_token_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
-    const { multiPendingId, itemIndex, pivoId, projectName } = JSON.parse(body.actions[0].value || "{}");
+    const selection = JSON.parse(body.actions[0].value || "{}");
+    const { multiPendingId, itemIndex, pivoId } = selection;
+    const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const multiPending = draftStore.get(multiPendingId);
     if (!multiPending) return;
 
-    const matchedTitle = { projectName, pivoId };
+    const matchedTitle = { koreanProjectName, pivoId };
     const item         = multiPending.items[itemIndex];
 
     await processItem(
       client, body.user.id, item, matchedTitle,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
+      multiPending.ownerUserId,
     );
   });
 
   // ── 메인 핸들러 ──────────────────────────────────────────
-  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null) {
+  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null, ownerUserId = null) {
     // 1. AI로 항목 분리 파싱 (외부에서 이미 파싱된 경우 재사용)
     let items;
     if (preItems && preItems.length) {
@@ -478,6 +500,7 @@ ${text}`.trim();
     }));
 
     draftStore.set(multiPendingId, {
+      ownerUserId,
       items,
       originalChannelId, originalTs, sourceLink, requesterName, requesterUserId,
       missingByIndex: Object.fromEntries(resolvedItems.map(({ missing }, i) => [i, missing])),
@@ -511,7 +534,7 @@ ${text}`.trim();
     const batchPromises = scheduleBatches.map(async (indices) => {
       try {
         const firstRi  = resolvedItems[indices[0]];
-        const workName = firstRi.matched?.projectName || firstRi.item.work_title_ko || firstRi.item.work_title_ja || "-";
+        const workName = firstRi.matched?.koreanProjectName || firstRi.item.work_title_ko || firstRi.item.work_title_ja || "-";
         const epsLabel = indices.map(i => resolvedItems[i].item.episode + "화").join(", ");
         await client.chat.postMessage({
           channel: dmChannel,
@@ -526,7 +549,7 @@ ${text}`.trim();
           return {
             episode: ri.item.episode,
             parsed: {
-              work_title_ko: ri.matched?.projectName || ri.item.work_title_ko || null,
+              work_title_ko: ri.matched?.koreanProjectName || ri.item.work_title_ko || null,
               work_title_ja: ri.item.work_title_ja || null,
               episode: ri.item.episode,
               extend_days: ri.item.extend_days || null,
@@ -535,6 +558,7 @@ ${text}`.trim();
               originalChannelId,
               originalTs,
               requesterUserId,
+              ownerUserId,
             },
             matchedTitle: ri.matched,
             delivery: null, // grouped flow가 재조회
@@ -542,6 +566,7 @@ ${text}`.trim();
             originalChannelId,
             originalTs,
             requesterUserId,
+            ownerUserId,
           };
         });
         await handleScheduleExtGrouped(client, dmChannel, groupItems);
@@ -552,7 +577,7 @@ ${text}`.trim();
         await Promise.all(indices.map(async (i) => {
           const ri = resolvedItems[i];
           try {
-            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId);
+            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId);
           } catch (err) {
             console.error(`[multi] fallback 항목 ${i+1} 실패:`, err.message);
           }
@@ -565,7 +590,7 @@ ${text}`.trim();
       if (batchHandled.has(i)) return;
       try {
 
-        const workName = matched?.projectName || item.work_title_ko || item.work_title_ja || "미확인";
+        const workName = matched?.koreanProjectName || item.work_title_ko || item.work_title_ja || "미확인";
         const header   = `*[항목 ${i + 1}] ${typeLabel(item.type)}* — ${workName} ${item.episode ? item.episode+"화" : ""}`;
 
         // 케이스 1: 타입 불명
@@ -597,8 +622,8 @@ ${text}`.trim();
               { type: "section", text: { type: "mrkdwn", text: `${header}\n작품 후보가 여러 개야. 선택해줘.` }},
               { type: "actions", elements: candidates.slice(0, 5).map((r, ci) => ({
                 type: "button", action_id: `multi_token_pick_${ci}`,
-                text: { type: "plain_text", text: r.projectName || r.jaDisplay || `후보 ${ci+1}` },
-                value: JSON.stringify({ multiPendingId, itemIndex: i, pivoId: r.pivoId, projectName: r.projectName }),
+                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${ci+1}` },
+                value: JSON.stringify({ multiPendingId, itemIndex: i, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
               }))},
             ],
           });
@@ -636,7 +661,7 @@ ${text}`.trim();
             { type: "section", text: { type: "mrkdwn", text: `${header}\n처리 중...` }},
           ],
         });
-        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId);
+        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId);
 
       } catch (e) {
         console.error(`[multi] 항목 ${i + 1} 처리 실패:`, e.message);

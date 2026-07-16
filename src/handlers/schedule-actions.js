@@ -2,6 +2,10 @@
 
 "use strict";
 
+const {
+  readKoreanProjectNameFromSelectionPayload,
+} = require("../slack/title-selection-payload");
+
 /**
  * @param {import("@slack/bolt").App} app
  * @param {{
@@ -109,29 +113,41 @@ module.exports = function registerScheduleActions(app, deps) {
     if (!pending) return;
     const titleInput   = view.state.values.title_ja_block?.title_ja_input?.value?.trim() || "";
     const matchedTitle = await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
-    const workNameKo   = matchedTitle?.projectName || titleInput;
+    const koreanProjectName = matchedTitle?.koreanProjectName || null;
+    const displayWorkName = koreanProjectName || titleInput;
+    const originalWorkTitle = titleInput || pending.parsed?.work_title_ja || null;
     const delivery     = pending.parsed?.episode
-      ? await fetchDeliveryDate(workNameKo, pending.parsed.episode, "zh-ja", matchedTitle?.projectName || null).catch(() => null)
+      ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, "zh-ja", koreanProjectName).catch(() => null)
       : null;
     if (delivery) {
       await client.chat.postMessage({ channel: body.user.id, text: `*${delivery.workName} ${delivery.episodeLabel}* 납품일: *${delivery.allSame ? delivery.deliveryDate : delivery.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")}*` });
     } else {
-      await client.chat.postMessage({ channel: body.user.id, text: `납품 시트에서 *${workNameKo}* 를 찾지 못했어. 직접 확인해줘.` });
+      await client.chat.postMessage({ channel: body.user.id, text: `납품 시트에서 *${displayWorkName}* 를 찾지 못했어. 직접 확인해줘.` });
     }
-    await handleScheduleExt(client, body.user.id, { ...pending.parsed, work_title_ko: workNameKo }, matchedTitle, delivery, pending.sourceLink || "");
+    await handleScheduleExt(client, body.user.id, {
+      ...pending.parsed,
+      ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      displayWorkName,
+      originalWorkTitle,
+      koreanProjectName,
+      work_title_ja: pending.parsed?.work_title_ja || originalWorkTitle,
+      work_title_ko: koreanProjectName,
+    }, matchedTitle, delivery, pending.sourceLink || "");
     draftStore.delete(pendingId);
   });
 
   // ── 토큰 매칭 후보 선택 버튼 ─────────────────────────────
   app.action(/^schedule_token_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
-    const { pendingId, pivoId, projectName } = JSON.parse(body.actions[0].value || "{}");
+    const selection = JSON.parse(body.actions[0].value || "{}");
+    const { pendingId, pivoId } = selection;
+    const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const pending = draftStore.get(pendingId);
     if (!pending) return;
 
     const rows         = await loadTitleRowsFromSheet();
-    const matchedTitle = rows.find(r => r.pivoId === pivoId) || { projectName, pivoId };
-    const workNameKo   = matchedTitle.projectName || projectName;
+    const matchedTitle = rows.find(row => row.pivoId === pivoId) || { koreanProjectName, pivoId };
+    const workNameKo   = matchedTitle.koreanProjectName || koreanProjectName;
     const delivery     = pending.parsed?.episode
       ? await fetchDeliveryDate(workNameKo, pending.parsed.episode, "zh-ja", workNameKo).catch(() => null)
       : null;
@@ -142,7 +158,11 @@ module.exports = function registerScheduleActions(app, deps) {
     } else {
       await client.chat.postMessage({ channel: body.user.id, text: `납품 시트에서 *${workNameKo}* 를 찾지 못했어. 직접 확인해줘.` });
     }
-    await handleScheduleExt(client, body.user.id, { ...pending.parsed, work_title_ko: workNameKo }, matchedTitle, delivery, pending.sourceLink || "");
+    await handleScheduleExt(client, body.user.id, {
+      ...pending.parsed,
+      ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      work_title_ko: workNameKo,
+    }, matchedTitle, delivery, pending.sourceLink || "");
     draftStore.delete(pendingId);
   });
 };

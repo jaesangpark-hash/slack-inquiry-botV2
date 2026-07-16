@@ -1,4 +1,10 @@
 // ══════════════════════════════════════════════════════════════════
+
+const {
+  assertCompleteMutationTargets,
+  assertNoAmbiguousMutationTargets,
+  decodeMutationResult,
+} = require("./clients/totus-mutation-result");
 // scheduleExtFlow.js — 스케줄 연장 플로우
 // app.js 에서 require("./scheduleExtFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet,
 //   generateDraftId, draftStore, fetchDeliveryDate }) 로 호출
@@ -177,14 +183,19 @@ module.exports = function registerScheduleExtFlow(app, {
   }
 
   // ── 여러 화수의 납품일 조회 (연속 범위면 한 번에) ─────────
-  async function _fetchDeliveryForEpisodes(workNameKo, projectName, episodes) {
+  async function _fetchDeliveryForEpisodes(primaryWorkTitle, koreanProjectName, episodes) {
     const sorted = [...episodes].map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
     if (!sorted.length) return null;
     const isContiguous = sorted.every((ep, i) => i === 0 || ep === sorted[i - 1] + 1);
     const rangeStr = isContiguous && sorted.length > 1
       ? `${sorted[0]}-${sorted[sorted.length - 1]}`
       : String(sorted[0]);
-    return await fetchDeliveryDate(workNameKo, rangeStr, "zh-ja", projectName).catch(() => null);
+    return await fetchDeliveryDate(
+      primaryWorkTitle,
+      rangeStr,
+      "zh-ja",
+      koreanProjectName
+    ).catch(() => null);
   }
 
   // ── 슬랙 멘션 텍스트 생성 ────────────────────────────────
@@ -207,9 +218,10 @@ module.exports = function registerScheduleExtFlow(app, {
   // ══════════════════════════════════════════════════════════
   async function handleScheduleExt(client, dmChannel, parsed, matchedTitle, delivery, sourceLink) {
     const pivoId   = matchedTitle?.pivoId || null;
-    const workName = matchedTitle?.projectName || matchedTitle?.projectName || parsed.work_title_ko || parsed.work_title_ja || "-";
+    const workName = matchedTitle?.koreanProjectName || parsed.work_title_ko || parsed.work_title_ja || "-";
     const episode  = parsed.episode || null;
     const requesterUserId = parsed.requesterUserId || null;
+    const ownerUserId = parsed.ownerUserId || null;
 
     // 연장 일수 파싱 — extend_days 없으면 requested_date로 대체, 둘 다 없으면 수동 입력
     const extDays      = parsed.extend_days ? parseInt(parsed.extend_days, 10) : null;
@@ -218,6 +230,7 @@ module.exports = function registerScheduleExtFlow(app, {
       const pendingId = `schext_pending_${Date.now()}`;
       draftStore.set(pendingId, {
         type: "schext_pending",
+        ownerUserId,
         workName, pivoId, episode,
         episodes: episode ? [parseInt(episode, 10)] : [],
         delivery, sourceLink,
@@ -246,6 +259,7 @@ module.exports = function registerScheduleExtFlow(app, {
       workName, pivoId,
       episodes: [parseInt(episode, 10)],
       extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
+      ownerUserId,
       originalChannelId: parsed.originalChannelId || null,
       originalTs:        parsed.originalTs        || null,
     });
@@ -264,9 +278,9 @@ module.exports = function registerScheduleExtFlow(app, {
     // 단일 fallback 시 납품일이 비어 있으면 채워주는 헬퍼
     const _fillDelivery = async (it) => {
       if (it.delivery) return it.delivery;
-      const workNameKo = it.matchedTitle?.projectName || it.parsed?.work_title_ko;
+      const workNameKo = it.matchedTitle?.koreanProjectName || it.parsed?.work_title_ko;
       if (!workNameKo || !it.episode) return null;
-      return await fetchDeliveryDate(workNameKo, String(it.episode), "zh-ja", it.matchedTitle?.projectName || null).catch(() => null);
+      return await fetchDeliveryDate(workNameKo, String(it.episode), "zh-ja", it.matchedTitle?.koreanProjectName || null).catch(() => null);
     };
     const _runSingle = async (it) => {
       const delivery = await _fillDelivery(it);
@@ -307,9 +321,9 @@ module.exports = function registerScheduleExtFlow(app, {
         if (t && t.length > 0) tasksByEp[ep] = t;
       } catch (e) { console.warn("[scheduleExt] _getJobTasks 실패:", ep, e.message); }
       try {
-        const workNameKo = it.matchedTitle?.projectName || it.parsed?.work_title_ko;
+        const workNameKo = it.matchedTitle?.koreanProjectName || it.parsed?.work_title_ko;
         const d = workNameKo
-          ? await fetchDeliveryDate(workNameKo, String(ep), "zh-ja", it.matchedTitle?.projectName || null)
+          ? await fetchDeliveryDate(workNameKo, String(ep), "zh-ja", it.matchedTitle?.koreanProjectName || null)
           : null;
         deliveryByEp[ep] = d?.episodes?.[0]?.deliveryDate || d?.deliveryDate || null;
       } catch (e) { console.warn("[scheduleExt] 납품일 조회 실패:", ep, e.message); }
@@ -351,11 +365,11 @@ module.exports = function registerScheduleExtFlow(app, {
       const f          = groupItems[0];
       const episodes   = cluster.map(c => c.ep).sort((a, b) => a - b);
       const groupTasksByEp = Object.fromEntries(episodes.map(ep => [ep, tasksByEp[ep]]));
-      const workName   = f.matchedTitle?.projectName || f.parsed.work_title_ko || f.parsed.work_title_ja || "-";
-      const workNameKo = f.matchedTitle?.projectName || f.matchedTitle?.ko || f.parsed.work_title_ko || workName;
+      const workName   = f.matchedTitle?.koreanProjectName || f.parsed.work_title_ko || f.parsed.work_title_ja || "-";
+      const workNameKo = f.matchedTitle?.koreanProjectName || f.parsed.work_title_ko || workName;
 
       // 묶음 납품일 재조회 (연속 범위면 한 번에)
-      const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.projectName || null, episodes);
+      const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.koreanProjectName || null, episodes);
 
       await _proceedScheduleExt(client, dmChannel, {
         workName, pivoId,
@@ -367,6 +381,7 @@ module.exports = function registerScheduleExtFlow(app, {
         originalChannelId: f.originalChannelId || f.parsed.originalChannelId || null,
         originalTs:        f.originalTs        || f.parsed.originalTs        || null,
         requesterUserId:   f.requesterUserId   || f.parsed.requesterUserId   || null,
+        ownerUserId:       f.ownerUserId       || f.parsed.ownerUserId       || null,
         preFetchedTasksByEpisode: groupTasksByEp,
         preFetchedProjectUuid:    projectUuid,
         preValidatedBatch:        true,
@@ -447,7 +462,7 @@ module.exports = function registerScheduleExtFlow(app, {
   async function _proceedScheduleExt(client, dmChannel, info) {
     const { workName, pivoId, delivery, sourceLink,
             originalChannelId, originalTs, requesterUserId,
-            requestedDate, isDirectCall } = info;
+            requestedDate, isDirectCall, ownerUserId } = info;
     let extDays = info.extDays || null;
 
     // 화수 배열 정규화
@@ -478,33 +493,31 @@ module.exports = function registerScheduleExtFlow(app, {
       }
     }
 
-    // 어느 한 화수라도 task 없으면 실패
+    // 최초 요청 화수 중 하나라도 task가 없으면 전체 중단한다.
     const missingEps = episodes.filter(ep => !tasksByEpisode || !tasksByEpisode[ep] || tasksByEpisode[ep].length === 0);
-    if (missingEps.length === episodes.length) {
+    if (missingEps.length > 0) {
       const pendingId = generateDraftId();
-      draftStore.set(pendingId, { ...info, episodes, episodeLabel, dmChannelId: dmChannel });
+      draftStore.set(pendingId, {
+        ...info,
+        ownerUserId,
+        episodes: [...episodes],
+        episodeLabel,
+        missingEpisodes: [...missingEps],
+        dmChannelId: dmChannel,
+      });
       await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ ${workName} ${episodeLabel} 태스크를 Totus에서 찾을 수 없어.`,
+        text: `⚠️ ${workName} ${episodeLabel} 중 ${missingEps.map(e => `${e}화`).join(", ")} 태스크를 Totus에서 찾을 수 없어. 전체 요청을 중단했어.`,
         blocks: [
           { type: "section", text: { type: "mrkdwn",
-            text: `⚠️ *${workName} ${episodeLabel}* 태스크를 Totus에서 찾을 수 없어.\nTotus를 확인한 후 재시도하거나 PIVO ID를 확인해줘.` } },
+            text: `⚠️ *${workName} ${episodeLabel}* 중 *${missingEps.map(e => `${e}화`).join(", ")}* 태스크를 Totus에서 찾을 수 없어.\n일부 화수만 반영하지 않고 전체 요청을 중단했어. Totus를 확인한 후 전체 화수를 다시 조회해줘.` } },
           { type: "actions", elements: [
             { type: "button", action_id: "schext_retry_proceed", style: "primary",
-              text: { type: "plain_text", text: "🔄 재시도" },
+              text: { type: "plain_text", text: "🔄 전체 화수 재조회" },
               value: pendingId },
           ]},
         ],
       });
       return;
-    }
-    if (missingEps.length > 0) {
-      await client.chat.postMessage({ channel: dmChannel,
-        text: `⚠️ ${workName} ${missingEps.map(e => e + "화").join(", ")} 태스크를 Totus에서 찾을 수 없어. 나머지 화수만 처리할게.` });
-      // 누락 화수 제외하고 진행
-      const validEps = episodes.filter(ep => !missingEps.includes(ep));
-      if (!validEps.length) return;
-      episodes.length = 0;
-      episodes.push(...validEps);
     }
 
     // 묶음 검증: 시그니처 재확인 (defensive)
@@ -563,7 +576,7 @@ module.exports = function registerScheduleExtFlow(app, {
         console.log(`[scheduleExt] requestedDate(${requestedDate}) - lastEndDate(${lastTaskEndDate.slice(0,10)}) = diff:${diff}`);
         const _makePending = () => {
           const pendingId = `schext_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schext_pending", workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
+          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
           return pendingId;
         };
         if (diff === 0) {
@@ -578,7 +591,7 @@ module.exports = function registerScheduleExtFlow(app, {
                   text: { type: "plain_text", text: "연장 일수 직접 입력" },
                   style: "primary", value: pendingId },
                 { type: "button", action_id: "schext_cancel",
-                  text: { type: "plain_text", text: "종료" }, value: "cancel" },
+                  text: { type: "plain_text", text: "종료" }, value: pendingId },
               ]},
             ],
           });
@@ -596,7 +609,7 @@ module.exports = function registerScheduleExtFlow(app, {
                   text: { type: "plain_text", text: "연장 일수 직접 입력" },
                   style: "primary", value: pendingId },
                 { type: "button", action_id: "schext_cancel",
-                  text: { type: "plain_text", text: "종료" }, value: "cancel" },
+                  text: { type: "plain_text", text: "종료" }, value: pendingId },
               ]},
             ],
           });
@@ -612,6 +625,7 @@ module.exports = function registerScheduleExtFlow(app, {
       const pendingId = `schext_pending_${Date.now()}`;
       draftStore.set(pendingId, {
         type: "schext_pending",
+        ownerUserId,
         workName, pivoId,
         episode: episodes[0], episodes,
         delivery, sourceLink, requesterUserId,
@@ -653,6 +667,7 @@ module.exports = function registerScheduleExtFlow(app, {
     const draftId = generateDraftId();
     draftStore.set(draftId, {
       type: "schext",
+      ownerUserId,
       workName, pivoId,
       episode: episodes[0],   // backward-compat
       episodes,
@@ -916,11 +931,26 @@ ${taskLines}` } },
   // ── 일정 API 호출 (공통) ──────────────────────────────────
   async function _applySchedule(client, userId, draftId, simTasks) {
     const data = draftStore.get(draftId);
+    if (!data) return;
+    if (data.scheduleMutationStatus === "applying") {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "⏳ 이미 일정 반영을 처리 중이야." });
+      return;
+    }
+    if (data.scheduleMutationStatus === "applied") {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "✅ 이 일정은 이미 반영됐어." });
+      return;
+    }
+
+    draftStore.set(draftId, { ...data, scheduleMutationStatus: "applying" });
+    let mutationApplied = false;
     try {
       // 묶음/단일 공통: tasksByEpisode 전체 화수의 task에 simTasks 시뮬레이션 결과 매핑
       // simTasks의 인덱스 i는 대표 tasks(data.tasks)의 opCode 순서와 일치
       // 각 화수별 task에서 동일 opCode를 찾아 일괄 반영
       const apiTasks = [];
+      const expectedTargets = [];
+      const actualTargets = [];
+      const ambiguousTargets = [];
       const tasksByEp = data.tasksByEpisode || { [data.episodes?.[0] || data.episode]: data.tasks };
       const episodes  = data.episodes && data.episodes.length ? data.episodes : Object.keys(tasksByEp).map(Number);
 
@@ -928,9 +958,18 @@ ${taskLines}` } },
         const epTasks = tasksByEp[ep] || [];
         for (let i = 0; i < simTasks.length; i++) {
           const sim = simTasks[i];
-          // opCode 매칭 (없으면 인덱스로 fallback)
-          const matching = epTasks.find(t => t.opCode === data.tasks[i].opCode) || epTasks[i];
-          if (matching) {
+          const targetKey = `${ep}화/${sim.opCode}`;
+          expectedTargets.push(targetKey);
+          const matchingTasks = epTasks.filter(t =>
+            t.opCode === sim.opCode && t.taskUuid
+          );
+          if (matchingTasks.length > 1) {
+            ambiguousTargets.push(targetKey);
+            continue;
+          }
+          const matching = matchingTasks[0];
+          if (matching?.taskUuid) {
+            actualTargets.push(targetKey);
             apiTasks.push({
               taskUuid:  matching.taskUuid,
               startDate: sim.newStartDateOrig,
@@ -940,7 +979,19 @@ ${taskLines}` } },
         }
       }
 
+      assertNoAmbiguousMutationTargets(
+        ambiguousTargets,
+        "일정 반영"
+      );
+
+      assertCompleteMutationTargets(
+        expectedTargets,
+        actualTargets,
+        "일정 반영"
+      );
+
       console.log(`[scheduleExt] 일괄 반영 — 화수:${episodes.length}, task:${apiTasks.length}`);
+      if (!apiTasks.length) throw new Error("반영할 태스크를 찾지 못했어.");
 
       const json = await _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
         method:  "POST",
@@ -949,9 +1000,10 @@ ${taskLines}` } },
       }, { bot: "schedule", endpoint: "/tasks/dates", params: {}, expectedCount: null });
       console.log("[scheduleExt] 일정 반영 응답:", JSON.stringify(json));
 
-      if (json.data?.실패 > 0) {
-        console.warn("[scheduleExt] 일정 반영 일부 실패:", JSON.stringify(json.data.failedTaskUuids));
-      }
+      decodeMutationResult(json, "일정 반영");
+
+      mutationApplied = true;
+      draftStore.set(draftId, { ...data, scheduleMutationStatus: "applied" });
 
       // 완료 메시지
       const changeLines = simTasks.map(t =>
@@ -992,6 +1044,12 @@ ${taskLines}` } },
 
     } catch (e) {
       console.error("[scheduleExt] 일정 반영 실패:", e.message);
+      if (mutationApplied) {
+        await client.chat.postMessage({ channel: data.dmChannelId,
+          text: `✅ 일정은 반영됐지만 완료 안내 중 오류가 발생했어: ${e.message}` }).catch(() => {});
+        return;
+      }
+      draftStore.set(draftId, { ...data, scheduleMutationStatus: "ready" });
       await client.chat.postMessage({ channel: data.dmChannelId,
         text: `❌ 일정 반영 실패: ${e.message}`,
         blocks: [

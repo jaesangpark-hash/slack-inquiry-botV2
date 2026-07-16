@@ -28,6 +28,7 @@ const fs   = require("fs");
 const path = require("path");
 const { loggedCall, logEvent, cleanOldLogs, initAlertClient, sendAlert } = require("./apiLogger");
 const { checkPermission } = require("./auth/permission-gate");
+const { createInteractionGuard } = require("./auth/interaction-guard");
 const { isTriggerReaction } = require("./utils/trigger");
 const createSheetsClient = require("./clients/sheets-client");
 const createTitleMatcher = require("./sheets/title-matcher");
@@ -36,6 +37,9 @@ const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
 const createProgress = require("./slack/progress");
 const createInquiryAnalyzer = require("./ai/inquiry-analyzer");
+const createInquiryPublisher = require("./slack/inquiry-publisher");
+const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID } = require("./config/sheet-schema");
+const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
 const triggerEmoji = requireEnv("TRIGGER_EMOJI");
@@ -94,16 +98,6 @@ const RETAKE_CHANNELS      = new Set(
   (process.env.RETAKE_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
 
-// ── APM 이름 → Slack ID 매핑 ─────────────────────────────────────
-// 납품 시트 D열 텍스트 기준. 추가 시 여기에 등록.
-// 장기적으로는 Totus 프로젝트 APM 값으로 대체 예정.
-const APM_SLACK_ID_MAP = {
-  "서주원": "U07E0QPL8MV",
-  "정태영": "U05CE8HFA6B",
-  "오화진": "U02GPTNGZ5W",
-  "박재상": "U04463JR4HH",
-};
-
 function resolveApmUserId(apmName) {
   if (!apmName) return null;
   // Google Sheets는 NFD(분해형) 유니코드를 반환할 수 있어 NFC 정규화 후 비교
@@ -117,47 +111,57 @@ function resolveApmUserId(apmName) {
 const processedMessageTs = new Set();
 const draftStore         = new Map();
 
+// 모든 action/view는 중앙 actor 정책을 거친 뒤 각 flow로 전달한다.
+// event/message는 inquiry-entry가 trigger reaction/human DM 범위를 먼저 확인한다.
+const interactionApp = createInteractionGuard({
+  app,
+  draftStore,
+  checkPermission,
+  pmSlackId: PM_SLACK_ID,
+  triggerEmoji,
+});
+
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
 const { appendInquiryHistory, checkInquiryDone } = createInquiryHistory({
   sheetsClient,
   historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
   historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
-  historyGridSheetId: 268190314,
+  historyGridSheetId: INQUIRY_HISTORY_GRID_SHEET_ID,
 });
 const { appendResupplyRecord, checkResupplyDone } = createResupplyRecord({
   sheetsClient,
   resupplySheetId: RESUPPLY_SHEET_ID,
   resupplySheetRange: RESUPPLY_SHEET_RANGE,
-  resupplyGridSheetId: 511152201,
+  resupplyGridSheetId: RESUPPLY_GRID_SHEET_ID,
 });
 
 // ── flow wiring (모듈 factory 직후, 핸들러 등록 전) ─────────────────
-const { handleFileOrderInquiry } = require("./fileOrderFlow")(app, {
+const { handleFileOrderInquiry } = require("./fileOrderFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore,
 });
 
-const { handleRetakeInquiry } = require("./retakeFlow")(app, {
+const { handleRetakeInquiry } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
 });
 
-const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(app, {
+const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
   fetchDeliveryDate, sheetsClient,
 });
 
-const { handleMultipleInquiry } = require("./multipleInquiryFlow")(app, {
+const { handleMultipleInquiry } = require("./multipleInquiryFlow")(interactionApp, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, matchWorkTitleByTokens,
   generateDraftId, draftStore, fetchDeliveryDate,
   handleFileOrderInquiry, handleRetakeInquiry, handleScheduleExt, handleScheduleExtGrouped,
 });
 
-const { handleWorkerRelay } = require("./workerRelayFlow")(app, {
+const { handleWorkerRelay } = require("./workerRelayFlow")(interactionApp, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, generateDraftId, draftStore, sheetsClient,
 });
 
-require("./slack/scheduleBulkFlow")(app, { draftStore, generateDraftId });
+require("./slack/scheduleBulkFlow")(interactionApp, { draftStore, generateDraftId });
 
 // 인증 방식: service account JSON 파일 대신 GOOGLE_CREDENTIALS env에 JSON 문자열을 직접 저장.
 // 형식: GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}'
@@ -218,6 +222,15 @@ const {
   buildOtherInquirySummary,
 } = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: FIXED_MENTION_USER_IDS });
 
+const postInquiryToTargetChannel = createInquiryPublisher({
+  appendInquiryHistory,
+  draftStore,
+  buildFinalMainMessage,
+  buildThreadMessage,
+  targetChannelId: TARGET_CHANNEL_ID,
+  logEvent,
+});
+
 // ── AI 분석 ───────────────────────────────────────────────
 // analyzeInquiryWithAI → src/ai/inquiry-analyzer.js
 
@@ -236,7 +249,7 @@ const {
 // buildFileInquiryReason / buildFileInquiryBlocks / buildFileInquiryMessage → src/slack/inquiry-blocks.js
 
 // ── T5 핸들러 register (재수급 / 스케줄 / 직접입력·문의완료·드래프트편집) ─────
-require("./handlers/resupply-actions")(app, {
+require("./handlers/resupply-actions")(interactionApp, {
   draftStore,
   buildFileInquiryBlocks,
   buildFileInquiryMessage,
@@ -248,7 +261,7 @@ require("./handlers/resupply-actions")(app, {
   resolveApmUserId,
 });
 
-require("./handlers/schedule-actions")(app, {
+require("./handlers/schedule-actions")(interactionApp, {
   draftStore,
   loadTitleRowsFromSheet,
   matchWorkTitleFromSheet,
@@ -258,7 +271,7 @@ require("./handlers/schedule-actions")(app, {
   SCHEDULE_CHANNEL_ID,
 });
 
-require("./handlers/direct-input-actions")(app, {
+require("./handlers/direct-input-actions")(interactionApp, {
   draftStore,
   buildDraftPreviewBlocks,
   buildDraftPreviewText,
@@ -278,30 +291,6 @@ require("./handlers/direct-input-actions")(app, {
 // ── 드래프트 UI ───────────────────────────────────────────
 function generateDraftId() { return `draft_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
 // PRIORITY_EMOJI / buildDraftPreviewBlocks / buildDraftPreviewText / buildFinalMainMessage / buildThreadMessage → src/slack/inquiry-blocks.js
-
-async function postInquiryToTargetChannel(client, draft, submitterId) {
-  // 히스토리 시트 기록을 먼저 해서 rowIndex를 얻는다 — 완료 버튼 값에 직접 박아넣기 위함
-  // (draftStore는 인메모리라 프로세스 재시작 후 완료를 누르면 rowIndex를 잃어버림)
-  let historyRowIndex = null;
-  try {
-    historyRowIndex = await appendInquiryHistory(draft, submitterId);
-    if (historyRowIndex && draft.draftId) {
-      draftStore.set(draft.draftId, { ...draft, historyRowIndex });
-    }
-  } catch (e) {
-    console.error("[postInquiry] 히스토리 시트 기록 실패:", e.message);
-    const dmCh = draft.dmChannelId;
-    if (dmCh) {
-      await client.chat.postMessage({ channel: dmCh, text: `⚠️ 히스토리 시트 기록 실패: ${e.message}` }).catch(() => {});
-    }
-  }
-  const msg = buildFinalMainMessage({ submitterId, workName: draft.workName, workNameKo: draft.workNameKo, episode: draft.episode, inquiryType: draft.inquiryType, inquiryContent: draft.inquiryContent, actionRequired: draft.actionRequired, draftId: draft.draftId, historyRowIndex });
-  const _t0 = Date.now();
-  const postRes = await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, ...msg });
-  logEvent("inquiry", "/slack/inquiry-sent", Date.now() - _t0, true);
-  await client.chat.postMessage({ channel: TARGET_CHANNEL_ID, thread_ts: postRes.ts, text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }) });
-  return postRes;
-}
 
 // buildInquirySummaryMessage / buildMultipleInquirySummary / buildOtherInquirySummary → src/slack/inquiry-blocks.js
 
@@ -336,7 +325,7 @@ const inquiryRouter = createInquiryRouter({
   analyzeInquiryWithAI,
 });
 
-require("./handlers/inquiry-entry")(app, {
+require("./handlers/inquiry-entry")(interactionApp, {
   inquiryRouter,
   cleanSlackText,
   analyzeInquiryWithAI,
