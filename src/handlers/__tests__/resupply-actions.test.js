@@ -596,6 +596,115 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
   });
 });
 
+describe("재수급 요청 게시 — 히스토리 원문 링크 갱신", () => {
+  it("첫 성공 시 updateResupplySourceLink를 1회 호출한다", async () => {
+    const draftStore = new Map([["d-link-1", {
+      draftId: "d-link-1", workName: "작품", episode: "5", fileNumbers: [], dmChannelId: "D1",
+    }]]);
+    const app = makeFakeApp();
+    let updateCalls = 0;
+    let updateArgs = null;
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => ({ ts: payload.thread_ts ? "thread-ts" : "main-ts" }),
+        update: async () => ({}),
+        getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p999" }),
+      },
+    });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks: () => [],
+      buildFileInquiryMessage: () => ({ text: "PM request" }),
+      appendResupplyRecord: async () => 40,
+      updateResupplySourceLink: async (rowIndex, permalink) => {
+        updateCalls++;
+        updateArgs = [rowIndex, permalink];
+      },
+      checkResupplyDone: async () => {},
+      PM_REQUEST_CHANNEL_ID: "C_PM",
+    });
+
+    await app._registered.actions["send_file_inquiry_now"]({
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: "d-link-1" }] },
+      client,
+    });
+
+    assert.equal(updateCalls, 1);
+    assert.deepEqual(updateArgs, [40, "https://slack.com/archives/C_PM/p999"]);
+  });
+
+  it("동일 draft replay 시 updateResupplySourceLink를 다시 호출하지 않는다", async () => {
+    const draftStore = new Map([["d-link-replay", {
+      draftId: "d-link-replay", workName: "작품", episode: "5", fileNumbers: [], dmChannelId: "D1",
+    }]]);
+    const app = makeFakeApp();
+    let updateCalls = 0;
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => ({ ts: payload.thread_ts ? "thread-ts" : "main-ts" }),
+        update: async () => ({}),
+        getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p1000" }),
+      },
+    });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks: () => [],
+      buildFileInquiryMessage: () => ({ text: "PM request" }),
+      appendResupplyRecord: async () => 41,
+      updateResupplySourceLink: async () => { updateCalls++; },
+      checkResupplyDone: async () => {},
+      PM_REQUEST_CHANNEL_ID: "C_PM",
+    });
+    const args = {
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: "d-link-replay" }] },
+      client,
+    };
+
+    await app._registered.actions["send_file_inquiry_now"](args);
+    await app._registered.actions["send_file_inquiry_now"](args);
+
+    assert.equal(updateCalls, 1);
+  });
+
+  it("링크 갱신 실패는 non-fatal이고 재수급 요청 게시는 성공 상태로 남는다", async () => {
+    const draftStore = new Map([["d-link-fail", {
+      draftId: "d-link-fail", workName: "작품", episode: "5", fileNumbers: [], dmChannelId: "D1",
+    }]]);
+    const app = makeFakeApp();
+    const notices = [];
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => {
+          notices.push(payload.text);
+          return { ts: payload.thread_ts ? "thread-ts" : "main-ts" };
+        },
+        update: async () => ({}),
+        getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p1001" }),
+      },
+    });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks: () => [],
+      buildFileInquiryMessage: () => ({ text: "PM request" }),
+      appendResupplyRecord: async () => 42,
+      updateResupplySourceLink: async () => { throw new Error("sheet write failed"); },
+      checkResupplyDone: async () => {},
+      PM_REQUEST_CHANNEL_ID: "C_PM",
+    });
+
+    await app._registered.actions["send_file_inquiry_now"]({
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: "d-link-fail" }] },
+      client,
+    });
+
+    assert.equal(draftStore.get("resupply_publication:d-link-fail").status, "sent");
+    assert.equal(notices.some(text => text?.includes("완료하지 못했어")), false);
+  });
+});
+
 describe("file_resupply_done — 완료 진실성과 owner 안내", () => {
   function completionBody(metadataOverrides = {}) {
     return {

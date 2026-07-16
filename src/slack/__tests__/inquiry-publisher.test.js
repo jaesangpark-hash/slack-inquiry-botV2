@@ -4,10 +4,11 @@ const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
 const createInquiryPublisher = require("../inquiry-publisher");
 
-function makePublisher({ appendInquiryHistory }) {
+function makePublisher({ appendInquiryHistory, updateInquiryHistorySourceLink }) {
   const draftStore = new Map();
   const postInquiry = createInquiryPublisher({
     appendInquiryHistory,
+    updateInquiryHistorySourceLink,
     draftStore,
     buildFinalMainMessage: metadata => ({ text: "main", metadata }),
     buildThreadMessage: () => "thread",
@@ -25,6 +26,7 @@ function makeClient() {
         calls.push(payload);
         return { ts: "posted-ts" };
       },
+      getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p_default" }),
     },
   };
 }
@@ -225,5 +227,53 @@ describe("inquiry publisher sheet-first contract", () => {
 
     assert.equal(appendCalls, 1);
     assert.equal(mainCalls, 1);
+  });
+});
+
+describe("inquiry publisher 히스토리 원문 링크 갱신", () => {
+  test("첫 성공 시 updateInquiryHistorySourceLink를 1회 호출한다", async () => {
+    let updateCalls = 0;
+    let updateArgs = null;
+    const { postInquiry } = makePublisher({
+      appendInquiryHistory: async () => 30,
+      updateInquiryHistorySourceLink: async (rowIndex, permalink) => {
+        updateCalls++;
+        updateArgs = [rowIndex, permalink];
+      },
+    });
+    const client = makeClient();
+
+    await postInquiry(client, { draftId: "d-link-1", dmChannelId: "D1" }, "U1");
+
+    assert.equal(updateCalls, 1);
+    assert.deepEqual(updateArgs, [30, "https://slack.com/archives/C_PM/p_default"]);
+  });
+
+  test("동일 draftId replay 시 updateInquiryHistorySourceLink를 다시 호출하지 않는다", async () => {
+    let updateCalls = 0;
+    const { postInquiry } = makePublisher({
+      appendInquiryHistory: async () => 31,
+      updateInquiryHistorySourceLink: async () => { updateCalls++; },
+    });
+    const client = makeClient();
+    const draft = { draftId: "d-link-replay", dmChannelId: "D1" };
+
+    await postInquiry(client, draft, "U1");
+    await postInquiry(client, { ...draft }, "U1");
+
+    assert.equal(updateCalls, 1);
+  });
+
+  test("링크 갱신 실패는 non-fatal이고 게시는 성공으로 반환된다", async () => {
+    const { postInquiry } = makePublisher({
+      appendInquiryHistory: async () => 32,
+      updateInquiryHistorySourceLink: async () => { throw new Error("sheet write failed"); },
+    });
+    const client = makeClient();
+    const draft = { draftId: "d-link-fail", dmChannelId: "D1" };
+
+    const result = await postInquiry(client, draft, "U1");
+
+    assert.equal(result.publicationStatus, "sent");
   });
 });
