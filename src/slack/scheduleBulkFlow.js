@@ -24,7 +24,6 @@ const {
 
 const EXCLUDE_OP_CODES    = new Set(["OTC0087", "OTC0077"]); // 납품검수·피코마검수 제외 (일정변경 전용)
 const EXCLUDE_TASK_STATES = new Set(["COMPLETED", "DROP", "DELIVERED", "CONFIRMED"]); // 일정변경 전용 — 리테이크는 완료상태가 정상이라 미적용
-const TRANSLATION_OP      = "OTC0012"; // 번역 (리테이크 기준 오퍼레이션)
 
 // 리테이크 가능 오퍼레이션 고정 목록 (retakeFlow.js RETAKE_OPERATIONS와 동일) — 상태 무관, 작업자 배정 여부로만 판단
 const RETAKE_OP_CODES = new Map([
@@ -206,8 +205,15 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: 태스크 재생성 + 날짜 반영 (execMode="retake") ──────────
+  // 소스 태스크 = 사용자가 Modal B에서 일수를 입력한(0이 아닌) 오퍼레이션 자신.
+  // (번역을 거치지 않고, 선택한 오퍼레이션의 기존 태스크를 그대로 /retake 소스로 사용)
   async function _applyRetakeSchedule(draft, client) {
-    const { projectUuid, calculatedSchedule } = draft;
+    const { projectUuid, calculatedSchedule, opDurations = {}, opList = [] } = draft;
+    const selectedOps = opList.filter(op => (opDurations[op.opCode] || 0) > 0);
+    if (!selectedOps.length) {
+      throw new Error("리테이크할 오퍼레이션의 일수를 하나 이상 입력해줘.");
+    }
+
     const allEps = calculatedSchedule.flatMap(g => g.episodes);
     const createdTaskUuidsByEpisode = {
       ...(draft.retakeCreatedTaskUuidsByEpisode || {}),
@@ -219,26 +225,32 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     );
     const failedEpisodes = [];
 
-    // 생성 요청 전에 아직 생성되지 않은 모든 회차의 source 번역 태스크를 먼저 확인한다.
+    // 생성 요청 전에 아직 생성되지 않은 모든 회차의 선택 오퍼레이션 소스 태스크를 먼저 확인한다.
     const pendingEpisodes = allEps.filter(ep => !completedEpisodes.has(Number(ep)));
     const sourceInventories = await Promise.all(pendingEpisodes.map(async ep => ({
       ep,
       inventory: await _getTaskInventory(projectUuid, ep, true),
     })));
-    const sourceUuidByEpisode = {};
-    const expectedSourceTargets = pendingEpisodes.map(ep => `${ep}화/${TRANSLATION_OP}`);
+    const sourcesByEpisode = {}; // { [ep]: [{ opCode, opName, taskUuid }] }
+    const expectedSourceTargets = [];
     const actualSourceTargets = [];
     const ambiguousSourceTargets = [];
     for (const { ep, inventory } of sourceInventories) {
-      const sourceCandidates = inventory.taskUuidsByOpCode[TRANSLATION_OP] || [];
-      if (sourceCandidates.length > 1) {
-        ambiguousSourceTargets.push(`${ep}화/${TRANSLATION_OP}`);
-        continue;
+      const sources = [];
+      for (const { opCode, opName } of selectedOps) {
+        const targetKey = `${ep}화/${opName || opCode}`;
+        expectedSourceTargets.push(targetKey);
+        const candidates = inventory.taskUuidsByOpCode[opCode] || [];
+        if (candidates.length > 1) {
+          ambiguousSourceTargets.push(targetKey);
+          continue;
+        }
+        const taskUuid = candidates[0];
+        if (!taskUuid) continue;
+        sources.push({ opCode, opName, taskUuid });
+        actualSourceTargets.push(targetKey);
       }
-      const sourceTaskUuid = sourceCandidates[0];
-      if (!sourceTaskUuid) continue;
-      sourceUuidByEpisode[ep] = sourceTaskUuid;
-      actualSourceTargets.push(`${ep}화/${TRANSLATION_OP}`);
+      sourcesByEpisode[ep] = sources;
     }
     assertNoAmbiguousMutationTargets(
       ambiguousSourceTargets,
@@ -254,24 +266,30 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       if (completedEpisodes.has(Number(ep))) continue;
 
       try {
-        const srcUuid = sourceUuidByEpisode[ep];
-        let createdTaskUuids;
+        const sources = sourcesByEpisode[ep] || [];
+        const createdTaskUuids = [];
         try {
-          const res = await fetch(`${BASE()}/api/v1/tasks/${srcUuid}/retake`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
-          });
-          const ct = res.headers.get("content-type") || "";
-          if (!ct.includes("application/json")) {
-            throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+          for (const { opCode, opName, taskUuid } of sources) {
+            const res = await fetch(`${BASE()}/api/v1/tasks/${taskUuid}/retake`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+            });
+            const ct = res.headers.get("content-type") || "";
+            if (!ct.includes("application/json")) {
+              throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
+            }
+            const json = await res.json();
+            const uuids = requireCreatedTaskUuids(json, `${ep}화 ${opName || opCode} 리테이크 생성`);
+            createdTaskUuids.push(...uuids);
           }
-          const json = await res.json();
-          createdTaskUuids = requireCreatedTaskUuids(json, `${ep}화 리테이크 생성`);
         } catch (error) {
-          if (error?.code === "CONFIRMED_MUTATION_FAILURE") throw error;
+          if (error?.code === "CONFIRMED_MUTATION_FAILURE" && !createdTaskUuids.length) throw error;
+          // 이 회차에서 일부 오퍼레이션이 이미 생성된 뒤 실패했다면, 나머지만 재시도할 경우
+          // 이미 성공한 오퍼레이션을 중복 생성할 위험이 있어 무조건 확인 대상으로 돌린다.
           const unknownError = toUnknownMutationOutcome(error, `${ep}화 리테이크 생성`);
           unknownError.episode = Number(ep);
           unknownError.mutationStage = "retake_creation";
+          if (createdTaskUuids.length) unknownError.unverifiedCreatedTaskUuids = createdTaskUuids;
           throw unknownError;
         }
 
