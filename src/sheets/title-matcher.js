@@ -149,9 +149,18 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
 
   // ── 토큰 매칭 전용 (1~4순위 실패 후 호출) ────────────────
   // 반환: { single: row } | { multiple: [row, ...] } | null
-  async function matchWorkTitleByTokens(titleKo, titleJa = null) {
-    if (!titleKo && !titleJa) return null;
+  async function matchWorkTitleByTokens(titleKo, titleJa = null, pivoId = null) {
+    if (!titleKo && !titleJa && !pivoId) return null;
     const rows = await loadTitleRowsFromSheet();
+
+    // 0순위: PIVO ID 완전일치 — 있으면 텍스트 토큰 매칭보다 우선 신뢰
+    if (pivoId) {
+      const exactPivo = rows.find(row => row.pivoId === String(pivoId).trim());
+      if (exactPivo) {
+        console.log("[match-token] PIVO ID 완전일치:", exactPivo.pivoId);
+        return { single: exactPivo };
+      }
+    }
 
     // 한국어 프로젝트명 토큰 매칭
     if (titleKo) {
@@ -185,9 +194,18 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
   // ── 부분일치 복수 후보 감지 (2·4순위 보완) ───────────────
   // 반환: { single: row } | { multiple: [row, ...] } | { tooMany: true } | null
   // 1·3순위(완전일치)는 단건 확정이므로 제외, 2·4순위 부분일치에서만 복수 체크
-  async function matchWorkTitleWithCandidates(titleJa, titleKo = null) {
-    if (!titleJa && !titleKo) return null;
+  async function matchWorkTitleWithCandidates(titleJa, titleKo = null, pivoId = null) {
+    if (!titleJa && !titleKo && !pivoId) return null;
     const rows = await loadTitleRowsFromSheet();
+
+    // 0순위: PIVO ID 완전일치 — 있으면 텍스트 매칭보다 우선 신뢰
+    if (pivoId) {
+      const exactPivo = rows.find(row => row.pivoId === String(pivoId).trim());
+      if (exactPivo) {
+        console.log("[match-candidates] PIVO ID 완전일치:", exactPivo.pivoId);
+        return { single: exactPivo };
+      }
+    }
 
     // 1순위: 한국어 완전일치 → 단건 확정
     if (titleKo) {

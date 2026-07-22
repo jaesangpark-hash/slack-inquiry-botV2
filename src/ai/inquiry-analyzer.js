@@ -53,9 +53,11 @@ ${isThreadContext ? `
    ※ route_ambiguous(릴레이/문의 경계 판단): "번역문 누락/확인/수정"(작업자에게 바로 전달하는 릴레이)인지 "작업 관련 문의"(어느 쪽이 맞는지 PM의 원문·설정 판단이 필요)인지 확신이 안 서는 경계 케이스면 true. 둘 중 하나가 명확하거나, 그 외 유형(스케줄·파일·리테이크·복수·기타 등)으로 명확히 분류되면 false.
 8) priority — "높음" | "보통" | "낮음"
 9) episode — 문의에서 언급된 화수(숫자만). 여러 화차면 첫 번째만. 없으면 null
+10) pivo_id — PIVO ID로 추정되는 6자리 숫자. 문의 어디에 있든(줄 앞머리, 괄호 안, 문장 중간 등) 찾아서 추출.
+    회차·날짜 등 자릿수가 다른 숫자와 혼동하지 말 것. 6자리 숫자가 확실치 않으면 null.
 
 JSON만 출력. 코드블록 금지.
-{"translated_ko":"string","source_lang":"string","summary_ko":"string","action_required":"string","title_ja":"string|null","title_ko":"string|null","inquiry_type":"string","priority":"string","episode":"string|null","route_ambiguous":"boolean","multi_items":"array|null"}
+{"translated_ko":"string","source_lang":"string","summary_ko":"string","action_required":"string","title_ja":"string|null","title_ko":"string|null","inquiry_type":"string","priority":"string","episode":"string|null","pivo_id":"string|null","route_ambiguous":"boolean","multi_items":"array|null"}
 
 multi_items: inquiry_type이 "복수 문의"인 경우에만 항목 배열 반환, 그 외 null
 각 항목 형식:
@@ -89,6 +91,7 @@ ${sourceText}`.trim();
       inquiry_type:    parsed.inquiry_type    || "기타",
       priority:        parsed.priority        || "보통",
       episode:         parsed.episode         || null,
+      pivo_id:         parsed.pivo_id         || null,
       route_ambiguous: parsed.route_ambiguous === true,
       multi_items:     Array.isArray(parsed.multi_items) ? parsed.multi_items : null,
     };

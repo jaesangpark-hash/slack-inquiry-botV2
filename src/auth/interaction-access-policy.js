@@ -46,6 +46,8 @@ const INTERACTION_SURFACES = Object.freeze([
   surface("action", "direct_retake_btn", POLICY.ENTRY_APM),
   surface("action", "open_retake_info_modal", POLICY.OWNER_APM),
   surface("view", "submit_retake_info_modal", POLICY.OWNER_APM),
+  surface("action", "retake_correct_by_pivoid", POLICY.OWNER_APM),
+  surface("view", "submit_retake_correct_pivoid", POLICY.OWNER_APM),
   surface("action", "retake_worker_request_send", POLICY.OWNER_APM),
   surface("action", "retake_open_worker_msg_modal", POLICY.OWNER_APM),
   surface("view", "submit_retake_worker_msg_modal", POLICY.OWNER_APM),

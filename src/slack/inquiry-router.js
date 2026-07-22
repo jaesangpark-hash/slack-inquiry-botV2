@@ -7,6 +7,8 @@
  * @param {object} deps — DI 주입 (진입점 단일 인스턴스)
  * @returns {{ routeInquiry: function }}
  */
+const { extractPivoIdGuess } = require("../utils/pivo-id");
+
 module.exports = function createInquiryRouter(deps) {
   const {
     // 분석
@@ -96,24 +98,34 @@ module.exports = function createInquiryRouter(deps) {
         retakeRequesterName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || retakeRequesterName;
       } catch (_) {}
 
-      // 스레드 맥락이 있으면 AI 분석하여 작품명/회차 추출
-      let retakeAnalysis = { title_ja: null, title_ko: null, episode: null };
+      // 스레드 맥락이 있으면 AI 분석하여 작품명/회차/PIVO ID 추출
+      let retakeAnalysis = { title_ja: null, title_ko: null, episode: null, pivoId: null };
       if (hasThreadContext) {
         const contextAnalysis = await analyzeInquiryWithAI(threadContextText, true);
         retakeAnalysis = {
           title_ja: contextAnalysis.title_ja || null,
           title_ko: contextAnalysis.title_ko || null,
           episode:  contextAnalysis.episode  || null,
+          pivoId:   contextAnalysis.pivo_id  || null,
         };
-        console.log(`[retake-context] 스레드에서 추출 — title_ja: ${retakeAnalysis.title_ja} | title_ko: ${retakeAnalysis.title_ko} | episode: ${retakeAnalysis.episode}`);
+        console.log(`[retake-context] 스레드에서 추출 — title_ja: ${retakeAnalysis.title_ja} | title_ko: ${retakeAnalysis.title_ko} | episode: ${retakeAnalysis.episode} | pivoId: ${retakeAnalysis.pivoId}`);
       }
 
       // 복수 항목 감지 ① — "{pivoId} | [브랜드] 작품명 / 화수 PIVO 납품" 고정 헤더 템플릿에서
       // 화수를 직접 추출해 헤더가 2개 이상이면 복수(서로 다른 화수 요청이 한 메시지에 묶인 경우).
       // 파일N 라벨 개수와 무관하게 헤더 자체를 세므로, 화수 판단이 실제 화수 정보를 근거로 이뤄짐.
       const lines        = originalText.split("\n").map(l => l.trim()).filter(l => l);
-      const HEADER_RE    = /^[-*・•]?\s*\d+\s*\|\s*\[.+?\]\s*.+?\/\s*(\d+)\s*PIVO\s*납품/;
-      const headerEpisodes = lines.map(l => l.match(HEADER_RE)).filter(Boolean).map(m => m[1]);
+      const HEADER_RE    = /^[-*・•]?\s*(\d+)\s*\|\s*\[.+?\]\s*.+?\/\s*(\d+)\s*PIVO\s*납품/;
+      const headerMatches   = lines.map(l => l.match(HEADER_RE)).filter(Boolean);
+      const headerEpisodes  = headerMatches.map(m => m[2]);
+      // AI가 못 잡았을 때만 헤더 템플릿 선두 숫자(PIVO ID)로 보완 — 단건일 때만 채택
+      if (!retakeAnalysis.pivoId && headerMatches.length === 1) {
+        retakeAnalysis.pivoId = headerMatches[0][1];
+      }
+      // 그래도 없으면 원문 전체에서 고립된 6자리 숫자 1건을 최후 추정치로 채택
+      if (!retakeAnalysis.pivoId) {
+        retakeAnalysis.pivoId = extractPivoIdGuess(originalText);
+      }
 
       // 복수 항목 감지 ② — 위 헤더 템플릿에 안 맞는 메시지용 폴백: 대괄호 작품명 또는
       // 글머리기호가 2개 이상 별도 줄이면 복수. 단, "파일N #M" 류 파일/컷 단위 라벨은 제외

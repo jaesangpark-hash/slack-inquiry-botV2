@@ -9,6 +9,7 @@ const {
 const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
+const { extractPivoIdGuess } = require("./utils/pivo-id");
 // retakeFlow.js — 수정·리테이크 플로우 (IB-04)
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
@@ -118,6 +119,8 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
 1) work_title_ja : 일본어 또는 중국어 작품명 (없으면 null)
 2) work_title_ko : 한국어 작품명 (없으면 null)
 3) episode       : 회차 숫자만 (예: "204話" → "204", "60화" → "60", 없으면 null)
+4) pivo_id       : PIVO ID로 추정되는 6자리 숫자. 문의 어디에 있든(줄 앞머리, 괄호 안, 문장 중간 등) 찾아서 추출.
+   회차·날짜 등 자릿수가 다른 숫자와 혼동하지 말 것. 6자리 숫자가 확실치 않으면 null.
 
 JSON만 출력. 코드블록 금지.
 문의: ${text}`.trim();
@@ -170,14 +173,16 @@ JSON만 출력. 코드블록 금지.
     let parsed;
     try { parsed = await parseRetakeInquiry(originalText); } catch (e) { parsed = {}; }
 
-    const titleJa = parsed.work_title_ja || analysis.title_ja;
-    const titleKo = parsed.work_title_ko || analysis.title_ko;
+    const titleJa   = parsed.work_title_ja || analysis.title_ja;
+    const titleKo   = parsed.work_title_ko || analysis.title_ko;
+    // PIVO ID(6자리) 힌트 — 있으면 텍스트 매칭보다 우선. 우선순위: LLM 자연어 추출 → 헤더 템플릿 → 문서 전체 6자리 단독 숫자 추정
+    const pivoIdHint = parsed.pivo_id || analysis.pivoId || extractPivoIdGuess(originalText);
 
     let matchedTitle = null;
 
-    // 후보 감지 매칭 (부분일치 복수 체크 포함)
-    if (matchWorkTitleWithCandidates && (titleJa || titleKo)) {
-      const candResult = await matchWorkTitleWithCandidates(titleJa, titleKo).catch(() => null);
+    // 후보 감지 매칭 (부분일치 복수 체크 포함, pivoId 있으면 최우선 확정)
+    if (matchWorkTitleWithCandidates && (titleJa || titleKo || pivoIdHint)) {
+      const candResult = await matchWorkTitleWithCandidates(titleJa, titleKo, pivoIdHint).catch(() => null);
       if (candResult?.single) {
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
@@ -204,7 +209,7 @@ JSON만 출력. 코드블록 금지.
       } else if (candResult?.tooMany) {
         // 후보 너무 많음 → 토큰 매칭 시도
         if (matchWorkTitleByTokens) {
-          const tokenResult = await matchWorkTitleByTokens(titleKo, titleJa).catch(() => null);
+          const tokenResult = await matchWorkTitleByTokens(titleKo, titleJa, pivoIdHint).catch(() => null);
           if (tokenResult?.single) {
             matchedTitle = tokenResult.single;
           } else if (tokenResult?.multiple) {
@@ -378,6 +383,9 @@ JSON만 출력. 코드블록 금지.
           { type: "button", action_id: "retake_select_operation",
             text: { type: "plain_text", text: "작업 유형 선택" },
             style: "primary", value: draftId },
+          { type: "button", action_id: "retake_correct_by_pivoid",
+            text: { type: "plain_text", text: "✏️ 작품명 정정 (PIVO ID)" },
+            value: draftId },
           { type: "button", action_id: "retake_close",
             text: { type: "plain_text", text: "❌ 종료" },
             value: draftId },
@@ -385,6 +393,61 @@ JSON만 출력. 코드블록 금지.
       ],
     });
   }
+
+  // ── [작품명 정정] 버튼 → PIVO ID 입력 모달 ────────────────
+  // AI 매칭이 잘못된 작품으로 확정됐을 때, 확정된 pivoId로 덮어써 바로잡는 안전장치.
+  app.action("retake_correct_by_pivoid", async ({ ack, body, client }) => {
+    await ack();
+    const draftId = body.actions[0].value;
+    const data = draftStore.get(draftId);
+    if (!data) return;
+
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal", callback_id: "submit_retake_correct_pivoid",
+        private_metadata: JSON.stringify({ draftId }),
+        title:  { type: "plain_text", text: "작품명 정정" },
+        submit: { type: "plain_text", text: "정정" },
+        close:  { type: "plain_text", text: "취소" },
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `현재 매칭된 작품명: \`${data.workName || "없음"}\`\n올바른 pivoId를 입력하면 작품명을 다시 확정할게.` } },
+          { type: "input", block_id: "rt_correct_pivoid_block",
+            label: { type: "plain_text", text: "pivoId (6자리)" },
+            element: { type: "plain_text_input", action_id: "value",
+              placeholder: { type: "plain_text", text: "예: 184748" } } },
+        ],
+      },
+    });
+  });
+
+  app.view("submit_retake_correct_pivoid", async ({ ack, body, view, client }) => {
+    await ack();
+    const { draftId } = JSON.parse(view.private_metadata || "{}");
+    const data = draftStore.get(draftId);
+    if (!data) return;
+
+    const pivoId = view.state.values.rt_correct_pivoid_block?.value?.value?.trim() || "";
+    if (!pivoId) {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "pivoId를 입력해줘." });
+      return;
+    }
+
+    const { displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId);
+    draftStore.delete(draftId);
+
+    await _proceedRetakeOperationSelect(client, data.dmChannelId, {
+      workName:        displayWorkName,
+      workNameKo:      koreanProjectName,
+      pivoId:          resolvedPivoId,
+      episode:         data.episode,
+      sourceLink:      data.sourceLink      || "",
+      requesterName:   data.requesterName   || "",
+      requesterUserId: data.requesterUserId || null,
+      ownerUserId:     data.ownerUserId     || null,
+    });
+  });
 
   // ── [작업 유형 선택] 버튼 → jobs 조회 후 실제 오퍼레이션만 드롭다운 ───
   app.action("retake_select_operation", async ({ ack, body, client }) => {
@@ -811,6 +874,38 @@ JSON만 출력. 코드블록 금지.
     });
   });
 
+  // ── pivoId → 표시명/한국어명 해석 (Totus API 선조회, 실패 시 마스터 시트 폴백) ──
+  // Totus 작품명의 언어는 보장되지 않으며, 한국어명은 마스터 시트가 확인한 값만 사용한다.
+  async function _resolveByPivoId(pivoId) {
+    console.log(`[retake] pivoId 입력 → Totus API 선 조회 (pivoId: ${pivoId})`);
+    let primaryWorkTitle = null;
+    try {
+      const _pivoRes = await _apiFetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivoId)}`, {
+        headers: { Authorization: `Bearer ${TOKEN()}` },
+      }, { bot: "retake", endpoint: "/projects", params: { pivoId }, expectedCount: 1 });
+      const list = _pivoRes?.data || [];
+      const proj = list.find(p => {
+        const d = p._detail || p;
+        return d.진행상태 !== "CANCELED" && d.pivoId != null;
+      });
+      primaryWorkTitle = proj?.name
+                      || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
+                      || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
+                      || null;
+    } catch (e) {
+      console.error(`[retake] Totus 조회 실패 → 마스터 시트 폴백:`, e.message);
+    }
+
+    const matchedByPivo     = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+    const koreanProjectName = matchedByPivo?.koreanProjectName || null;
+    const displayWorkName   = koreanProjectName
+                           || matchedByPivo?.chineseOriginalTitle
+                           || primaryWorkTitle
+                           || `(pivoId: ${pivoId})`;
+    console.log(`[retake] pivoId 조회 결과: ${primaryWorkTitle || "Totus 이름 없음"} → 표시명: ${displayWorkName}`);
+    return { displayWorkName, koreanProjectName, resolvedPivoId: pivoId };
+  }
+
   // ── 작품명·화수 수동 입력 모달 ────────────────────────────
   app.action("open_retake_info_modal", async ({ ack, body, client }) => {
     await ack();
@@ -869,55 +964,10 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    let displayWorkName;
-    let koreanProjectName = null;
-    let resolvedPivoId;
+    let displayWorkName, koreanProjectName, resolvedPivoId;
 
     if (pivoId) {
-      // pivoId 직접 입력 → Totus API 선 조회, 실패 시 마스터 시트 폴백
-      // Totus 작품명의 언어는 보장되지 않으며, 한국어명은 마스터 시트가 확인한 값만 사용한다.
-      console.log(`[retake] pivoId 입력 → Totus API 선 조회 (pivoId: ${pivoId})`);
-      try {
-        const _pivoRes = await _apiFetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivoId)}`, {
-          headers: { Authorization: `Bearer ${TOKEN()}` },
-        }, { bot: "retake", endpoint: "/projects", params: { pivoId }, expectedCount: 1 });
-        const list = _pivoRes?.data || [];
-        const proj = list.find(p => {
-          const d = p._detail || p;
-          return d.진행상태 !== "CANCELED" && d.pivoId != null;
-        });
-        const primaryWorkTitle = proj?.name
-                              || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
-                              || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
-                              || null;
-
-        if (primaryWorkTitle) {
-          // Totus 조회 성공 → 마스터 시트에서 한국어 표시명 우선 확인
-          const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
-          koreanProjectName = matchedByPivo?.koreanProjectName || null;
-          displayWorkName = koreanProjectName
-                         || matchedByPivo?.chineseOriginalTitle
-                         || primaryWorkTitle;
-          console.log(`[retake] Totus 조회 성공: ${primaryWorkTitle} → 표시명: ${displayWorkName}`);
-        } else {
-          // Totus에 이름 없음 → 마스터 시트 폴백
-          console.log(`[retake] Totus 이름 없음 → 마스터 시트 폴백`);
-          const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
-          koreanProjectName = matchedByPivo?.koreanProjectName || null;
-          displayWorkName = koreanProjectName
-                         || matchedByPivo?.chineseOriginalTitle
-                         || `(pivoId: ${pivoId})`;
-        }
-      } catch (e) {
-        // Totus API 실패 → 마스터 시트 폴백
-        console.error(`[retake] Totus 조회 실패 → 마스터 시트 폴백:`, e.message);
-        const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
-        koreanProjectName = matchedByPivo?.koreanProjectName || null;
-        displayWorkName = koreanProjectName
-                       || matchedByPivo?.chineseOriginalTitle
-                       || `(pivoId: ${pivoId})`;
-      }
-      resolvedPivoId = pivoId;
+      ({ displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId));
     } else {
       const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
       koreanProjectName = matchedTitle?.koreanProjectName || null;
