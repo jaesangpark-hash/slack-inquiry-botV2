@@ -564,6 +564,11 @@ module.exports = function createInquiryRouter(deps) {
       workNameKo:    matchedTitle.koreanProjectName || analysis.title_ko || "",
       pivoId:        matchedTitle.pivoId || null,
       episode:       analysis.episode || null,
+      deliveryDate:  analysis.episode && matchedTitle.koreanProjectName
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, "zh-ja", matchedTitle.koreanProjectName)
+            .catch(() => null)
+            .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+        : "-",
       inquiryType:   analysis.inquiry_type    || "기타",
       inquiryContent: analysis.translated_ko  || "",
       summary:       analysis.summary_ko      || "",

@@ -187,6 +187,7 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     workName,
     workNameKo,
     episode,
+    deliveryDate,
     inquiryType,
     inquiryContent,
     actionRequired,
@@ -217,6 +218,7 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
         { type: "section", fields: [
           { type: "mrkdwn", text: `*작품명*\n${workName||"-"}` },
           { type: "mrkdwn", text: `*회차*\n${episode ? episode+"화" : "-"}` },
+          { type: "mrkdwn", text: `*납품일*\n${deliveryDate||"-"}` },
           { type: "mrkdwn", text: `*문의 유형*\n${inquiryType||"-"}` },
           { type: "mrkdwn", text: `*담당자*\n<@${submitterId}>` },
         ]},

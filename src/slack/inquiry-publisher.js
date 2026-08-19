@@ -5,6 +5,7 @@ const {
   PUBLICATION_RECOVERY,
   publishFromCheckpoint,
 } = require("./publication-coordinator");
+const { stripPermalinkQuery } = require("./text")();
 
 function createInquiryPublisher({
   appendInquiryHistory,
@@ -35,6 +36,7 @@ function createInquiryPublisher({
           workName: draft.workName || null,
           workNameKo: draft.workNameKo || null,
           episode: draft.episode || null,
+          deliveryDate: draft.deliveryDate || null,
           inquiryType: draft.inquiryType || null,
           inquiryContent: draft.inquiryContent || null,
           summary: draft.summary || null,
@@ -57,6 +59,7 @@ function createInquiryPublisher({
             workName: draft.workName,
             workNameKo: draft.workNameKo,
             episode: draft.episode,
+            deliveryDate: draft.deliveryDate,
             inquiryType: draft.inquiryType,
             inquiryContent: draft.inquiryContent,
             actionRequired: draft.actionRequired,
@@ -92,7 +95,7 @@ function createInquiryPublisher({
             channel: targetChannelId,
             message_ts: publication.mainMessageTs,
           });
-          await updateInquiryHistorySourceLink(publication.sheetRowIndex, permalinkRes.permalink);
+          await updateInquiryHistorySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink));
         } catch (e) {
           console.error("[postInquiry] 히스토리 링크 갱신 실패:", e.message);
         }

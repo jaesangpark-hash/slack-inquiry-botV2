@@ -285,6 +285,21 @@ describe("buildFinalMainMessage", () => {
     assert.ok(result.text.includes("<@USUBMITTER>"));
   });
 
+  it("납품일 필드 포함 — 회차 옆에 표시", () => {
+    const result = blocks.buildFinalMainMessage({ ...params, deliveryDate: "8/20(목)" });
+    const fieldsBlock = result.blocks.find(b => Array.isArray(b.fields));
+    const deliveryField = fieldsBlock.fields.find(f => f.text.startsWith("*납품일*"));
+    assert.ok(deliveryField, "납품일 필드가 없음");
+    assert.ok(deliveryField.text.includes("8/20(목)"));
+  });
+
+  it("납품일 미제공 시 대시(-) 폴백", () => {
+    const result = blocks.buildFinalMainMessage(params);
+    const fieldsBlock = result.blocks.find(b => Array.isArray(b.fields));
+    const deliveryField = fieldsBlock.fields.find(f => f.text.startsWith("*납품일*"));
+    assert.equal(deliveryField.text, "*납품일*\n-");
+  });
+
   it("inquiry_done 버튼 포함", () => {
     const result = blocks.buildFinalMainMessage(params);
     const actionsBlock = result.blocks.find(b => b.type === "actions");

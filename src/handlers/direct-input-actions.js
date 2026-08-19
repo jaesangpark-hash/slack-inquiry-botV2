@@ -596,6 +596,11 @@ module.exports = function registerDirectInputActions(app, deps) {
       workNameKo:    matchedTitle?.koreanProjectName || a.title_ko || "",
       pivoId:        matchedTitle?.pivoId || null,
       episode:       a.episode || null,
+      deliveryDate:  a.episode && matchedTitle?.koreanProjectName
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, a.episode, "zh-ja", matchedTitle.koreanProjectName)
+            .catch(() => null)
+            .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+        : "-",
       inquiryType:   "작업 관련 문의",
       inquiryContent: a.translated_ko   || "",
       summary:        a.summary_ko      || "",
@@ -699,12 +704,24 @@ module.exports = function registerDirectInputActions(app, deps) {
       return;
     }
     const v = view.state.values;
+    const updatedWorkName = v.work_name_block?.work_name_input?.value?.trim() || "";
+    const updatedWorkNameKo = v.work_name_ko_block?.work_name_ko_input?.value?.trim() || "";
+    const updatedEpisode = v.episode_block?.episode_input?.value?.trim() || "";
+    const deliveryQueryName = updatedWorkNameKo || updatedWorkName;
+    const deliveryChanged = updatedEpisode !== (draft.episode || "") || deliveryQueryName !== (draft.workNameKo || draft.workName || "");
     const updatedDraft = {
       ...draft,
       draftVersion: (draft.draftVersion || 1) + 1,
-      workName: v.work_name_block?.work_name_input?.value?.trim() || "",
-      workNameKo: v.work_name_ko_block?.work_name_ko_input?.value?.trim() || "",
-      episode: v.episode_block?.episode_input?.value?.trim() || "",
+      workName: updatedWorkName,
+      workNameKo: updatedWorkNameKo,
+      episode: updatedEpisode,
+      deliveryDate: deliveryChanged
+        ? (updatedEpisode && deliveryQueryName
+            ? await fetchDeliveryDate(deliveryQueryName, updatedEpisode, "zh-ja", updatedWorkNameKo || null)
+                .catch(() => null)
+                .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+            : "-")
+        : draft.deliveryDate,
       inquiryType: v.inquiry_type_block?.inquiry_type_input?.value?.trim() || "",
       inquiryContent: v.inquiry_content_block?.inquiry_content_input?.value?.trim() || "",
       summary: v.summary_block?.summary_input?.value?.trim() || "",
