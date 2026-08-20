@@ -23,6 +23,17 @@ function cleanSlackText(text = "") {
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim();
 }
 
+/**
+ * chat.getPermalink 응답(?thread_ts=...&cid=... 쿼리 포함)은 브라우저를 거쳐
+ * 슬랙 앱으로 리다이렉트된다. 쿼리를 제거한 순수 경로(archives/CH/pXXXX)는
+ * 클릭 시 바로 슬랙 앱으로 열리므로, 시트에 저장하는 링크는 이 형태로 정규화한다.
+ * @param {string} url
+ * @returns {string}
+ */
+function stripPermalinkQuery(url = "") {
+  return String(url).split("?")[0];
+}
+
 module.exports = function createText() {
-  return { extractSlackPermalink, cleanSlackText };
+  return { extractSlackPermalink, cleanSlackText, stripPermalinkQuery };
 };

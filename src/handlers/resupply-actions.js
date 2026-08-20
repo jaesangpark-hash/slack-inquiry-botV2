@@ -17,6 +17,7 @@ const {
   isPublicationLocked,
   updateTerminalPublicationPreview,
 } = require("../slack/publication-ui");
+const { stripPermalinkQuery } = require("../slack/text")();
 
 const RESUPPLY_NOTIFY_STATUS = Object.freeze({
   SENDING: "sending",
@@ -112,7 +113,7 @@ module.exports = function registerResupplyActions(app, deps) {
             channel: PM_REQUEST_CHANNEL_ID,
             message_ts: publication.mainMessageTs,
           });
-          await updateResupplySourceLink(publication.sheetRowIndex, permalinkRes.permalink);
+          await updateResupplySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink));
         } catch (e) {
           console.error("[resupply] 링크 갱신 실패:", e.message);
         }
