@@ -209,6 +209,7 @@ ${text}`.trim();
           ownerUserId,
           workName: displayWorkName,
           workNameKo: koreanProjectName,
+          pivoId: matchedTitle?.pivoId || null,
           episode: episode || "",
           fileNumbers: item.file_numbers || [],
           reason: item.reason || "",
