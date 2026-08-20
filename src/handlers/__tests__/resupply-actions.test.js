@@ -705,6 +705,79 @@ describe("재수급 요청 게시 — 히스토리 원문 링크 갱신", () => 
   });
 });
 
+describe("재수급 요청 게시 — PIVO ID 갱신", () => {
+  it("draft.pivoId가 있으면 updateResupplyPivoId를 1회 호출한다", async () => {
+    const draftStore = new Map([["d-pivo-1", {
+      draftId: "d-pivo-1", workName: "작품", episode: "5", fileNumbers: [], dmChannelId: "D1", pivoId: "123456",
+    }]]);
+    const app = makeFakeApp();
+    let updateCalls = 0;
+    let updateArgs = null;
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => ({ ts: payload.thread_ts ? "thread-ts" : "main-ts" }),
+        update: async () => ({}),
+        getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p999" }),
+      },
+    });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks: () => [],
+      buildFileInquiryMessage: () => ({ text: "PM request" }),
+      appendResupplyRecord: async () => 40,
+      updateResupplySourceLink: async () => {},
+      updateResupplyPivoId: async (rowIndex, pivoId) => {
+        updateCalls++;
+        updateArgs = [rowIndex, pivoId];
+      },
+      checkResupplyDone: async () => {},
+      PM_REQUEST_CHANNEL_ID: "C_PM",
+    });
+
+    await app._registered.actions["send_file_inquiry_now"]({
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: "d-pivo-1" }] },
+      client,
+    });
+
+    assert.equal(updateCalls, 1);
+    assert.deepEqual(updateArgs, [40, "123456"]);
+  });
+
+  it("draft.pivoId가 없으면 updateResupplyPivoId를 호출하지 않는다", async () => {
+    const draftStore = new Map([["d-pivo-2", {
+      draftId: "d-pivo-2", workName: "작품", episode: "5", fileNumbers: [], dmChannelId: "D1",
+    }]]);
+    const app = makeFakeApp();
+    let updateCalls = 0;
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => ({ ts: payload.thread_ts ? "thread-ts" : "main-ts" }),
+        update: async () => ({}),
+        getPermalink: async () => ({ permalink: "https://slack.com/archives/C_PM/p999" }),
+      },
+    });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks: () => [],
+      buildFileInquiryMessage: () => ({ text: "PM request" }),
+      appendResupplyRecord: async () => 41,
+      updateResupplySourceLink: async () => {},
+      updateResupplyPivoId: async () => { updateCalls++; },
+      checkResupplyDone: async () => {},
+      PM_REQUEST_CHANNEL_ID: "C_PM",
+    });
+
+    await app._registered.actions["send_file_inquiry_now"]({
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: "d-pivo-2" }] },
+      client,
+    });
+
+    assert.equal(updateCalls, 0);
+  });
+});
+
 describe("file_resupply_done — 완료 진실성과 owner 안내", () => {
   function completionBody(metadataOverrides = {}) {
     return {

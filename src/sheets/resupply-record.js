@@ -5,6 +5,8 @@ const { requireSheetCompletionTarget } = require("./sheet-row-index");
 
 // 완료 체크박스 대상 컬럼 (L열)
 const COMPLETION_COLUMN = { startColumnIndex: 11, endColumnIndex: 12 };
+// PIVO ID 대상 컬럼 (M열) — I/J/K(원작명·출판사·원본 경로)는 별도 자동화가 채우는 컬럼이라 건드리지 않고 뒤에 추가.
+const PIVO_ID_COLUMN = { startColumnIndex: 12, endColumnIndex: 13 };
 
 /**
  * @param {{
@@ -101,6 +103,33 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
   }
 
   /**
+   * M열(index 12, PIVO ID)을 갱신한다. append 시점엔 값이 있어도 append 범위(A:H)가 좁아 같이 못 넣으므로 후속 호출로 채운다.
+   * @param {number|null} rowIndex
+   * @param {string|null} pivoId
+   */
+  async function updateResupplyPivoId(rowIndex, pivoId) {
+    if (!rowIndex || !pivoId || !resupplySheetId || !resupplyGridSheetId) return;
+    try {
+      await sheetsClient.batchUpdate(resupplySheetId, [{
+        updateCells: {
+          range: {
+            sheetId: resupplyGridSheetId,
+            startRowIndex: rowIndex - 1,
+            endRowIndex: rowIndex,
+            startColumnIndex: PIVO_ID_COLUMN.startColumnIndex,
+            endColumnIndex: PIVO_ID_COLUMN.endColumnIndex,
+          },
+          rows: [{ values: [{ userEnteredValue: { stringValue: String(pivoId) } }] }],
+          fields: "userEnteredValue.stringValue",
+        },
+      }]);
+      console.log("[resupply-sheet] PIVO ID 갱신 — row:", rowIndex);
+    } catch (e) {
+      console.error("[resupply-sheet] PIVO ID 갱신 실패:", e.message);
+    }
+  }
+
+  /**
    * 재수급 완료 처리 — L열(index 11) 체크박스를 true로 변경한다.
   * @param {number|null} rowIndex  appendResupplyRecord 반환값
   */
@@ -127,5 +156,5 @@ module.exports = function createResupplyRecord({ sheetsClient, resupplySheetId, 
     console.log("[resupply-sheet] 완료 처리 — row:", rowIndex);
   }
 
-  return { appendResupplyRecord, updateResupplySourceLink, checkResupplyDone };
+  return { appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone };
 };

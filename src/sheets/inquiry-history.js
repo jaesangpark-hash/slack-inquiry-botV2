@@ -5,6 +5,8 @@ const { requireSheetCompletionTarget } = require("./sheet-row-index");
 
 // 완료 체크박스 대상 컬럼 (I열)
 const COMPLETION_COLUMN = { startColumnIndex: 8, endColumnIndex: 9 };
+// PIVO ID 대상 컬럼 (J열) — append 범위(A:I)가 I까지라 후속 호출로 채움.
+const PIVO_ID_COLUMN = { startColumnIndex: 9, endColumnIndex: 10 };
 
 /**
  * @param {{
@@ -62,6 +64,33 @@ module.exports = function createInquiryHistory({ sheetsClient, historySheetId, h
   }
 
   /**
+   * J열(index 9, PIVO ID)을 갱신한다. append 범위(A:I)가 좁아 같이 못 넣으므로 후속 호출로 채운다.
+   * @param {number|null} rowIndex
+   * @param {string|null} pivoId
+   */
+  async function updateInquiryHistoryPivoId(rowIndex, pivoId) {
+    if (!rowIndex || !pivoId || !historySheetId || !historyGridSheetId) return;
+    try {
+      await sheetsClient.batchUpdate(historySheetId, [{
+        updateCells: {
+          range: {
+            sheetId: historyGridSheetId,
+            startRowIndex: rowIndex - 1,
+            endRowIndex: rowIndex,
+            startColumnIndex: PIVO_ID_COLUMN.startColumnIndex,
+            endColumnIndex: PIVO_ID_COLUMN.endColumnIndex,
+          },
+          rows: [{ values: [{ userEnteredValue: { stringValue: String(pivoId) } }] }],
+          fields: "userEnteredValue.stringValue",
+        },
+      }]);
+      console.log("[inquiry-history] PIVO ID 갱신 — row:", rowIndex);
+    } catch (e) {
+      console.error("[inquiry-history] PIVO ID 갱신 실패:", e.message);
+    }
+  }
+
+  /**
    * 문의 완료 처리 — I열(index 8) 체크박스를 true로 변경한다.
   * @param {number|null} rowIndex
   */
@@ -88,5 +117,5 @@ module.exports = function createInquiryHistory({ sheetsClient, historySheetId, h
     console.log("[inquiry-history] 완료 처리 — row:", rowIndex);
   }
 
-  return { appendInquiryHistory, updateInquiryHistorySourceLink, checkInquiryDone };
+  return { appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone };
 };

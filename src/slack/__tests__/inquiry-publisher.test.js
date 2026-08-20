@@ -4,11 +4,12 @@ const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
 const createInquiryPublisher = require("../inquiry-publisher");
 
-function makePublisher({ appendInquiryHistory, updateInquiryHistorySourceLink }) {
+function makePublisher({ appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId }) {
   const draftStore = new Map();
   const postInquiry = createInquiryPublisher({
     appendInquiryHistory,
     updateInquiryHistorySourceLink,
+    updateInquiryHistoryPivoId,
     draftStore,
     buildFinalMainMessage: metadata => ({ text: "main", metadata }),
     buildThreadMessage: () => "thread",
@@ -275,5 +276,38 @@ describe("inquiry publisher 히스토리 원문 링크 갱신", () => {
     const result = await postInquiry(client, draft, "U1");
 
     assert.equal(result.publicationStatus, "sent");
+  });
+});
+
+describe("inquiry publisher 히스토리 PIVO ID 갱신", () => {
+  test("draft.pivoId가 있으면 updateInquiryHistoryPivoId를 1회 호출한다", async () => {
+    let updateCalls = 0;
+    let updateArgs = null;
+    const { postInquiry } = makePublisher({
+      appendInquiryHistory: async () => 30,
+      updateInquiryHistoryPivoId: async (rowIndex, pivoId) => {
+        updateCalls++;
+        updateArgs = [rowIndex, pivoId];
+      },
+    });
+    const client = makeClient();
+
+    await postInquiry(client, { draftId: "d-pivo-1", dmChannelId: "D1", pivoId: "123456" }, "U1");
+
+    assert.equal(updateCalls, 1);
+    assert.deepEqual(updateArgs, [30, "123456"]);
+  });
+
+  test("draft.pivoId가 없으면 updateInquiryHistoryPivoId를 호출하지 않는다", async () => {
+    let updateCalls = 0;
+    const { postInquiry } = makePublisher({
+      appendInquiryHistory: async () => 31,
+      updateInquiryHistoryPivoId: async () => { updateCalls++; },
+    });
+    const client = makeClient();
+
+    await postInquiry(client, { draftId: "d-pivo-2", dmChannelId: "D1" }, "U1");
+
+    assert.equal(updateCalls, 0);
   });
 });

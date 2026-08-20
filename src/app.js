@@ -122,13 +122,13 @@ const interactionApp = createInteractionGuard({
 });
 
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
-const { appendInquiryHistory, updateInquiryHistorySourceLink, checkInquiryDone } = createInquiryHistory({
+const { appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone } = createInquiryHistory({
   sheetsClient,
   historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
   historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
   historyGridSheetId: INQUIRY_HISTORY_GRID_SHEET_ID,
 });
-const { appendResupplyRecord, updateResupplySourceLink, checkResupplyDone } = createResupplyRecord({
+const { appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone } = createResupplyRecord({
   sheetsClient,
   resupplySheetId: RESUPPLY_SHEET_ID,
   resupplySheetRange: RESUPPLY_SHEET_RANGE,
@@ -225,6 +225,7 @@ const {
 const postInquiryToTargetChannel = createInquiryPublisher({
   appendInquiryHistory,
   updateInquiryHistorySourceLink,
+  updateInquiryHistoryPivoId,
   draftStore,
   buildFinalMainMessage,
   buildThreadMessage,
@@ -256,6 +257,7 @@ require("./handlers/resupply-actions")(interactionApp, {
   buildFileInquiryMessage,
   appendResupplyRecord,
   updateResupplySourceLink,
+  updateResupplyPivoId,
   checkResupplyDone,
   PM_REQUEST_CHANNEL_ID,
   matchWorkTitleFromSheet,

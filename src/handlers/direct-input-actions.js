@@ -276,6 +276,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     // ✅ 추가
     apmName: deliveryRes?.apm || null,
     apmUserId: resolveApmUserId(deliveryRes?.apm || null),
+    pivoId: matchedTitle?.pivoId || null,
   };
 
     draftStore.set(draftId, draft);

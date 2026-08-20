@@ -307,3 +307,44 @@ describe("createResupplyRecord.checkResupplyDone", () => {
     await assert.rejects(() => checkResupplyDone(5), /fake batchUpdate error/);
   });
 });
+
+describe("createResupplyRecord.updateResupplyPivoId", () => {
+  test("rowIndex 없으면 batchUpdate를 호출하지 않는다", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const { updateResupplyPivoId } = createResupplyRecord({ sheetsClient, ...BASE_DEPS });
+    await updateResupplyPivoId(null, "123456");
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("pivoId 없으면 batchUpdate를 호출하지 않는다", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const { updateResupplyPivoId } = createResupplyRecord({ sheetsClient, ...BASE_DEPS });
+    await updateResupplyPivoId(10, null);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("M열(index 12)에 PIVO ID를 기록한다", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const { updateResupplyPivoId } = createResupplyRecord({ sheetsClient, ...BASE_DEPS });
+
+    await updateResupplyPivoId(10, "123456");
+
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);
+    const updateCells = sheetsClient.batchUpdateCalls[0].requests[0].updateCells;
+    assert.strictEqual(updateCells.range.sheetId, 511152201);
+    assert.strictEqual(updateCells.range.startRowIndex, 9);
+    assert.strictEqual(updateCells.range.endRowIndex, 10);
+    assert.strictEqual(updateCells.range.startColumnIndex, 12);
+    assert.strictEqual(updateCells.range.endColumnIndex, 13);
+    assert.deepStrictEqual(
+      updateCells.rows,
+      [{ values: [{ userEnteredValue: { stringValue: "123456" } }] }]
+    );
+  });
+
+  test("batchUpdate throw 시에도 예외를 던지지 않는다(non-fatal)", async () => {
+    const sheetsClient = makeFakeSheetsClient({ batchUpdateThrow: true });
+    const { updateResupplyPivoId } = createResupplyRecord({ sheetsClient, ...BASE_DEPS });
+    await assert.doesNotReject(() => updateResupplyPivoId(10, "123456"));
+  });
+});
