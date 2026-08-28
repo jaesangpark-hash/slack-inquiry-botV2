@@ -161,6 +161,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
   // ── TOTUS: 단일 회차의 opCode/정확 UUID → task 맵 ─────────────────
   // isRetake=true: 완료상태 태스크도 포함 (리테이크 대상 = 완료된 번역 태스크를 찾아 /retake 호출해야 함)
+  // ★조회 실패(네트워크/인증/비-JSON 등)와 "진짜로 태스크가 없음"을 구분하기 위해 fetchError를 담아 반환한다.
+  //  예전엔 실패해도 조용히 빈 인벤토리를 반환해서, 사용자에겐 "태스크를 찾을 수 없어"로만 보이고
+  //  실제 원인(타임아웃·401 등)이 서버 콘솔에만 남아 재현 불가능한 문제로 보였다(2026-08-28).
   async function _getTaskInventory(projectUuid, episode, isRetake = false, preferredTaskUuids = null) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
@@ -171,9 +174,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
       }
       const json = await res.json();
-      if (!json.success) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
+      if (!json.success) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {}, fetchError: `TOTUS API success=false — ${JSON.stringify(json).slice(0, 200)}` };
       const job = (json.data || [])[0];
-      if (!job) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
+      if (!job) return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {}, fetchError: null };
       const byOpCode = {};
       const byUuid = {};
       const taskUuidsByOpCode = {};
@@ -197,10 +200,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       for (const [opCode, taskUuids] of Object.entries(taskUuidsByOpCode)) {
         if (taskUuids.length === 1) byOpCode[opCode] = taskUuids[0];
       }
-      return { byOpCode, byUuid, taskUuidsByOpCode };
+      return { byOpCode, byUuid, taskUuidsByOpCode, fetchError: null };
     } catch (e) {
       console.error("[scheduleBulk] taskMap 조회 오류 (ep=" + episode + "):", e.message);
-      return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {} };
+      return { byOpCode: {}, byUuid: {}, taskUuidsByOpCode: {}, fetchError: `${episode}화 조회 실패: ${e.message}` };
     }
   }
 
@@ -231,6 +234,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       ep,
       inventory: await _getTaskInventory(projectUuid, ep, true),
     })));
+    // ★조회 자체가 실패한 회차가 있으면(네트워크/인증 등), "태스크가 없음"으로 오인되지 않도록 먼저 명확히 알린다.
+    const fetchFailedEpisodes = sourceInventories
+      .filter(({ inventory }) => inventory.fetchError)
+      .map(({ ep, inventory }) => `${ep}화: ${inventory.fetchError}`);
+    if (fetchFailedEpisodes.length) {
+      throw new Error(`일부 회차 TOTUS 조회 자체가 실패했어(태스크 없음이 아님) — ${fetchFailedEpisodes.join(" / ")}`);
+    }
     const sourcesByEpisode = {}; // { [ep]: [{ opCode, opName, taskUuid }] }
     const expectedSourceTargets = [];
     const actualSourceTargets = [];
@@ -390,6 +400,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         isRetake ? (draft.retakeCreatedTaskUuidsByEpisode?.[ep] || []) : null
       ),
     })));
+    // ★조회 자체가 실패한 회차가 있으면(네트워크/인증 등), "반영할 태스크 없음"으로 오인되지 않도록 먼저 명확히 알린다.
+    const fetchFailedEps = taskInventories
+      .filter(({ inventory }) => inventory.fetchError)
+      .map(({ ep, inventory }) => `${ep}화: ${inventory.fetchError}`);
+    if (fetchFailedEps.length) {
+      throw new Error(`일부 회차 TOTUS 조회 자체가 실패했어(태스크 없음이 아님) — ${fetchFailedEps.join(" / ")}`);
+    }
 
     const payload = [];
     const expectedTargets = [];
