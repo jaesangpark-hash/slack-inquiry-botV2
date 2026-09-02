@@ -12,6 +12,7 @@ const {
   reserveInProgress,
   runCheckpointStages,
 } = require("./slack/mutation-checkpoint");
+const { parseAiJson } = require("./utils/ai-json");
 
 module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore }) {
 
@@ -67,7 +68,7 @@ JSON만 출력. 코드블록 금지.
 문의: ${text}`.trim();
 
     const res = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt });
-    return JSON.parse((res.text || "").replace(/```json|```/g, "").trim());
+    return parseAiJson(res.text, "parseFileOrderInquiry");
   }
 
   // ── 내부 플랫폼 API: 프로젝트 UUID 조회 (공통) ────────────────
@@ -196,12 +197,14 @@ JSON만 출력. 코드블록 금지.
     //   36-9.psd    → [36, 9, 0]
     //   龙头44-1.psd → [44, 1, 0]
     //   001.psd     → [1,  0, 0]
+    // 구분자에 en dash(–)·em dash(—)도 포함 — 하이픈 대신 대시 문자로 오는 작품은 부번호를
+    // 못 읽어 같은 화 파일이 전부 동률로 묶이던 오탐 수정(PV-209317 사례)
 
     // 숫자-숫자.숫자 형식 (서브페이지) — 일반 패턴보다 먼저 체크
-    const p0 = filename.match(/(\d+)[_\-](\d+)\.(\d+)/);
+    const p0 = filename.match(/(\d+)[_\-–—](\d+)\.(\d+)/);
     if (p0) return [parseInt(p0[1], 10), parseInt(p0[2], 10), parseInt(p0[3], 10)];
     // 숫자-숫자 또는 숫자_숫자 형식 (예: 16-10.psd → [16,10,0], 龙头44-1.psd → [44,1,0])
-    const p1 = filename.match(/(\d+)[_\-](\d+)/);
+    const p1 = filename.match(/(\d+)[_\-–—](\d+)/);
     if (p1) return [parseInt(p1[1], 10), parseInt(p1[2], 10), 0];
     // 단순 숫자 형식 (예: 001.psd)
     const p2 = filename.match(/(\d+)/);
