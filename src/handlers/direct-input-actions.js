@@ -593,7 +593,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       originalText:      pending.originalText,
       originalChannelId: pending.channelId,
       originalTs:        pending.ts,
-      workName:      matchedTitle?.koreanProjectName || matchedTitle?.chineseOriginalTitle || a.title_ko || a.title_ja || "",
+      workName:      matchedTitle?.koreanProjectName || a.title_ko || matchedTitle?.japaneseDisplayTitle || a.title_ja || "",
       workNameKo:    matchedTitle?.koreanProjectName || a.title_ko || "",
       pivoId:        matchedTitle?.pivoId || null,
       episode:       a.episode || null,
