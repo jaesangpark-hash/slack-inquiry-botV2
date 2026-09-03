@@ -3,6 +3,12 @@
 
 const { normalizeTitleKo } = require("./normalize");
 
+// 매칭 실패 진단 로그의 출력 한도 (진단 전용 — 매칭 판정에는 관여하지 않는다)
+const FAIL_SHEET_SAMPLE_LIMIT   = 3;   // "시트 앞 샘플" 표시 행 수
+const FAIL_FUZZY_PROBE_LEN      = 4;   // 근접 후보 검색에 쓰는 needle prefix 길이
+const FAIL_FUZZY_SAMPLE_LIMIT   = 5;   // 근접 후보 표시 행 수
+const FAIL_EPISODE_SAMPLE_LIMIT = 20;  // "보유 화수" 표시 개수
+
 /**
  * @param {{ google: object, getGoogleAuth: function, deliverySheetId: string,
  *            deliverySheetZhJa: string, deliverySheetKoJa: string, alertOnError: function,
@@ -39,29 +45,48 @@ module.exports = function createDeliveryDateService({ google, getGoogleAuth, del
       ? normalizeTitleKo(koreanProjectName)
       : null;
     console.log(`[fetchDelivery] primaryWorkTitle: "${primaryWorkTitle}" | needle: "${needle}" | koreanProjectName: "${koreanProjectName}" | episode: ${episode} | lang: ${lang} | rows: ${rows.length}`);
+    // 제목 매칭과 화수 매칭을 분리한다 — 실패 시 원인(제목 불일치 / 화수 미존재) 판별에 재사용.
+    const titleMatchesRow = (row) => {
+      const bVal = normalizeTitleKo(row[1] || "");
+      if (!bVal) return false;
+      const matchMain = bVal === needle || bVal.includes(needle) || needle.includes(bVal);
+      const matchAlt = alternateKoreanNeedle && (
+        bVal === alternateKoreanNeedle ||
+        bVal.includes(alternateKoreanNeedle) ||
+        alternateKoreanNeedle.includes(bVal)
+      );
+      return Boolean(matchMain || matchAlt);
+    };
+    const episodeOfRow = (row) => parseInt(row[4]);
+
     const results = [];
     for (const epNum of episodeNums) {
       const matched = rows.find(row => {
-        const bVal = normalizeTitleKo(row[1] || "");
-        if (!bVal) return false;
-        const matchMain = bVal === needle || bVal.includes(needle) || needle.includes(bVal);
-        const matchAlt = alternateKoreanNeedle && (
-          bVal === alternateKoreanNeedle ||
-          bVal.includes(alternateKoreanNeedle) ||
-          alternateKoreanNeedle.includes(bVal)
-        );
-        if (!matchMain && !matchAlt) return false;
-        return !isNaN(parseInt(row[4])) && parseInt(row[4]) === epNum;
+        if (!titleMatchesRow(row)) return false;
+        const rowEp = episodeOfRow(row);
+        return !isNaN(rowEp) && rowEp === epNum;
       });
       if (!matched) {
-        const sample = rows.filter(r => r[1]).slice(0, 3).map(r => normalizeTitleKo(r[1]));
-        const fuzzy  = rows.filter(r => {
-          const v = normalizeTitleKo(r[1] || "");
-          return v.includes("똥") || v.includes("검사") || v.includes("살아남");
-        }).slice(0, 5).map(r => `"${r[1]}"(E열:${r[4]})`);
-        console.log(`[fetchDelivery] ${epNum}화 매칭 실패 — needle: "${needle}" / alternateKoreanNeedle: "${alternateKoreanNeedle}"`);
-        console.log(`[fetchDelivery] 시트 앞 샘플:`, sample);
-        console.log(`[fetchDelivery] 유사 작품명 검색:`, fuzzy.length ? fuzzy : "없음");
+        const titleHits = rows.filter(titleMatchesRow);
+        if (titleHits.length > 0) {
+          // 제목은 시트에 있는데 그 화수 행이 없다 — 작업 미생성 또는 화수 표기 상이.
+          const eps  = titleHits.map(episodeOfRow).filter(n => !isNaN(n)).sort((a, b) => a - b);
+          const more = eps.length > FAIL_EPISODE_SAMPLE_LIMIT ? ", …" : "";
+          console.log(`[fetchDelivery] ${epNum}화 매칭 실패 — 원인: 화수 미존재 (제목 일치 ${titleHits.length}행) — needle: "${needle}" / alternateKoreanNeedle: "${alternateKoreanNeedle}"`);
+          console.log(`[fetchDelivery] 보유 화수(${eps.length}건):`, eps.length ? `[${eps.slice(0, FAIL_EPISODE_SAMPLE_LIMIT).join(", ")}${more}]` : "숫자 화수 0건");
+        } else {
+          // 제목 자체가 시트에서 안 잡힌다 — needle prefix 로 근접 후보를 뽑아 표기 차이를 드러낸다.
+          const sample = rows.filter(r => r[1]).slice(0, FAIL_SHEET_SAMPLE_LIMIT).map(r => normalizeTitleKo(r[1]));
+          const probe  = needle.slice(0, FAIL_FUZZY_PROBE_LEN);
+          const fuzzy  = probe
+            ? rows.filter(r => normalizeTitleKo(r[1] || "").includes(probe))
+                  .slice(0, FAIL_FUZZY_SAMPLE_LIMIT)
+                  .map(r => `"${r[1]}"(E열:${r[4]})`)
+            : [];
+          console.log(`[fetchDelivery] ${epNum}화 매칭 실패 — 원인: 제목 불일치 — needle: "${needle}" / alternateKoreanNeedle: "${alternateKoreanNeedle}"`);
+          console.log(`[fetchDelivery] 시트 앞 샘플:`, sample);
+          console.log(`[fetchDelivery] 근접 후보 (probe: "${probe}"):`, fuzzy.length ? fuzzy : "없음");
+        }
       }
       results.push({ episode: epNum, deliveryDate: matched?.[6] || "확인 불가", workName: matched?.[1] || primaryWorkTitle, pm: matched?.[2] || "", apm: matched?.[3] || "" });
     }
