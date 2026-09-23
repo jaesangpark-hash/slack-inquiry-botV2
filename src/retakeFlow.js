@@ -14,7 +14,7 @@ const { extractPivoIdGuess } = require("./utils/pivo-id");
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId, retakeChannels, retakeWatchStore }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;
@@ -168,10 +168,47 @@ JSON만 출력. 코드블록 금지.
     return json.data || null;
   }
 
+  // ── Totus API: 태스크 단건 조회 (GET /api/v1/tasks/{uuid}) ────
+  // 감시행 등록 시 판정대상(primary) 특정에 사용. state·operationTypeCode 필드는 delivery-target-task와 동일.
+  async function _getTask(taskUuid) {
+    const json = await _apiFetch(
+      `${BASE()}/api/v1/tasks/${taskUuid}`,
+      { headers: { Authorization: `Bearer ${TOKEN()}` } },
+      { bot: "retake", endpoint: "/tasks/{uuid}", params: {}, expectedCount: 1 }
+    );
+    if (!json.success) return null;
+    return json.data || null;
+  }
+
+  // ── 판정대상(primary) taskUuid 특정 ──────────────────────
+  // 리테이크는 하위 포함 태스크 여러 개를 생성(createdTaskUuids 평면 배열)한다.
+  // 각 생성 태스크를 GET 조회해 operationTypeCode === operationCode(재생성한 오퍼레이션)인 것을 판정대상으로 고른다.
+  // 하위까지 기다리면 알림이 늦어지므로 재생성 오퍼레이션 태스크 1개만 감시한다.
+  // 매칭 실패 시(방어) 첫 번째 UUID를 폴백으로 사용.
+  async function _resolveJudgeTaskUuid(createdUuids, operationCode) {
+    if (!Array.isArray(createdUuids) || !createdUuids.length) return null;
+    if (!operationCode) return createdUuids[0];
+    for (const uuid of createdUuids) {
+      try {
+        const task = await _getTask(uuid);
+        if (task && task.operationTypeCode === operationCode) return uuid;
+      } catch (e) {
+        console.warn(`[retake-watch] 판정대상 조회 실패 uuid:${uuid} — ${e.message}`);
+      }
+    }
+    console.warn(`[retake-watch] operationCode(${operationCode}) 매칭 태스크 없음 — 첫 UUID 폴백`);
+    return createdUuids[0];
+  }
+
   // ── 메인 핸들러: 수정&리테이크 문의 처리 ────────────────
   async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null, ownerUserId = null) {
     let parsed;
     try { parsed = await parseRetakeInquiry(originalText); } catch (e) { parsed = {}; }
+
+    // 리테이크 감시 알림용 — 소환 채널·부모 스레드 ts를 pending/draft에 관통시킨다.
+    // (inquiry-router가 { url, channelId, ts, threadTs }로 넘김. reaction 경로만 채워짐)
+    const watchChannel  = linkInfo?.channelId || null;
+    const watchThreadTs = linkInfo?.threadTs  || null;
 
     const titleJa   = parsed.work_title_ja || analysis.title_ja;
     const titleKo   = parsed.work_title_ko || analysis.title_ko;
@@ -187,7 +224,7 @@ JSON만 출력. 코드블록 금지.
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
         const pendingId = `rt_pending_${Date.now()}`;
-        draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
+        draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId, watchChannel, watchThreadTs });
         await client.chat.postMessage({
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
@@ -214,7 +251,7 @@ JSON만 출력. 코드블록 금지.
             matchedTitle = tokenResult.single;
           } else if (tokenResult?.multiple) {
             const pendingId = `rt_pending_${Date.now()}`;
-            draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId });
+            draftStore.set(pendingId, { type: "retake_pending", ownerUserId, workName: "", workNameKo: "", episode: parsed.episode || "", sourceLink: linkInfo?.url || "", dmChannelId: dmChannel, originalText, requesterName, requesterUserId, watchChannel, watchThreadTs });
             await client.chat.postMessage({
               channel: dmChannel,
               text: "작품 후보가 여러 개야. 선택해줘.",
@@ -270,6 +307,8 @@ JSON만 출력. 코드블록 금지.
         originalText,
         requesterName,
         requesterUserId: requesterUserId || null,
+        watchChannel,
+        watchThreadTs,
       });
 
       const missingFields = [];
@@ -303,6 +342,8 @@ JSON만 출력. 코드블록 금지.
       requesterName,
       requesterUserId: requesterUserId || null,
       ownerUserId,
+      watchChannel,
+      watchThreadTs,
     });
   }
 
@@ -325,12 +366,14 @@ JSON만 출력. 코드블록 금지.
       requesterName:   pending.requesterName   || "",
       requesterUserId: pending.requesterUserId || null,
       ownerUserId:     pending.ownerUserId     || null,
+      watchChannel:    pending.watchChannel    || null,
+      watchThreadTs:   pending.watchThreadTs   || null,
     });
   });
 
   // ── 오퍼레이션 선택 DM 표시 ──────────────────────────────
   async function _proceedRetakeOperationSelect(client, dmChannel, info) {
-    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId, ownerUserId } = info;
+    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId, ownerUserId, watchChannel, watchThreadTs } = info;
     const draftId = generateDraftId();
 
     // 납품 시트 D열에서 실제 담당 APM 조회 — zh-ja·ko-ja 병렬 조회 후 첫 번째 APM 사용
@@ -364,6 +407,9 @@ JSON만 출력. 코드블록 금지.
       actualApm:       actualApm       || "",
       actualApmId:     actualApmId     || null,
       dmChannelId: dmChannel,
+      // 리테이크 감시 알림용 — 납품 스레드(부모) 좌표. 이후 핸들러들이 ...data 스프레드로 보존.
+      watchChannel:    watchChannel    || null,
+      watchThreadTs:   watchThreadTs   || null,
     });
 
     const linkText     = sourceLink   ? `\n*원본 링크:* ${sourceLink}` : "";
@@ -446,6 +492,8 @@ JSON만 출력. 코드블록 금지.
       requesterName:   data.requesterName   || "",
       requesterUserId: data.requesterUserId || null,
       ownerUserId:     data.ownerUserId     || null,
+      watchChannel:    data.watchChannel    || null,
+      watchThreadTs:   data.watchThreadTs   || null,
     });
   });
 
@@ -755,6 +803,31 @@ JSON만 출력. 코드블록 금지.
         retakeMutationStatus: "completed",
       });
 
+      // ── 리테이크 감시행 등록 ────────────────────────────────
+      // 소환 채널(watchChannel)이 RETAKE_CHANNELS(납품 스레드)일 때만 감시 → 폴러가 완료 시 스레드 답글.
+      // 완료 안내 흐름을 막지 않도록 non-fatal(try/catch). 판정대상은 operationCode 매칭으로 특정.
+      if (retakeWatchStore && retakeChannels && data.watchChannel && retakeChannels.has(data.watchChannel) && createdUuids.length) {
+        try {
+          const judgeTaskUuid = await _resolveJudgeTaskUuid(createdUuids, data.operationCode);
+          await retakeWatchStore.registerWatch({
+            judgeTaskUuid,
+            allTaskUuids:  createdUuids,
+            projectUuid:   data.projectUuid || "",
+            jobUuid:       data.jobData?.jobUuid || "",
+            episode:       data.episode || "",
+            workName:      data.workName || "",
+            operationCode: data.operationCode || "",
+            operationName: data.operationName || "",
+            watchChannel:  data.watchChannel,
+            watchThreadTs: data.watchThreadTs || "",
+            startDate,
+            endDate,
+          });
+        } catch (watchErr) {
+          console.error("[retake-watch] 감시행 등록 실패(비치명적):", watchErr.message);
+        }
+      }
+
       let resolvedChannelId = workerInfo?.channelId || null;
       let resolvedSlackIds  = workerInfo?.slackIds  || null;
       console.log(`[retake] 채널 ID: ${resolvedChannelId} / Slack IDs: ${resolvedSlackIds}`);
@@ -986,6 +1059,8 @@ JSON만 출력. 코드블록 금지.
       requesterName:   pending.requesterName   || "",
       requesterUserId: pending.requesterUserId || null,
       ownerUserId:     pending.ownerUserId     || null,
+      watchChannel:    pending.watchChannel    || null,
+      watchThreadTs:   pending.watchThreadTs   || null,
     });
   });
 
@@ -1368,5 +1443,5 @@ ${msgText}
     });
   });
 
-  return { handleRetakeInquiry };
+  return { handleRetakeInquiry, _apiFetch };
 };

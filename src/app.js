@@ -35,10 +35,12 @@ const createTitleMatcher = require("./sheets/title-matcher");
 const createDeliveryDateService = require("./sheets/delivery-date");
 const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
+const createRetakeWatchStore = require("./sheets/retake-watch-store");
+const createRetakeWatchPoller = require("./retakeWatchPoller");
 const createProgress = require("./slack/progress");
 const createInquiryAnalyzer = require("./ai/inquiry-analyzer");
 const createInquiryPublisher = require("./slack/inquiry-publisher");
-const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID } = require("./config/sheet-schema");
+const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEET_ID_DEFAULT, RETAKE_WATCH_SHEET_RANGE_DEFAULT } = require("./config/sheet-schema");
 const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
@@ -97,6 +99,13 @@ const RESUPPLY_SHEET_RANGE = process.env.RESUPPLY_SHEET_RANGE;
 const RETAKE_CHANNELS      = new Set(
   (process.env.RETAKE_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
+// 리테이크 감시 시트 — 시트ID/범위는 env(미설정 시 config 기본값 폴백), gridId는 env(탭 생성 후 지정).
+// gridId 미설정 시 append·조회는 되지만 markStatus(상태변경)만 skip된다(retake-watch-store 내부 가드).
+const RETAKE_WATCH_SHEET_ID    = process.env.RETAKE_WATCH_SHEET_ID    || RETAKE_WATCH_SHEET_ID_DEFAULT;
+const RETAKE_WATCH_SHEET_RANGE = process.env.RETAKE_WATCH_SHEET_RANGE || RETAKE_WATCH_SHEET_RANGE_DEFAULT;
+const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.env.RETAKE_WATCH_GRID_ID.trim() !== "")
+  ? parseInt(process.env.RETAKE_WATCH_GRID_ID, 10)
+  : undefined;
 
 function resolveApmUserId(apmName) {
   if (!apmName) return null;
@@ -140,8 +149,17 @@ const { handleFileOrderInquiry } = require("./fileOrderFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore,
 });
 
-const { handleRetakeInquiry } = require("./retakeFlow")(interactionApp, {
+// 리테이크 감시 스토어 (retakeFlow가 감시행 등록에, 폴러가 조회/상태변경에 공유)
+const retakeWatchStore = createRetakeWatchStore({
+  sheetsClient,
+  watchSheetId:     RETAKE_WATCH_SHEET_ID,
+  watchSheetRange:  RETAKE_WATCH_SHEET_RANGE,
+  watchGridSheetId: RETAKE_WATCH_GRID_ID,
+});
+
+const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
+  retakeChannels: RETAKE_CHANNELS, retakeWatchStore,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
@@ -358,6 +376,16 @@ const kpiReport = createKpiReport({ slackClient: app.client, reportChannelId: PM
 cron.schedule("0 15 * * *", () => kpiReport.sendApiAnalysisReport(), { timezone: "Asia/Seoul" });
 cleanOldLogs();
 console.log("[apiAnalyzer] 일일 분석 스케줄 등록 완료 (매일 15:00 KST)");
+
+// ── 리테이크 수정 완료 감시 폴러 — 30분 주기 ───────────────
+// watching 행의 판정대상 태스크가 COMPLETED되면 납품 스레드에 답글 알림.
+const retakeWatchPoller = createRetakeWatchPoller({
+  retakeWatchStore,
+  slackClient: app.client,
+  apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
+});
+cron.schedule("*/30 * * * *", () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
+console.log("[retake-watch] 리테이크 감시 폴러 등록 완료 (30분 주기)");
 
 // ── ToTalk 멘션 폴러 — 툰식이 테스트 완료 후 아래 주석 해제
 // const createTotalkMonitor = require("./totalk-monitor");
