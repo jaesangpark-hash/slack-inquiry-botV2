@@ -417,6 +417,9 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:      displayWorkName,
       workNameKo:    koreanProjectName,
       pivoId:        matchedTitle?.pivoId || null,
+      workNameJaFixed:   matchedTitle?.japaneseFixedTitle || "",
+      workNameJaDisplay: matchedTitle?.japaneseDisplayTitle || "",
+      workNameZh:        matchedTitle?.chineseOriginalTitle || "",
       episode:       episode || null,
       inquiryType, inquiryContent, summary, actionRequired, sourceLang: "unknown",
       deliveryDate:  episode && matchedTitle?.koreanProjectName
@@ -526,6 +529,9 @@ module.exports = function registerDirectInputActions(app, deps) {
     if (!pending) return;
 
     const draftId = generateDraftId();
+    // 후보 선택 경로에는 matchedTitle 객체가 없다(선택 payload에 pivoId·한국어명만 실림).
+    // FIX 타이틀·원제를 붙이려면 여기서 시트를 한 번 더 조회한다. 실패해도 문의 발행은 막지 않는다.
+    const selected = await matchWorkTitleFromSheet(null, koreanProjectName).catch(() => null);
     const draft = {
       draftId,
       ownerUserId:       pending.ownerUserId,
@@ -537,6 +543,10 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:           koreanProjectName,
       workNameKo:         koreanProjectName,
       pivoId:             pivoId || null,
+      workNameJaFixed:   selected?.japaneseFixedTitle   || "",
+      workNameJaDisplay: selected?.japaneseDisplayTitle || "",
+      workNameZh:        selected?.chineseOriginalTitle || "",
+
       inquiryType:        pending.inquiryType    || "기타",
       inquiryContent:     pending.inquiryContent || "",
       summary:            pending.summary        || "",
@@ -596,6 +606,9 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:      matchedTitle?.koreanProjectName || a.title_ko || matchedTitle?.japaneseDisplayTitle || a.title_ja || "",
       workNameKo:    matchedTitle?.koreanProjectName || a.title_ko || "",
       pivoId:        matchedTitle?.pivoId || null,
+      workNameJaFixed:   matchedTitle?.japaneseFixedTitle || "",
+      workNameJaDisplay: matchedTitle?.japaneseDisplayTitle || a.title_ja || "",
+      workNameZh:        matchedTitle?.chineseOriginalTitle || "",
       episode:       a.episode || null,
       deliveryDate:  a.episode && matchedTitle?.koreanProjectName
         ? await fetchDeliveryDate(matchedTitle.koreanProjectName, a.episode, "zh-ja", matchedTitle.koreanProjectName)

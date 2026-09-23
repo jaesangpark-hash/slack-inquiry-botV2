@@ -186,6 +186,9 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     submitterId,
     workName,
     workNameKo,
+    workNameJaFixed,
+    workNameJaDisplay,
+    workNameZh,
     episode,
     deliveryDate,
     inquiryType,
@@ -216,7 +219,9 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
         { type: "section", text: { type: "mrkdwn", text: `${mentions}` }},
         { type: "divider" },
         { type: "section", fields: [
-          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}` },
+          // PM이 고객사·작업자와 소통할 때 매번 찾아야 했던 FIX 타이틀(일본어 확정명)과 원제(중국어)를
+          // 같이 뿌린다. 둘 다 '출판사 드라이브 링크' 시트(E·B열)에서 이미 매칭 단계에 읽고 있던 값이다.
+          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}${titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName })}` },
           { type: "mrkdwn", text: `*회차*\n${episode ? episode+"화" : "-"}` },
           { type: "mrkdwn", text: `*납품일*\n${deliveryDate||"-"}` },
           { type: "mrkdwn", text: `*문의 유형*\n${inquiryType||"-"}` },
@@ -233,6 +238,21 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
         ]},
       ],
     };
+  }
+
+  // 작품명 아래에 붙일 일본어 타이틀·원제 줄.
+  // 일본어는 FIX 타이틀(시트 E열)이 있으면 그걸, 없으면 가제(D열)를 그대로 쓴다 — 시트 233행 중
+  // FIX가 채워진 건 211행이라 22행은 가제로 내려간다. 어느 쪽인지 라벨로 구분해 준다.
+  // 값이 없거나 작품명과 같으면 생략해서 줄만 늘리지 않는다.
+  function titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName }) {
+    const lines = [];
+    const fixed = String(workNameJaFixed || "").trim();
+    const kari  = String(workNameJaDisplay || "").trim();
+    const zh    = String(workNameZh || "").trim();
+    const ja    = fixed || kari;
+    if (ja && ja !== workName) lines.push(`${fixed ? "FIX" : "仮"}: ${ja}`);
+    if (zh && zh !== workName) lines.push(`原題: ${zh}`);
+    return lines.length ? `\n${lines.join("\n")}` : "";
   }
 
   function buildThreadMessage({ summary, sourceLink }) {
