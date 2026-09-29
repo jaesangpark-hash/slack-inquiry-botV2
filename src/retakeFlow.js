@@ -10,8 +10,6 @@ const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
 const { extractPivoIdGuess } = require("./utils/pivo-id");
-const { parseAiJson } = require("./utils/ai-json");
-
 // ── 벤더사 고정 멘션 ────────────────────────────────────────────
 // GWC는 공용 계정으로 작업해 작업자 이메일이 개인 Slack 계정에 매핑되지 않는다.
 // 그래서 이메일로 찾은 ID 대신 담당자를 고정으로 멘션한다(중일 리테이크 n8n WF와 같은 규칙).
@@ -145,7 +143,7 @@ JSON만 출력. 코드블록 금지.
 문의: ${text}`.trim();
 
     const res = await ai.models.generateContent({ model: GEMINI_MODEL, contents: prompt });
-    return parseAiJson(res.text, "parseRetakeInquiry");
+    return JSON.parse((res.text || "").replace(/```json|```/g, "").trim());
   }
 
   // ── Totus API: 작품명으로 projectUuid 조회 ───────────────
@@ -349,28 +347,19 @@ JSON만 출력. 코드블록 금지.
 
   // ── 오퍼레이션 선택 DM 표시 ──────────────────────────────
   async function _proceedRetakeOperationSelect(client, dmChannel, info) {
-    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId, ownerUserId, presetApm } = info;
+    const { workName, workNameKo, pivoId, episode, sourceLink, requesterName, requesterUserId, ownerUserId } = info;
     const draftId = generateDraftId();
 
-    // APM 조회 우선순위:
-    // 1) presetApm — pivoId 해석 시 Totus "주문담당PM" 필드에서 직접 얻은 값(_resolveByPivoId).
-    //    시트 매칭을 전혀 거치지 않는 가장 확실한 출처이므로 있으면 무조건 우선 사용.
-    // 2) 납품 시트 D열 — presetApm이 없을 때만 zh-ja·ko-ja 병렬 조회.
-    //    workNameKo는 마스터 시트('출판사 드라이브 링크', 중일 전용)가 확인해준 값이므로,
-    //    workNameKo가 있으면 확인된 중일 작품 → 중일 시트 우선(기존 동작 유지).
-    //    workNameKo가 없으면 마스터 시트에 없는 작품(대부분 한일 — 이 시트엔 한일 데이터가 아예 없음) → 한일 시트를 우선 신뢰.
-    //    (한일 작품을 중일 시트의 느슨한 부분일치로 잘못 조회해 엉뚱한 APM이 나오던 문제 수정)
-    let actualApm   = presetApm || null;
+    // 납품 시트 D열에서 실제 담당 APM 조회 — zh-ja·ko-ja 병렬 조회 후 첫 번째 APM 사용
+    let actualApm   = null;
     let actualApmId = null;
-    if (!actualApm && fetchDeliveryDate && episode) {
+    if (fetchDeliveryDate && episode) {
       try {
         const [dlvZhJa, dlvKoJa] = await Promise.all([
           fetchDeliveryDate(workNameKo || workName, episode).catch(() => null),
           fetchDeliveryDate(workNameKo || workName, episode, "ko-ja").catch(() => null),
         ]);
-        const zhJaApm = (dlvZhJa?.apm || "").normalize("NFC").trim() || null;
-        const koJaApm = (dlvKoJa?.apm || "").normalize("NFC").trim() || null;
-        actualApm = workNameKo ? (zhJaApm || koJaApm) : (koJaApm || zhJaApm);
+        actualApm = (dlvZhJa?.apm || "").normalize("NFC").trim() || (dlvKoJa?.apm || "").normalize("NFC").trim() || null;
       } catch (_) {}
     }
     if (actualApm) {
@@ -462,8 +451,7 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    // forceTotus=true — 정정 버튼은 마스터 시트 확정 결과를 신뢰하지 않고 항상 Totus를 직접 조회
-    const { displayWorkName, koreanProjectName, resolvedPivoId, totusApm } = await _resolveByPivoId(pivoId, true);
+    const { displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId);
     draftStore.delete(draftId);
 
     await _proceedRetakeOperationSelect(client, data.dmChannelId, {
@@ -475,7 +463,6 @@ JSON만 출력. 코드블록 금지.
       requesterName:   data.requesterName   || "",
       requesterUserId: data.requesterUserId || null,
       ownerUserId:     data.ownerUserId     || null,
-      presetApm:       totusApm             || null,
     });
   });
 
@@ -904,33 +891,11 @@ JSON만 출력. 코드블록 금지.
     });
   });
 
-  // ── pivoId → 표시명/한국어명/APM 해석 ──────────────────────
-  // 마스터 시트('출판사 드라이브 링크')는 인메모리 캐시라 빠르지만 중일 작품만 있다.
-  // 기본(forceTotus=false, 초기 직접 입력용)은 시트를 먼저 보고, 매칭되면(확인된 중일) 그대로 확정해
-  // 불필요한 Totus 왕복을 생략한다.
-  // forceTotus=true("✏️ 작품명 정정" 버튼 전용)는 시트 확인 없이 항상 Totus API를 직접 조회한다.
-  // AI가 유사 제목(예: 한일 "지독한 유혹" ↔ 중일 "유혹")으로 엉뚱한 작품에 매칭된 뒤 사람이 pivoId로
-  // 정정하는 상황이라, 시트 매칭 결과(잘못된 확정일 수 있음)를 신뢰하지 않고 항상 최신 원천(Totus)을 봐야 한다.
-  // 매칭 안 되거나 forceTotus인 경우, Totus API로만 얻을 수 있는 "프로젝트"([PRJ-번호] 실제작품명)와
-  // "주문담당PM"([U-번호] 이름, 실제 APM)을 직접 조회한다.
-  async function _resolveByPivoId(pivoId, forceTotus = false) {
-    console.log(`[retake] pivoId 입력 (forceTotus: ${forceTotus}) — pivoId: ${pivoId}`);
-
-    if (!forceTotus) {
-      const matchedByPivo = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
-      if (matchedByPivo?.koreanProjectName || matchedByPivo?.chineseOriginalTitle) {
-        const koreanProjectName = matchedByPivo.koreanProjectName || null;
-        const displayWorkName   = koreanProjectName || matchedByPivo.chineseOriginalTitle;
-        console.log(`[retake] pivoId 마스터 시트 확정(중일): ${displayWorkName}`);
-        return { displayWorkName, koreanProjectName, resolvedPivoId: pivoId, totusApm: null };
-      }
-      console.log(`[retake] 마스터 시트 매칭 실패 → Totus API 조회 (pivoId: ${pivoId})`);
-    } else {
-      console.log(`[retake] 작품명 정정 — 시트 생략, Totus API 직접 조회 (pivoId: ${pivoId})`);
-    }
-    let primaryWorkTitle    = null;
-    let projectTitleFromApi = null;
-    let totusApm            = null;
+  // ── pivoId → 표시명/한국어명 해석 (Totus API 선조회, 실패 시 마스터 시트 폴백) ──
+  // Totus 작품명의 언어는 보장되지 않으며, 한국어명은 마스터 시트가 확인한 값만 사용한다.
+  async function _resolveByPivoId(pivoId) {
+    console.log(`[retake] pivoId 입력 → Totus API 선 조회 (pivoId: ${pivoId})`);
+    let primaryWorkTitle = null;
     try {
       const _pivoRes = await _apiFetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivoId)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -940,23 +905,22 @@ JSON만 출력. 코드블록 금지.
         const d = p._detail || p;
         return d.진행상태 !== "CANCELED" && d.pivoId != null;
       });
-      // "프로젝트": "[PRJ-3657] 이진MT" → 번호 접두어를 떼면 실제 (대개 한국어) 작품명
-      projectTitleFromApi = (proj?.프로젝트 || "").replace(/^\[PRJ-\d+\]\s*/, "").trim() || null;
-      primaryWorkTitle = projectTitleFromApi
-                      || proj?.name
+      primaryWorkTitle = proj?.name
                       || proj?._detail?.pivoOriginalTitle || proj?.detail?.pivoOriginalTitle
                       || proj?._detail?.pivoTitle        || proj?.detail?.pivoTitle
                       || null;
-      // "주문담당PM": "[U-3713] yijen.sha" → 번호 접두어를 떼면 실제 담당 APM
-      totusApm = (proj?.주문담당PM || "").replace(/^\[U-\d+\]\s*/, "").trim() || null;
     } catch (e) {
-      console.error(`[retake] Totus 조회 실패:`, e.message);
+      console.error(`[retake] Totus 조회 실패 → 마스터 시트 폴백:`, e.message);
     }
 
-    const koreanProjectName = projectTitleFromApi || null;
-    const displayWorkName   = koreanProjectName || primaryWorkTitle || `(pivoId: ${pivoId})`;
-    console.log(`[retake] pivoId 조회 결과(Totus): ${primaryWorkTitle || "이름 없음"} → 표시명: ${displayWorkName} / 주문담당PM(Totus): ${totusApm || "없음"}`);
-    return { displayWorkName, koreanProjectName, resolvedPivoId: pivoId, totusApm };
+    const matchedByPivo     = await matchWorkTitleFromSheet({ pivoId }).catch(() => null);
+    const koreanProjectName = matchedByPivo?.koreanProjectName || null;
+    const displayWorkName   = koreanProjectName
+                           || matchedByPivo?.chineseOriginalTitle
+                           || primaryWorkTitle
+                           || `(pivoId: ${pivoId})`;
+    console.log(`[retake] pivoId 조회 결과: ${primaryWorkTitle || "Totus 이름 없음"} → 표시명: ${displayWorkName}`);
+    return { displayWorkName, koreanProjectName, resolvedPivoId: pivoId };
   }
 
   // ── 작품명·화수 수동 입력 모달 ────────────────────────────
@@ -1017,10 +981,10 @@ JSON만 출력. 코드블록 금지.
       return;
     }
 
-    let displayWorkName, koreanProjectName, resolvedPivoId, totusApm = null;
+    let displayWorkName, koreanProjectName, resolvedPivoId;
 
     if (pivoId) {
-      ({ displayWorkName, koreanProjectName, resolvedPivoId, totusApm } = await _resolveByPivoId(pivoId));
+      ({ displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId));
     } else {
       const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
       koreanProjectName = matchedTitle?.koreanProjectName || null;
@@ -1039,7 +1003,6 @@ JSON만 출력. 코드블록 금지.
       requesterName:   pending.requesterName   || "",
       requesterUserId: pending.requesterUserId || null,
       ownerUserId:     pending.ownerUserId     || null,
-      presetApm:       totusApm                || null,
     });
   });
 
