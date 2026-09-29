@@ -1271,6 +1271,7 @@ ${msgText}
             // 썸네일 업로드
             await client.files.uploadV2({
               channel_id: workerChannelId,
+              thread_ts: mainMsg.ts,
               file: fs.createReadStream(tmpPath),
               filename: `retake_thumb_${i + 1}.png`,
               initial_comment: '',

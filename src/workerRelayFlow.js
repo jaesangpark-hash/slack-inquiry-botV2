@@ -1046,6 +1046,7 @@ JSON만 출력. 코드블록 금지.
             .png().toFile(tmpPath);
           await client.files.uploadV2({
             channel_id: channelId,
+            thread_ts: sent.ts,
             file: fs.createReadStream(tmpPath),
             filename: `relay_thumb_${i + 1}.png`,
             initial_comment: "",

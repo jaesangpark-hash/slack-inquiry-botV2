@@ -166,3 +166,73 @@ describe("fetchDeliveryDate", () => {
     assert.strictEqual(result.deliveryDate, null);
   });
 });
+
+// ── 매칭 실패 진단 로그 ───────────────────────────────────────────────────────
+// 실패 사유가 "제목 불일치"인지 "화수 미존재"인지 구분되고,
+// 근접 후보가 실제 needle 기준으로 뽑히는지 검증.
+//
+// fixture self-fulfilling 금지: 구 하드코딩 토큰("살아남")을 가진 무관 행을 일부러 심고,
+// 그 행이 근접 후보에 뜨지 않는 것으로 하드코딩 제거를 반증 가능하게 만든다.
+
+/** console.log 를 가로채 호출 인자를 문자열로 모아 반환 */
+async function captureLogs(fn) {
+  const original = console.log;
+  const captured = [];
+  console.log = (...args) => {
+    captured.push(args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = original;
+  }
+  return captured;
+}
+
+describe("매칭 실패 진단 — 원인 분리", () => {
+  test("제목 일치·화수 불일치 → '화수 미존재' + 보유 화수 목록", async () => {
+    const { fetchDeliveryDate } = makeService([
+      makeDeliveryRow({ workName: "블라인드 데이트", episode: 24, deliveryDate: "2026-09-10" }),
+      makeDeliveryRow({ workName: "블라인드 데이트", episode: 26, deliveryDate: "2026-09-12" }),
+    ]);
+    const logs = await captureLogs(() => fetchDeliveryDate("블라인드 데이트", "25"));
+    const joined = logs.join("\n");
+
+    assert.ok(joined.includes("원인: 화수 미존재"), `화수 미존재 사유가 찍혀야 함:\n${joined}`);
+    assert.ok(joined.includes("[24, 26]"), `보유 화수 목록이 찍혀야 함:\n${joined}`);
+  });
+
+  test("제목 자체 불일치 → '제목 불일치' + needle prefix 기반 근접 후보", async () => {
+    const { fetchDeliveryDate } = makeService([
+      // needle "회개불가완전판" 의 prefix "회개불가" 를 공유하는 행 (근접 후보로 떠야 함)
+      makeDeliveryRow({ workName: "[카카오픽코마] 회개불가", episode: 28, deliveryDate: "2026-09-01" }),
+    ]);
+    const logs = await captureLogs(() => fetchDeliveryDate("회개불가 완전판", "28"));
+    const joined = logs.join("\n");
+
+    assert.ok(joined.includes("원인: 제목 불일치"), `제목 불일치 사유가 찍혀야 함:\n${joined}`);
+    assert.ok(joined.includes('probe: "회개불가"'), `needle prefix 가 probe 로 찍혀야 함:\n${joined}`);
+    assert.ok(joined.includes("회개불가"), `prefix 공유 행이 근접 후보에 있어야 함:\n${joined}`);
+  });
+
+  test("무관한 needle 실패 시 구 하드코딩 토큰 행이 근접 후보에 오르지 않는다", async () => {
+    const { fetchDeliveryDate } = makeService([
+      makeDeliveryRow({ workName: "똥캐 검사가 살아남는 법", episode: 1, deliveryDate: "2026-09-02" }),
+    ]);
+    // needle "무쌍" — 시트 어느 행과도 무관. 구 구현이면 "똥캐 검사가 살아남는 법"이 후보로 나왔다.
+    const logs = await captureLogs(() => fetchDeliveryDate("무쌍", "268"));
+    const candidateLine = logs.find(l => l.includes("근접 후보")) || "";
+
+    assert.ok(candidateLine, `근접 후보 라인은 있어야 함:\n${logs.join("\n")}`);
+    assert.ok(!candidateLine.includes("똥캐"), `무관한 하드코딩 후보가 출력되면 안 됨:\n${candidateLine}`);
+  });
+
+  test("정상 매칭 시 진단 로그를 찍지 않는다", async () => {
+    const { fetchDeliveryDate } = makeService([
+      makeDeliveryRow({ workName: "블라인드 데이트", episode: 25, deliveryDate: "2026-09-11" }),
+    ]);
+    const logs = await captureLogs(() => fetchDeliveryDate("블라인드 데이트", "25"));
+
+    assert.ok(!logs.join("\n").includes("매칭 실패"), "성공 경로에 실패 로그가 있으면 안 됨");
+  });
+});
