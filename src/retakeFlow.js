@@ -169,7 +169,8 @@ JSON만 출력. 코드블록 금지.
   }
 
   // ── Totus API: 태스크 단건 조회 (GET /api/v1/tasks/{uuid}) ────
-  // 감시행 등록 시 판정대상(primary) 특정에 사용. state·operationTypeCode 필드는 delivery-target-task와 동일.
+  // 감시행 등록 시 판정대상(primary) 특정에 사용.
+  // ⚠️ 게이트웨이 단건 조회 응답은 키가 한글이다(오퍼레이션 코드 = 오퍼레이션유형). 값은 OTC0012처럼 영문 그대로.
   async function _getTask(taskUuid) {
     const json = await _apiFetch(
       `${BASE()}/api/v1/tasks/${taskUuid}`,
@@ -182,7 +183,7 @@ JSON만 출력. 코드블록 금지.
 
   // ── 판정대상(primary) taskUuid 특정 ──────────────────────
   // 리테이크는 하위 포함 태스크 여러 개를 생성(createdTaskUuids 평면 배열)한다.
-  // 각 생성 태스크를 GET 조회해 operationTypeCode === operationCode(재생성한 오퍼레이션)인 것을 판정대상으로 고른다.
+  // 각 생성 태스크를 GET 조회해 오퍼레이션유형 === operationCode(재생성한 오퍼레이션)인 것을 판정대상으로 고른다.
   // 하위까지 기다리면 알림이 늦어지므로 재생성 오퍼레이션 태스크 1개만 감시한다.
   // 매칭 실패 시(방어) 첫 번째 UUID를 폴백으로 사용.
   async function _resolveJudgeTaskUuid(createdUuids, operationCode) {
@@ -191,7 +192,8 @@ JSON만 출력. 코드블록 금지.
     for (const uuid of createdUuids) {
       try {
         const task = await _getTask(uuid);
-        if (task && task.operationTypeCode === operationCode) return uuid;
+        // 단건 조회 응답은 키가 한글 — 오퍼레이션 코드는 오퍼레이션유형 필드에 담긴다.
+        if (task && task["오퍼레이션유형"] === operationCode) return uuid;
       } catch (e) {
         console.warn(`[retake-watch] 판정대상 조회 실패 uuid:${uuid} — ${e.message}`);
       }

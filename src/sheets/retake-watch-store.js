@@ -45,12 +45,17 @@ function _kstIsoNow(d = new Date()) {
 }
 
 module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, watchSheetRange, watchGridSheetId }) {
+  // 감시 활성 조건: 시트ID·범위·gridId가 모두 있어야 켠다.
+  // gridId만 빠지면 상태 기록(markStatus)이 안 돼 같은 완료 답글이 30분마다 반복되므로,
+  // 하나라도 없으면 등록·조회·기록 전부 끈다(부분 활성 금지).
+  const enabled = Boolean(watchSheetId) && Boolean(watchSheetRange) && watchGridSheetId != null;
+
   /**
    * 시트 전체 행을 읽어 파싱한다 (헤더 1행 제외).
    * @returns {Promise<Array<object>>} 각 원소는 컬럼 필드 + rowIndex(1-base, 실제 시트 행번호)
    */
   async function _loadRows() {
-    if (!watchSheetId || !watchSheetRange) return [];
+    if (!enabled) return [];
     const values = await sheetsClient.getValues(watchSheetId, watchSheetRange);
     const rows = values || [];
     // 첫 행은 헤더 → index 1부터가 데이터. rowIndex는 시트 실제 행번호(1-base): 헤더가 1행이므로 데이터 i는 i+2행.
@@ -88,10 +93,9 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
    * @returns {Promise<{ skipped: boolean, rowIndex: number|null, reason?: string }>}
    */
   async function registerWatch(watch) {
-    if (!watchSheetId || !watchSheetRange) {
-      // 시트 미지정 시 어떤 스프레드시트에도 쓰지 않고 조용히 skip(경고 로그만). 운영 시트 오기록 방지.
-      console.warn("[retake-watch] RETAKE_WATCH_SHEET_ID/RANGE 미설정 — 감시행 등록 skip");
-      return { skipped: true, rowIndex: null, reason: "sheet 미설정" };
+    if (!enabled) {
+      // 시트ID·범위·gridId 중 하나라도 없으면 어떤 스프레드시트에도 쓰지 않고 skip. 운영 시트 오기록·부분 활성 방지.
+      return { skipped: true, rowIndex: null, reason: "감시 비활성(시트ID/범위/gridId 미설정)" };
     }
     const judgeTaskUuid = (watch.judgeTaskUuid || "").trim();
     if (!judgeTaskUuid) return { skipped: true, rowIndex: null, reason: "judgeTaskUuid 없음" };
@@ -149,8 +153,8 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
    * @param {{ notifiedAt?: string, note?: string }} [extra]
    */
   async function markStatus(rowIndex, status, extra = {}) {
-    if (!rowIndex || !watchSheetId || watchGridSheetId == null) {
-      console.warn(`[retake-watch] markStatus skip — rowIndex:${rowIndex} sheetId:${!!watchSheetId} gridId:${watchGridSheetId}`);
+    if (!enabled || !rowIndex) {
+      console.warn(`[retake-watch] markStatus skip — enabled:${enabled} rowIndex:${rowIndex}`);
       return;
     }
     const requests = [{
@@ -193,5 +197,5 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     console.log(`[retake-watch] 상태 갱신 — row:${rowIndex} status:${status}`);
   }
 
-  return { registerWatch, loadWatching, markStatus, _loadRows, COL };
+  return { registerWatch, loadWatching, markStatus, enabled, _loadRows, COL };
 };

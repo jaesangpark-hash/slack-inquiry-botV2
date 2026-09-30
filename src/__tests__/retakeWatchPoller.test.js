@@ -51,7 +51,8 @@ function makeApiFetch({ taskState, reviewRows = null }) {
       return { success: true, data: reviewRows || [] };
     }
     if (/\/tasks\/[^?]+$/.test(url)) {
-      return { success: true, data: { state: taskState, operationTypeCode: "OTC0012" } };
+      // 단건 조회 응답은 키가 한글(상태·오퍼레이션유형). 값은 영문 그대로.
+      return { success: true, data: { "상태": taskState, "오퍼레이션유형": "OTC0012" } };
     }
     return { success: false };
   };

@@ -88,7 +88,8 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
   // 감시행 1건 처리
   async function _processRow(row) {
     const task = await _getTask(row.judgeTaskUuid);
-    const state = task?.state || null;
+    // 게이트웨이 단건 조회(GET /tasks/{uuid}) 응답은 키가 한글(상태). 값은 COMPLETED·DROP 등 영문 그대로.
+    const state = task?.["상태"] || null;
 
     if (state === "COMPLETED") {
       const reviewLink = await _resolveDeliveryReviewLink(row.jobUuid);

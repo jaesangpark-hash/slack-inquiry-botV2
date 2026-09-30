@@ -196,3 +196,44 @@ describe("createRetakeWatchStore.markStatus", () => {
     assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
   });
 });
+
+describe("createRetakeWatchStore 활성 게이트 (시트ID·gridId 둘 다 필요)", () => {
+  test("gridId만 빠지면 감시 off — registerWatch skip(append 미호출), loadWatching []", async () => {
+    const sheetsClient = makeFakeSheetsClient({ getRows: [["header"], ["t", "watching", "uuid-x"]] });
+    const store = createRetakeWatchStore({
+      sheetsClient,
+      watchSheetId: "watch-sheet-id",
+      watchSheetRange: "리테이크 감시!A:P",
+      watchGridSheetId: undefined, // gridId 없음
+    });
+    assert.strictEqual(store.enabled, false);
+
+    const res = await store.registerWatch(SAMPLE_WATCH);
+    assert.strictEqual(res.skipped, true);
+    assert.strictEqual(sheetsClient.appendCalls.length, 0);
+
+    const watching = await store.loadWatching();
+    assert.deepStrictEqual(watching, []);
+    assert.strictEqual(sheetsClient.getValuesCalls.length, 0); // 조회조차 안 함
+  });
+
+  test("sheetId만 빠지면 감시 off — registerWatch skip", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({
+      sheetsClient,
+      watchSheetId: "",
+      watchSheetRange: "리테이크 감시!A:P",
+      watchGridSheetId: 777,
+    });
+    assert.strictEqual(store.enabled, false);
+    const res = await store.registerWatch(SAMPLE_WATCH);
+    assert.strictEqual(res.skipped, true);
+    assert.strictEqual(sheetsClient.appendCalls.length, 0);
+  });
+
+  test("셋 다 있으면 감시 on — enabled true", () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    assert.strictEqual(store.enabled, true);
+  });
+});
