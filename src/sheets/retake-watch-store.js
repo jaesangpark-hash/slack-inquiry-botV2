@@ -88,7 +88,11 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
    * @returns {Promise<{ skipped: boolean, rowIndex: number|null, reason?: string }>}
    */
   async function registerWatch(watch) {
-    if (!watchSheetId || !watchSheetRange) return { skipped: true, rowIndex: null, reason: "sheet 미설정" };
+    if (!watchSheetId || !watchSheetRange) {
+      // 시트 미지정 시 어떤 스프레드시트에도 쓰지 않고 조용히 skip(경고 로그만). 운영 시트 오기록 방지.
+      console.warn("[retake-watch] RETAKE_WATCH_SHEET_ID/RANGE 미설정 — 감시행 등록 skip");
+      return { skipped: true, rowIndex: null, reason: "sheet 미설정" };
+    }
     const judgeTaskUuid = (watch.judgeTaskUuid || "").trim();
     if (!judgeTaskUuid) return { skipped: true, rowIndex: null, reason: "judgeTaskUuid 없음" };
 

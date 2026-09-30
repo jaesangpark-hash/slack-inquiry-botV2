@@ -40,7 +40,7 @@ const createRetakeWatchPoller = require("./retakeWatchPoller");
 const createProgress = require("./slack/progress");
 const createInquiryAnalyzer = require("./ai/inquiry-analyzer");
 const createInquiryPublisher = require("./slack/inquiry-publisher");
-const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEET_ID_DEFAULT, RETAKE_WATCH_SHEET_RANGE_DEFAULT } = require("./config/sheet-schema");
+const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEET_RANGE_DEFAULT } = require("./config/sheet-schema");
 const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
@@ -99,13 +99,18 @@ const RESUPPLY_SHEET_RANGE = process.env.RESUPPLY_SHEET_RANGE;
 const RETAKE_CHANNELS      = new Set(
   (process.env.RETAKE_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
-// 리테이크 감시 시트 — 시트ID/범위는 env(미설정 시 config 기본값 폴백), gridId는 env(탭 생성 후 지정).
-// gridId 미설정 시 append·조회는 되지만 markStatus(상태변경)만 skip된다(retake-watch-store 내부 가드).
-const RETAKE_WATCH_SHEET_ID    = process.env.RETAKE_WATCH_SHEET_ID    || RETAKE_WATCH_SHEET_ID_DEFAULT;
+// 리테이크 감시 시트 — 스프레드시트 ID는 반드시 env로만 지정한다(코드 기본값 없음).
+// ⚠️ 운영 시트(n8n 리테이크 자동화 시트)에 절대 쓰지 않도록, 지정된 별도 감시 파일 한 곳 외에는 쓰지 않는다.
+// 미설정 시 등록(append)·폴러는 조용히 skip된다(store 내부 가드) — 아래에서 경고 로그 1회 남김.
+// gridId 미설정 시 append·조회는 되지만 markStatus(상태변경)만 skip된다(store 내부 가드).
+const RETAKE_WATCH_SHEET_ID    = process.env.RETAKE_WATCH_SHEET_ID || "";
 const RETAKE_WATCH_SHEET_RANGE = process.env.RETAKE_WATCH_SHEET_RANGE || RETAKE_WATCH_SHEET_RANGE_DEFAULT;
 const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.env.RETAKE_WATCH_GRID_ID.trim() !== "")
   ? parseInt(process.env.RETAKE_WATCH_GRID_ID, 10)
   : undefined;
+if (!RETAKE_WATCH_SHEET_ID) {
+  console.warn("[retake-watch] RETAKE_WATCH_SHEET_ID 미설정 — 리테이크 감시 비활성화(등록·폴링 skip). 별도 감시 시트 ID를 env에 지정해야 활성화됨.");
+}
 
 function resolveApmUserId(apmName) {
   if (!apmName) return null;
