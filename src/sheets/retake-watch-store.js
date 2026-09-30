@@ -127,8 +127,11 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     row[COL.notifiedAt]    = "";
     row[COL.note]          = watch.note           || "";
 
+    // RAW: 값을 시트 UI처럼 해석하지 않고 문자열 그대로 저장한다.
+    // USER_ENTERED면 watchThreadTs("1700000000.000100")가 숫자로 바뀌어 소수부가 사라지고,
+    // 그 ts로 답글을 달면 납품 스레드를 벗어난다. ts·uuid 등은 반드시 원문 그대로 보존해야 한다.
     const appendRes = await sheetsClient.append(watchSheetId, watchSheetRange, [row], {
-      valueInputOption: "USER_ENTERED", insertDataOption: "INSERT_ROWS",
+      valueInputOption: "RAW", insertDataOption: "INSERT_ROWS",
     });
     const updatedRange = appendRes.data.updates?.updatedRange || "";
     const rowMatch = updatedRange.match(/(\d+)(?::[A-Z]+\d+)?$/);

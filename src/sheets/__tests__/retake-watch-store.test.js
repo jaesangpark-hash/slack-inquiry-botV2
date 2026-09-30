@@ -95,7 +95,7 @@ describe("createRetakeWatchStore.registerWatch", () => {
     const call = sheetsClient.appendCalls[0];
     assert.strictEqual(call.spreadsheetId, "watch-sheet-id");
     assert.strictEqual(call.range, "리테이크 감시!A:P");
-    assert.strictEqual(call.opts.valueInputOption, "USER_ENTERED");
+    assert.strictEqual(call.opts.valueInputOption, "RAW"); // ts·uuid 소수부/문자열 보존 (형민님 검수)
     const row = call.rows[0];
     assert.strictEqual(row.length, 16);
     assert.strictEqual(row[1], "watching");            // status
