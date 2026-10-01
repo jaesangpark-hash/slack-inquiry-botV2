@@ -161,7 +161,7 @@ describe("retakeWatchPoller.tick", () => {
     await poller.tick();
 
     assert.strictEqual(slack.postCalls.length, 1);
-    assert.match(slack.postCalls[0].text, /링크를 찾지 못했어/);
+    assert.match(slack.postCalls[0].text, /링크를 찾지 못했습니다/);
     assert.strictEqual(store.markCalls[0].status, "notified");
     assert.strictEqual(store.markCalls[0].extra.note, "납품검수 링크 미해석");
   });

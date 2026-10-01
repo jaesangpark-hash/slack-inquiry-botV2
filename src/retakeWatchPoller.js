@@ -80,10 +80,10 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
   function _buildCompletionText(row, reviewLink) {
     // 수정 요청자(CFM)가 있으면 알림 맨 앞에 @멘션해 바로 알 수 있게 한다.
     const mention = row.requesterUserId ? `<@${row.requesterUserId}> ` : "";
-    const head = `✅ ${mention}*${row.workName || "작품"} ${row.episode || "?"}화 [${row.operationName || "-"}]* 리테이크 수정이 완료됐어.`;
+    const head = `✅ ${mention}*${row.workName || "작품"} ${row.episode || "?"}화 [${row.operationName || "-"}]* 리테이크 수정이 완료되었습니다!`;
     const linkLine = reviewLink
       ? `🔗 납품검수: ${reviewLink}`
-      : "🔗 납품검수 링크를 찾지 못했어. Totus에서 직접 확인해줘.";
+      : "🔗 납품검수 링크를 찾지 못했습니다. Totus에서 직접 확인 부탁드립니다.";
     return `${head}\n${linkLine}`;
   }
 
