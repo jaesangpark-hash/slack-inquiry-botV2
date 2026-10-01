@@ -384,17 +384,20 @@ cron.schedule("0 15 * * *", () => kpiReport.sendApiAnalysisReport(), { timezone:
 cleanOldLogs();
 console.log("[apiAnalyzer] 일일 분석 스케줄 등록 완료 (매일 15:00 KST)");
 
-// ── 리테이크 수정 완료 감시 폴러 — 30분 주기 ───────────────
+// ── 리테이크 수정 완료 감시 폴러 ───────────────────────────
 // watching 행의 판정대상 태스크가 COMPLETED되면 납품 스레드에 답글 알림.
 // 시트ID·gridId가 둘 다 있을 때만 폴러를 건다(부분 활성 시 완료 답글 반복 방지).
+// 폴링 주기는 코드 기본 30분이며, 테스트 시 RETAKE_WATCH_POLL_CRON(예: "*/2 * * * *")으로 짧게 조절 가능.
+let retakeWatchPoller = null;
 if (RETAKE_WATCH_ENABLED) {
-  const retakeWatchPoller = createRetakeWatchPoller({
+  retakeWatchPoller = createRetakeWatchPoller({
     retakeWatchStore,
     slackClient: app.client,
     apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
   });
-  cron.schedule("*/30 * * * *", () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
-  console.log("[retake-watch] 리테이크 감시 폴러 등록 완료 (30분 주기)");
+  const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
+  cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
+  console.log(`[retake-watch] 리테이크 감시 폴러 등록 완료 (cron: ${pollCron})`);
 } else {
   console.log("[retake-watch] 감시 비활성 — 폴러 미등록");
 }
@@ -409,4 +412,8 @@ if (RETAKE_WATCH_ENABLED) {
   // 알럿 클라이언트 초기화 (PM_SLACK_ID로 오류 알럿 전송)
   initAlertClient(app.client, PM_SLACK_ID);
   console.log("🚀 시스템 가동! 준비 완료!");
+  // 시작 시 즉시 1회 감시 점검 — 재시작 시 밀린 완료를 바로 반영하고, 테스트 시 30분 대기 없이 확인 가능.
+  if (retakeWatchPoller) {
+    retakeWatchPoller.tick().catch(e => console.error("[retake-watch] 시작 tick 오류:", e.message));
+  }
 })();
