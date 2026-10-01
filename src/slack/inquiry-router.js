@@ -136,9 +136,10 @@ module.exports = function createInquiryRouter(deps) {
         return !/^파일\s*\d+\s*#?\d*\s*$/.test(stripped);
       });
       if (headerEpisodes.length >= 2 || itemLines.length >= 2) {
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId, sourceMeta.threadTs);
       } else {
-        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink }, originalText, retakeRequesterName, requesterUserId || null, userId);
+        // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
+        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink, ...sourceMeta }, originalText, retakeRequesterName, requesterUserId || null, userId);
       }
       return;
     }
@@ -276,10 +277,10 @@ module.exports = function createInquiryRouter(deps) {
           const ui = await client.users.info({ user: requesterUserId });
           reqName = ui.user?.profile?.display_name || ui.user?.real_name || reqName;
         } catch (_) {}
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId, sourceMeta.threadTs);
       } else {
         // UD-2: message는 requesterName="" 빈문자 그대로
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId, sourceMeta.threadTs);
       }
       return;
     }
@@ -375,7 +376,8 @@ module.exports = function createInquiryRouter(deps) {
           const userInfo = await client.users.info({ user: requesterUserId });
           retakeName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || requesterUserId || "";
         } catch (_) {}
-        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink }, originalText, retakeName, requesterUserId || null, userId);
+        // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
+        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta }, originalText, retakeName, requesterUserId || null, userId);
       }
       // UD-7: message 경로는 분기 부재 → ⑧ 기본처리로 자동 폴백 (여기서 return 안 함)
       if (source === "reaction") return;

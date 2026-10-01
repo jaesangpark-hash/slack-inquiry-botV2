@@ -35,10 +35,12 @@ const createTitleMatcher = require("./sheets/title-matcher");
 const createDeliveryDateService = require("./sheets/delivery-date");
 const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
+const createRetakeWatchStore = require("./sheets/retake-watch-store");
+const createRetakeWatchPoller = require("./retakeWatchPoller");
 const createProgress = require("./slack/progress");
 const createInquiryAnalyzer = require("./ai/inquiry-analyzer");
 const createInquiryPublisher = require("./slack/inquiry-publisher");
-const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID } = require("./config/sheet-schema");
+const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEET_RANGE_DEFAULT } = require("./config/sheet-schema");
 const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
@@ -97,6 +99,20 @@ const RESUPPLY_SHEET_RANGE = process.env.RESUPPLY_SHEET_RANGE;
 const RETAKE_CHANNELS      = new Set(
   (process.env.RETAKE_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
+// 리테이크 감시 시트 — 스프레드시트 ID는 반드시 env로만 지정한다(코드 기본값 없음).
+// ⚠️ 운영 시트(n8n 리테이크 자동화 시트)에 절대 쓰지 않도록, 지정된 별도 감시 파일 한 곳 외에는 쓰지 않는다.
+// 시트ID·gridId가 둘 다 있어야 감시가 켜지며, 하나라도 없으면 등록·조회·기록 전부 skip된다(store 내부 가드).
+const RETAKE_WATCH_SHEET_ID    = process.env.RETAKE_WATCH_SHEET_ID || "";
+const RETAKE_WATCH_SHEET_RANGE = process.env.RETAKE_WATCH_SHEET_RANGE || RETAKE_WATCH_SHEET_RANGE_DEFAULT;
+const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.env.RETAKE_WATCH_GRID_ID.trim() !== "")
+  ? parseInt(process.env.RETAKE_WATCH_GRID_ID, 10)
+  : undefined;
+// 감시는 시트ID·gridId가 "둘 다" 있을 때만 켠다(등록 + 30분 폴러 함께).
+// gridId만 빠지면 상태 기록이 안 돼 같은 완료 답글이 30분마다 반복되므로, 하나라도 없으면 경고 1회 후 둘 다 끈다.
+const RETAKE_WATCH_ENABLED = !!RETAKE_WATCH_SHEET_ID && Number.isFinite(RETAKE_WATCH_GRID_ID);
+if (!RETAKE_WATCH_ENABLED) {
+  console.warn(`[retake-watch] 리테이크 감시 비활성화(등록·폴링 skip) — RETAKE_WATCH_SHEET_ID:${RETAKE_WATCH_SHEET_ID ? "설정" : "없음"} / RETAKE_WATCH_GRID_ID:${Number.isFinite(RETAKE_WATCH_GRID_ID) ? "설정" : "없음"}. 둘 다 있어야 활성화됨.`);
+}
 
 function resolveApmUserId(apmName) {
   if (!apmName) return null;
@@ -140,8 +156,17 @@ const { handleFileOrderInquiry } = require("./fileOrderFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore,
 });
 
-const { handleRetakeInquiry } = require("./retakeFlow")(interactionApp, {
+// 리테이크 감시 스토어 (retakeFlow가 감시행 등록에, 폴러가 조회/상태변경에 공유)
+const retakeWatchStore = createRetakeWatchStore({
+  sheetsClient,
+  watchSheetId:     RETAKE_WATCH_SHEET_ID,
+  watchSheetRange:  RETAKE_WATCH_SHEET_RANGE,
+  watchGridSheetId: RETAKE_WATCH_GRID_ID,
+});
+
+const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
+  retakeChannels: RETAKE_CHANNELS, retakeWatchStore,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
@@ -359,6 +384,24 @@ cron.schedule("0 15 * * *", () => kpiReport.sendApiAnalysisReport(), { timezone:
 cleanOldLogs();
 console.log("[apiAnalyzer] 일일 분석 스케줄 등록 완료 (매일 15:00 KST)");
 
+// ── 리테이크 수정 완료 감시 폴러 ───────────────────────────
+// watching 행의 판정대상 태스크가 COMPLETED되면 납품 스레드에 답글 알림.
+// 시트ID·gridId가 둘 다 있을 때만 폴러를 건다(부분 활성 시 완료 답글 반복 방지).
+// 폴링 주기는 코드 기본 30분이며, 테스트 시 RETAKE_WATCH_POLL_CRON(예: "*/2 * * * *")으로 짧게 조절 가능.
+let retakeWatchPoller = null;
+if (RETAKE_WATCH_ENABLED) {
+  retakeWatchPoller = createRetakeWatchPoller({
+    retakeWatchStore,
+    slackClient: app.client,
+    apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
+  });
+  const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
+  cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
+  console.log(`[retake-watch] 리테이크 감시 폴러 등록 완료 (cron: ${pollCron})`);
+} else {
+  console.log("[retake-watch] 감시 비활성 — 폴러 미등록");
+}
+
 // ── ToTalk 멘션 폴러 — 툰식이 테스트 완료 후 아래 주석 해제
 // const createTotalkMonitor = require("./totalk-monitor");
 // createTotalkMonitor({ cron, slackClient: app.client, sendAlert, sheetsClient }).register();
@@ -369,4 +412,8 @@ console.log("[apiAnalyzer] 일일 분석 스케줄 등록 완료 (매일 15:00 K
   // 알럿 클라이언트 초기화 (PM_SLACK_ID로 오류 알럿 전송)
   initAlertClient(app.client, PM_SLACK_ID);
   console.log("🚀 시스템 가동! 준비 완료!");
+  // 시작 시 즉시 1회 감시 점검 — 재시작 시 밀린 완료를 바로 반영하고, 테스트 시 30분 대기 없이 확인 가능.
+  if (retakeWatchPoller) {
+    retakeWatchPoller.tick().catch(e => console.error("[retake-watch] 시작 tick 오류:", e.message));
+  }
 })();

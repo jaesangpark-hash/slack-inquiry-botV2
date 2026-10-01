@@ -113,7 +113,9 @@ module.exports = function (app, deps) {
             hasThreadContext,
             threadContextText,
             sourceLink:  permalink,
-            sourceMeta:  { channelId, ts },
+            // threadTs: 리테이크 감시 알림을 납품 스레드(부모)에 답글로 달기 위해 부모 thread_ts를 관통시킨다.
+            // 스레드 댓글에 이모지를 찍은 경우 ts는 댓글 ts라 부모가 아니므로 threadTs(부모)를 별도로 싣는다.
+            sourceMeta:  { channelId, ts, threadTs: threadTs || ts },
             files:       targetMsg.files || [],
             requesterUserId: (targetMsg.bot_id ? null : targetMsg.user) || null,
             // UD-2: reaction은 router 내부에서 reqName 조회 (requesterName은 "" 초기값)
@@ -213,7 +215,8 @@ module.exports = function (app, deps) {
           hasThreadContext:  false,
           threadContextText: "",
           sourceLink:   linkInfo.url,
-          sourceMeta:   { channelId: linkInfo.channelId, ts: linkInfo.ts },
+          // threadTs: 링크 소환은 단일 메시지 기준이라 부모 ts를 알 수 없어 링크 ts 자체를 부모로 사용한다.
+          sourceMeta:   { channelId: linkInfo.channelId, ts: linkInfo.ts, threadTs: linkInfo.ts },
           files:        linkedMessage.files || [],
           requesterUserId: (linkedMessage.bot_id ? null : linkedMessage.user) || null,
           // UD-2: message는 requesterName="" 빈문자 그대로

@@ -166,7 +166,7 @@ ${text}`.trim();
   }
 
   // ── 항목 처리: 각 봇 플로우 연결 ─────────────────────────
-  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId) {
+  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs = null) {
     const koreanProjectName = matchedTitle?.koreanProjectName || item.work_title_ko || null;
     const displayWorkName = koreanProjectName
                          || matchedTitle?.displayWorkName
@@ -246,10 +246,12 @@ ${text}`.trim();
       }
 
       case "리테이크": {
+        // 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 하므로 좌표를 관통시킨다.
+        // threadTs(부모)가 없으면 originalTs로 폴백. (단일 소환 경로와 동일 구조)
         await handleRetakeInquiry(
           client, dmChannel,
           { title_ja: originalWorkTitle, title_ko: koreanProjectName, episode },
-          { url: sourceLink },
+          { url: sourceLink, channelId: originalChannelId, ts: originalTs, threadTs: threadTs || originalTs },
           item.work_title_ko || item.work_title_ja || "",
           requesterName || "",
           requesterUserId || null,
@@ -425,7 +427,7 @@ ${text}`.trim();
       client, body.user.id, item, matched,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
-      multiPending.ownerUserId,
+      multiPending.ownerUserId, multiPending.threadTs,
     );
   });
 
@@ -444,12 +446,12 @@ ${text}`.trim();
       client, body.user.id, item, matchedTitle,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
-      multiPending.ownerUserId,
+      multiPending.ownerUserId, multiPending.threadTs,
     );
   });
 
   // ── 메인 핸들러 ──────────────────────────────────────────
-  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null, ownerUserId = null) {
+  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null, ownerUserId = null, threadTs = null) {
     // 1. AI로 항목 분리 파싱 (외부에서 이미 파싱된 경우 재사용)
     let items;
     if (preItems && preItems.length) {
@@ -503,7 +505,7 @@ ${text}`.trim();
     draftStore.set(multiPendingId, {
       ownerUserId,
       items,
-      originalChannelId, originalTs, sourceLink, requesterName, requesterUserId,
+      originalChannelId, originalTs, threadTs, sourceLink, requesterName, requesterUserId,
       missingByIndex: Object.fromEntries(resolvedItems.map(({ missing }, i) => [i, missing])),
     });
 
@@ -578,7 +580,7 @@ ${text}`.trim();
         await Promise.all(indices.map(async (i) => {
           const ri = resolvedItems[i];
           try {
-            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId);
+            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs);
           } catch (err) {
             console.error(`[multi] fallback 항목 ${i+1} 실패:`, err.message);
           }
@@ -662,7 +664,7 @@ ${text}`.trim();
             { type: "section", text: { type: "mrkdwn", text: `${header}\n처리 중...` }},
           ],
         });
-        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId);
+        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs);
 
       } catch (e) {
         console.error(`[multi] 항목 ${i + 1} 처리 실패:`, e.message);
