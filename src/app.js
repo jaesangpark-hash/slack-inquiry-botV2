@@ -99,6 +99,12 @@ const RESUPPLY_SHEET_RANGE = process.env.RESUPPLY_SHEET_RANGE;
 const RETAKE_CHANNELS      = new Set(
   (process.env.RETAKE_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
+// 리테이크 "감시(완료 알림)" 대상 채널 — 소환 허용 채널(RETAKE_CHANNELS)과 분리.
+// 소환은 여러 채널에서 되지만, 완료 알림은 여기 지정된 채널(예: #공지 당일 수정 스레드) 소환건만 나간다.
+// 미지정(빈 Set)이면 감시행 등록 안 함 + 폴러가 기존 범위 밖 행을 skipped 처리(과범위 방지).
+const RETAKE_WATCH_CHANNELS = new Set(
+  (process.env.RETAKE_WATCH_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
+);
 // 리테이크 감시 시트 — 스프레드시트 ID는 반드시 env로만 지정한다(코드 기본값 없음).
 // ⚠️ 운영 시트(n8n 리테이크 자동화 시트)에 절대 쓰지 않도록, 지정된 별도 감시 파일 한 곳 외에는 쓰지 않는다.
 // 시트ID·gridId가 둘 다 있어야 감시가 켜지며, 하나라도 없으면 등록·조회·기록 전부 skip된다(store 내부 가드).
@@ -112,6 +118,8 @@ const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.en
 const RETAKE_WATCH_ENABLED = !!RETAKE_WATCH_SHEET_ID && Number.isFinite(RETAKE_WATCH_GRID_ID);
 if (!RETAKE_WATCH_ENABLED) {
   console.warn(`[retake-watch] 리테이크 감시 비활성화(등록·폴링 skip) — RETAKE_WATCH_SHEET_ID:${RETAKE_WATCH_SHEET_ID ? "설정" : "없음"} / RETAKE_WATCH_GRID_ID:${Number.isFinite(RETAKE_WATCH_GRID_ID) ? "설정" : "없음"}. 둘 다 있어야 활성화됨.`);
+} else if (RETAKE_WATCH_CHANNELS.size === 0) {
+  console.warn("[retake-watch] RETAKE_WATCH_CHANNELS 미지정 — 완료 알림 발송 안 함(등록 skip, 폴러는 기존 행 skipped 정리). 알림 보내려면 대상 채널 ID를 지정해야 함.");
 }
 
 function resolveApmUserId(apmName) {
@@ -166,7 +174,7 @@ const retakeWatchStore = createRetakeWatchStore({
 
 const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
-  retakeChannels: RETAKE_CHANNELS, retakeWatchStore,
+  retakeChannels: RETAKE_CHANNELS, retakeWatchChannels: RETAKE_WATCH_CHANNELS, retakeWatchStore,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
@@ -394,6 +402,7 @@ if (RETAKE_WATCH_ENABLED) {
     retakeWatchStore,
     slackClient: app.client,
     apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
+    watchChannels: RETAKE_WATCH_CHANNELS, // 감시 대상 채널 필터(범위 밖 행은 skipped)
   });
   const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
   cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });

@@ -14,7 +14,7 @@ const { extractPivoIdGuess } = require("./utils/pivo-id");
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId, retakeChannels, retakeWatchStore }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId, retakeChannels, retakeWatchChannels, retakeWatchStore }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;
@@ -806,9 +806,10 @@ JSON만 출력. 코드블록 금지.
       });
 
       // ── 리테이크 감시행 등록 ────────────────────────────────
-      // 소환 채널(watchChannel)이 RETAKE_CHANNELS(납품 스레드)일 때만 감시 → 폴러가 완료 시 스레드 답글.
-      // 완료 안내 흐름을 막지 않도록 non-fatal(try/catch). 판정대상은 operationCode 매칭으로 특정.
-      if (retakeWatchStore && retakeChannels && data.watchChannel && retakeChannels.has(data.watchChannel) && createdUuids.length) {
+      // 소환 채널(watchChannel)이 "감시 대상 채널"(RETAKE_WATCH_CHANNELS, 예: #공지 당일 수정 스레드)일 때만 등록.
+      // ⚠️ 소환 허용 채널(RETAKE_CHANNELS)과 분리 — 소환은 여러 채널에서 되지만 완료 알림은 지정 채널만.
+      // retakeWatchChannels 미지정/빈 Set이면 등록하지 않음(과범위 방지). non-fatal(try/catch).
+      if (retakeWatchStore && retakeWatchChannels && retakeWatchChannels.size && data.watchChannel && retakeWatchChannels.has(data.watchChannel) && createdUuids.length) {
         try {
           const judgeTaskUuid = await _resolveJudgeTaskUuid(createdUuids, data.operationCode);
           await retakeWatchStore.registerWatch({

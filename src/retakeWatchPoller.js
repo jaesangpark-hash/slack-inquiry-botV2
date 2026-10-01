@@ -28,7 +28,7 @@ const EXPIRY_DAYS = 14;
 const EDITOR_LINK_BASE = "https://main.totus.pro/ko/editor?uuid=";
 const DELIVERY_REVIEW_OP_CODE = "OTC0087";
 
-module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token }) {
+module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels }) {
   const BASE  = base  || (() => process.env.PLATFORM_API_URL);
   const TOKEN = token || (() => process.env.PLATFORM_API_TOKEN);
 
@@ -89,6 +89,15 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
 
   // 감시행 1건 처리
   async function _processRow(row) {
+    // 감시 대상 채널 필터 — 지정된 채널(RETAKE_WATCH_CHANNELS) 소환건만 알림.
+    // 범위 밖 채널 행은 알림하지 않고 종료 처리(skipped) → 재처리·오알림 방지.
+    // (watchChannels 미지정이면 필터 없음 — 테스트/하위호환용)
+    if (watchChannels && !watchChannels.has(row.watchChannel)) {
+      await retakeWatchStore.markStatus(row.rowIndex, "skipped", { note: "감시 대상 채널 아님" });
+      console.log(`[retake-watch] 범위 밖 채널 → skipped — row:${row.rowIndex} ch:${row.watchChannel}`);
+      return;
+    }
+
     const task = await _getTask(row.judgeTaskUuid);
     // 게이트웨이 단건 조회(GET /tasks/{uuid}) 응답은 키가 한글(상태). 값은 COMPLETED·DROP 등 영문 그대로.
     const state = task?.["상태"] || null;
