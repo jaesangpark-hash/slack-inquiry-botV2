@@ -65,6 +65,7 @@ const SAMPLE_WATCH = {
   watchThreadTs: "1700000000.000100",
   startDate: "2026-09-22T00:00:00+09:00",
   endDate: "2026-09-25T23:59:00+09:00",
+  requesterUserId: "U_CFM",
 };
 
 describe("createRetakeWatchStore.registerWatch", () => {
@@ -97,8 +98,9 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(call.range, "리테이크 감시!A:P");
     assert.strictEqual(call.opts.valueInputOption, "RAW"); // ts·uuid 소수부/문자열 보존 (형민님 검수)
     const row = call.rows[0];
-    assert.strictEqual(row.length, 16);
+    assert.strictEqual(row.length, 17);
     assert.strictEqual(row[1], "watching");            // status
+    assert.strictEqual(row[16], "U_CFM");              // requesterUserId (CFM 멘션용)
     assert.strictEqual(row[2], "task-judge-1");        // judgeTaskUuid
     assert.strictEqual(row[3], "task-judge-1,task-sub-2"); // allTaskUuids join
     assert.strictEqual(row[4], "proj-1");              // projectUuid
@@ -131,7 +133,7 @@ describe("createRetakeWatchStore.loadWatching", () => {
   test("status=watching 행만 반환하고 rowIndex(시트 실제 행번호)를 계산한다", async () => {
     const getRows = [
       ["등록시각", "status", "judgeTaskUuid", "allTaskUuids", "projectUuid", "jobUuid", "episode", "workName", "operationCode", "operationName", "watchChannel", "watchThreadTs", "startDate", "endDate", "notifiedAt", "note"],
-      ["t1", "watching", "uuid-a", "uuid-a", "p1", "j1", "10", "작품A", "OTC0012", "번역", "C1", "111.1", "s", "e", "", ""],   // 2행
+      ["t1", "watching", "uuid-a", "uuid-a", "p1", "j1", "10", "작품A", "OTC0012", "번역", "C1", "111.1", "s", "e", "", "", "U_CFM1"],   // 2행
       ["t2", "notified", "uuid-b", "uuid-b", "p2", "j2", "11", "작품B", "OTC0013", "번역검수", "C2", "222.2", "s", "e", "n", ""], // 3행
       ["t3", "watching", "uuid-c", "uuid-c", "p3", "j3", "12", "작품C", "OTC0014", "식자", "C3", "333.3", "s", "e", "", ""],   // 4행
     ];
@@ -143,6 +145,7 @@ describe("createRetakeWatchStore.loadWatching", () => {
     assert.strictEqual(watching[0].rowIndex, 2);
     assert.strictEqual(watching[0].watchChannel, "C1");
     assert.strictEqual(watching[0].watchThreadTs, "111.1");
+    assert.strictEqual(watching[0].requesterUserId, "U_CFM1");
     assert.strictEqual(watching[1].judgeTaskUuid, "uuid-c");
     assert.strictEqual(watching[1].rowIndex, 4);
   });

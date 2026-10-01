@@ -69,6 +69,7 @@ const BASE_ROW = {
   operationName: "번역",
   watchChannel: "C09B8QLR5FG",
   watchThreadTs: "1700000000.000100",
+  requesterUserId: "U_CFM",
 };
 
 const deps = ({ store, slack, apiFetch }) => ({
@@ -100,6 +101,7 @@ describe("retakeWatchPoller.tick", () => {
     assert.strictEqual(post.thread_ts, "1700000000.000100");
     assert.match(post.text, /rev-new/);          // 생성일 최신 uuid
     assert.doesNotMatch(post.text, /rev-old/);
+    assert.match(post.text, /<@U_CFM>/);         // 수정 요청자(CFM) @멘션
     assert.strictEqual(store.markCalls.length, 1);
     assert.strictEqual(store.markCalls[0].rowIndex, 5);
     assert.strictEqual(store.markCalls[0].status, "notified");

@@ -2,12 +2,13 @@
 "use strict";
 
 /**
- * 「리테이크 감시」 시트 컬럼 스키마 (A:P, 16컬럼) — 0-index
+ * 「리테이크 감시」 시트 컬럼 스키마 (A:Q, 17컬럼) — 0-index
  *
  *   0  등록시각(registeredAt) | 1  status         | 2  judgeTaskUuid | 3  allTaskUuids(,)
  *   4  projectUuid           | 5  jobUuid        | 6  episode       | 7  workName
  *   8  operationCode         | 9  operationName  | 10 watchChannel  | 11 watchThreadTs
  *   12 startDate             | 13 endDate        | 14 notifiedAt    | 15 note
+ *   16 requesterUserId(완료 알림에서 @멘션할 수정 요청자/CFM Slack ID)
  *
  * status 값: watching(감시중) → notified(완료 알림 발송) / dropped(DROP) / expired(14일 컷오프)
  */
@@ -28,8 +29,9 @@ const COL = {
   endDate:      13,
   notifiedAt:   14,
   note:         15,
+  requesterUserId: 16,
 };
-const COLUMN_COUNT = 16;
+const COLUMN_COUNT = 17;
 
 /**
  * @param {{
@@ -80,6 +82,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
         endDate:       r[COL.endDate]       || "",
         notifiedAt:    r[COL.notifiedAt]    || "",
         note:          r[COL.note]          || "",
+        requesterUserId: (r[COL.requesterUserId] || "").trim(),
       });
     }
     return parsed;
@@ -126,6 +129,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     row[COL.endDate]       = watch.endDate        || "";
     row[COL.notifiedAt]    = "";
     row[COL.note]          = watch.note           || "";
+    row[COL.requesterUserId] = watch.requesterUserId || "";
 
     // RAW: 값을 시트 UI처럼 해석하지 않고 문자열 그대로 저장한다.
     // USER_ENTERED면 watchThreadTs("1700000000.000100")가 숫자로 바뀌어 소수부가 사라지고,

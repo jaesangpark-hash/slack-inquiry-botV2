@@ -824,6 +824,8 @@ JSON만 출력. 코드블록 금지.
             watchThreadTs: data.watchThreadTs || "",
             startDate,
             endDate,
+            // 완료 알림에서 @멘션할 수정 요청자(CFM = 원문 작성자)
+            requesterUserId: data.requesterUserId || "",
           });
         } catch (watchErr) {
           console.error("[retake-watch] 감시행 등록 실패(비치명적):", watchErr.message);
