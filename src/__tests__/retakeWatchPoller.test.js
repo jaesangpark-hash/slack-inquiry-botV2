@@ -166,3 +166,28 @@ describe("retakeWatchPoller.tick", () => {
     assert.strictEqual(store.markCalls[0].extra.note, "납품검수 링크 미해석");
   });
 });
+
+describe("retakeWatchPoller 감시 대상 채널 필터 (watchChannels)", () => {
+  test("대상 채널이 아니면 알림 없이 skipped 처리 (COMPLETED여도)", async () => {
+    const store = makeStore([{ ...BASE_ROW, watchChannel: "C_OTHER" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({ ...deps({ store, slack, apiFetch }), watchChannels: new Set(["C09B8QLR5FG"]) });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 0);       // 알림 안 감
+    assert.strictEqual(store.markCalls.length, 1);
+    assert.strictEqual(store.markCalls[0].status, "skipped");
+  });
+
+  test("대상 채널이면 정상 알림", async () => {
+    const store = makeStore([{ ...BASE_ROW }]); // watchChannel = C09B8QLR5FG
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({ ...deps({ store, slack, apiFetch }), watchChannels: new Set(["C09B8QLR5FG"]) });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+});
