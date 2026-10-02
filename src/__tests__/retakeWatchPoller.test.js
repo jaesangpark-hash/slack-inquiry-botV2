@@ -191,3 +191,53 @@ describe("retakeWatchPoller 감시 대상 채널 필터 (watchChannels)", () => 
     assert.strictEqual(store.markCalls[0].status, "notified");
   });
 });
+
+describe("retakeWatchPoller CFM 폴백 멘션 (watchCfmByChannel)", () => {
+  test("requesterUserId 비면 채널별 CFM으로 폴백 태그", async () => {
+    // 봇 메시지에 이모지 → requesterUserId 빈 상태로 등록된 행
+    const store = makeStore([{ ...BASE_ROW, requesterUserId: "" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      watchCfmByChannel: new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /<@U07G8KC2EE6>/); // 폴백 CFM 태그
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+
+  test("requesterUserId 있으면 폴백 무시하고 원문 작성자 우선", async () => {
+    const store = makeStore([{ ...BASE_ROW }]); // requesterUserId = U_CFM
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      watchCfmByChannel: new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /<@U_CFM>/);           // 작성자 우선
+    assert.doesNotMatch(slack.postCalls[0].text, /U07G8KC2EE6/); // 폴백 미사용
+  });
+
+  test("requesterUserId 비고 폴백도 없으면 멘션 생략(기존 동작)", async () => {
+    const store = makeStore([{ ...BASE_ROW, requesterUserId: "" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.doesNotMatch(slack.postCalls[0].text, /<@/); // 멘션 없음
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+});

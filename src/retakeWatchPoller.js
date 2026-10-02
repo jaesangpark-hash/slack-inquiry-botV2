@@ -28,7 +28,7 @@ const EXPIRY_DAYS = 14;
 const EDITOR_LINK_BASE = "https://main.totus.pro/ko/editor?uuid=";
 const DELIVERY_REVIEW_OP_CODE = "OTC0087";
 
-module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels }) {
+module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels, watchCfmByChannel }) {
   const BASE  = base  || (() => process.env.PLATFORM_API_URL);
   const TOKEN = token || (() => process.env.PLATFORM_API_TOKEN);
 
@@ -78,8 +78,13 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
   }
 
   function _buildCompletionText(row, reviewLink) {
-    // 수정 요청자(CFM)가 있으면 알림 맨 앞에 @멘션해 바로 알 수 있게 한다.
-    const mention = row.requesterUserId ? `<@${row.requesterUserId}> ` : "";
+    // 수정 요청자(CFM)를 알림 맨 앞에 @멘션해 바로 알 수 있게 한다.
+    // requesterUserId(원문 작성자)가 비면 — 봇 메시지에 이모지를 찍어 작성자가 봇인 경우 등 —
+    // 그 채널에 설정된 CFM(watchCfmByChannel)으로 폴백 태그한다(이미 등록된 행도 소급 적용).
+    const mentionId = row.requesterUserId
+      || (watchCfmByChannel && watchCfmByChannel.get(row.watchChannel))
+      || "";
+    const mention = mentionId ? `<@${mentionId}> ` : "";
     const head = `✅ ${mention}*${row.workName || "작품"} ${row.episode || "?"}화 [${row.operationName || "-"}]* 리테이크 수정이 완료되었습니다!`;
     const linkLine = reviewLink
       ? `🔗 납품검수: ${reviewLink}`
