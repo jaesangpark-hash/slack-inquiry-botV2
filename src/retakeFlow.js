@@ -10,6 +10,23 @@ const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
 const { extractPivoIdGuess } = require("./utils/pivo-id");
+// ── 벤더사 고정 멘션 ────────────────────────────────────────────
+// GWC는 공용 계정으로 작업해 작업자 이메일이 개인 Slack 계정에 매핑되지 않는다.
+// 그래서 이메일로 찾은 ID 대신 담당자를 고정으로 멘션한다(중일 리테이크 n8n WF와 같은 규칙).
+const VENDOR_FIXED_MENTIONS = [
+  { match: (email) => email === "gwc.japaneseproject@gmail.com",
+    text: "<@U0AV1GY767J> cc <@U04EMDBL1E1>" },   // 미아 / cc 제인
+];
+
+// 작업자 멘션 문자열. 벤더사면 고정 멘션, 아니면 시트 C열의 Slack ID들(쉼표 구분).
+function buildWorkerMention(workerEmail, workerSlackIds) {
+  const email = String(workerEmail || "").trim().toLowerCase();
+  const fixed = email && VENDOR_FIXED_MENTIONS.find((v) => v.match(email));
+  if (fixed) return fixed.text;
+  return workerSlackIds
+    ? String(workerSlackIds).split(",").map((id) => `<@${id.trim()}>`).join(" ")
+    : "";
+}
 // retakeFlow.js — 수정·리테이크 플로우 (IB-04)
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
@@ -1100,9 +1117,7 @@ JSON만 출력. 코드블록 금지.
       ? data.endDate.replace("T", " ").slice(0, 16)
       : "미정";
 
-    const mentionText = data.workerSlackIds
-      ? data.workerSlackIds.split(",").map(id => `<@${id.trim()}>`).join(" ")
-      : "";
+    const mentionText = buildWorkerMention(data.workerEmail, data.workerSlackIds);
 
     const msgText = `${data.workName} ${data.episode}화 작업을 다시 요청 드렸습니다.\n마감일 : ${endDateDisplay}`;
 
@@ -1226,9 +1241,7 @@ JSON만 출력. 코드블록 금지.
       const os     = require("os");
 
       // C열에 쉼표로 여러 ID 저장 가능 (예: "U0123,U0456")
-      const mentionText = data.workerSlackIds
-        ? data.workerSlackIds.split(",").map(id => `<@${id.trim()}>`).join(" ")
-        : "";
+      const mentionText = buildWorkerMention(data.workerEmail, data.workerSlackIds);
 
       const endDateDisplay = data.endDate
         ? data.endDate.replace("T", " ").slice(0, 16)
