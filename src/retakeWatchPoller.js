@@ -77,6 +77,21 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     return Date.now() - regMs > EXPIRY_DAYS * 24 * 3600 * 1000;
   }
 
+  // 작품명 표시 정리 — 납품 채널에 뿌릴 때 내부 코드·플랫폼 태그·일본어 원제를 벗겨 한국어 제목만 남긴다.
+  // 예) "[PV-177835] [카카오픽코마] 그린라이트 グリーンライト（仮）" → "그린라이트"
+  //     "...옆집에는 호랑이가 산다 隣には虎が住んでいる（仮）APP"      → "옆집에는 호랑이가 산다 APP"
+  // 한글(가-힣)·숫자·라틴(APP/WEB 등 구분자)은 보존하고, 일본어 가나·한자 구간과 （仮） 표기만 제거한다.
+  // 정리 결과가 비면(한자만으로 된 예외적 제목 등) 원본을 그대로 쓴다(정보 손실 방지).
+  function _cleanWorkName(raw) {
+    if (!raw) return raw;
+    let s = String(raw);
+    s = s.replace(/^(?:\s*\[[^\]]*\]\s*)+/, "");          // 맨 앞 [PV-…]·[플랫폼] 태그 제거
+    s = s.replace(/[（(]\s*仮\s*[）)]/g, "");              // （仮）/(仮) 가제 표기 제거
+    s = s.replace(/[々぀-ヿ㐀-䶿一-鿿]+/g, ""); // 일본어 가나·한자 구간 제거
+    s = s.replace(/\s{2,}/g, " ").trim();                  // 중복 공백 정리
+    return s || String(raw).trim();
+  }
+
   function _buildCompletionText(row, reviewLink) {
     // 수정 요청자(CFM)를 알림 맨 앞에 @멘션해 바로 알 수 있게 한다.
     // requesterUserId(원문 작성자)가 비면 — 봇 메시지에 이모지를 찍어 작성자가 봇인 경우 등 —
@@ -85,7 +100,8 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
       || (watchCfmByChannel && watchCfmByChannel.get(row.watchChannel))
       || "";
     const mention = mentionId ? `<@${mentionId}> ` : "";
-    const head = `✅ ${mention}*${row.workName || "작품"} ${row.episode || "?"}화 [${row.operationName || "-"}]* 리테이크 수정이 완료되었습니다!`;
+    const workName = _cleanWorkName(row.workName) || "작품";
+    const head = `✅ ${mention}*${workName} ${row.episode || "?"}화 [${row.operationName || "-"}]* 리테이크 수정이 완료되었습니다!`;
     const linkLine = reviewLink
       ? `🔗 납품검수: ${reviewLink}`
       : "🔗 납품검수 링크를 찾지 못했습니다. Totus에서 직접 확인 부탁드립니다.";
@@ -162,5 +178,5 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     }
   }
 
-  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired };
+  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired, _cleanWorkName };
 };
