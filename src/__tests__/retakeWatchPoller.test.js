@@ -191,3 +191,102 @@ describe("retakeWatchPoller 감시 대상 채널 필터 (watchChannels)", () => 
     assert.strictEqual(store.markCalls[0].status, "notified");
   });
 });
+
+describe("retakeWatchPoller CFM 폴백 멘션 (watchCfmByChannel)", () => {
+  test("requesterUserId 비면 채널별 CFM으로 폴백 태그", async () => {
+    // 봇 메시지에 이모지 → requesterUserId 빈 상태로 등록된 행
+    const store = makeStore([{ ...BASE_ROW, requesterUserId: "" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      watchCfmByChannel: new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /<@U07G8KC2EE6>/); // 폴백 CFM 태그
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+
+  test("requesterUserId 있으면 폴백 무시하고 원문 작성자 우선", async () => {
+    const store = makeStore([{ ...BASE_ROW }]); // requesterUserId = U_CFM
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      watchCfmByChannel: new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /<@U_CFM>/);           // 작성자 우선
+    assert.doesNotMatch(slack.postCalls[0].text, /U07G8KC2EE6/); // 폴백 미사용
+  });
+
+  test("requesterUserId 비고 폴백도 없으면 멘션 생략(기존 동작)", async () => {
+    const store = makeStore([{ ...BASE_ROW, requesterUserId: "" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+    });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.doesNotMatch(slack.postCalls[0].text, /<@/); // 멘션 없음
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+});
+
+describe("retakeWatchPoller 작품명 정리 (_cleanWorkName)", () => {
+  const poller = createRetakeWatchPoller(deps({
+    store: makeStore([]), slack: makeSlack(), apiFetch: makeApiFetch({ taskState: "PROCESSING" }),
+  }));
+
+  test("PV코드·플랫폼태그·일본어원제·（仮） 제거 → 한국어 제목만", () => {
+    assert.strictEqual(
+      poller._cleanWorkName("[PV-177835] [카카오픽코마] 그린라이트 グリーンライト（仮）"),
+      "그린라이트"
+    );
+  });
+
+  test("한자만으로 된 원제도 제거", () => {
+    assert.strictEqual(
+      poller._cleanWorkName("[PV-188444] [카카오픽코마] 마교일진 魔教不良（仮）"),
+      "마교일진"
+    );
+  });
+
+  test("일본어 뒤의 APP/WEB 구분자는 보존", () => {
+    assert.strictEqual(
+      poller._cleanWorkName("[PV-183045] [카카오픽코마] 옆집에는 호랑이가 산다 隣には虎が住んでいる（仮）APP"),
+      "옆집에는 호랑이가 산다 APP"
+    );
+  });
+
+  test("이미 깨끗한 제목(중일 작품)은 그대로", () => {
+    assert.strictEqual(poller._cleanWorkName("멜로디는 끝나지 않아"), "멜로디는 끝나지 않아");
+  });
+
+  test("빈 값·결과 공백이면 원본 보존", () => {
+    assert.strictEqual(poller._cleanWorkName(""), "");
+    assert.strictEqual(poller._cleanWorkName("魔教"), "魔教"); // 전부 제거되면 원본 유지
+  });
+
+  test("알림 본문에 정리된 제목이 들어간다", async () => {
+    const store = makeStore([{ ...BASE_ROW, workName: "[PV-177835] [카카오픽코마] 그린라이트 グリーンライト（仮）", episode: "64", operationName: "식자검수" }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const p = createRetakeWatchPoller({ ...deps({ store, slack, apiFetch }), watchChannels: new Set(["C09B8QLR5FG"]) });
+    await p.tick();
+
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /\*그린라이트 64화 \[식자검수\]\*/);
+    assert.doesNotMatch(slack.postCalls[0].text, /PV-177835/);
+    assert.doesNotMatch(slack.postCalls[0].text, /カオ|グリーン|（仮）/);
+  });
+});

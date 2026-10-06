@@ -105,6 +105,16 @@ const RETAKE_CHANNELS      = new Set(
 const RETAKE_WATCH_CHANNELS = new Set(
   (process.env.RETAKE_WATCH_CHANNELS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
+// 감시 채널별 CFM(수정 요청자) Slack ID 폴백 매핑 — "채널ID:유저ID" 쉼표 구분(예: C09B8QLR5FG:U07G8KC2EE6).
+// 완료 알림은 원래 "원문 작성자(requesterUserId)"를 @멘션하지만, APM이 사람 메시지가 아닌
+// 봇(납품봇) 메시지에 이모지를 찍으면 작성자가 봇이라 requesterUserId가 비어 멘션이 생략된다.
+// 이 채널의 CFM은 고정(예: #공지=현주님)이므로, requesterUserId가 비면 여기 지정된 CFM으로 폴백 태그한다.
+const RETAKE_WATCH_CFM_BY_CHANNEL = new Map(
+  (process.env.RETAKE_WATCH_CFM || "").split(",").map(s => s.trim()).filter(Boolean)
+    .map(pair => pair.split(":").map(x => x.trim()))
+    .filter(([ch, uid]) => ch && uid)
+    .map(([ch, uid]) => [ch, uid])
+);
 // 리테이크 감시 시트 — 스프레드시트 ID는 반드시 env로만 지정한다(코드 기본값 없음).
 // ⚠️ 운영 시트(n8n 리테이크 자동화 시트)에 절대 쓰지 않도록, 지정된 별도 감시 파일 한 곳 외에는 쓰지 않는다.
 // 시트ID·gridId가 둘 다 있어야 감시가 켜지며, 하나라도 없으면 등록·조회·기록 전부 skip된다(store 내부 가드).
@@ -403,6 +413,7 @@ if (RETAKE_WATCH_ENABLED) {
     slackClient: app.client,
     apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
     watchChannels: RETAKE_WATCH_CHANNELS, // 감시 대상 채널 필터(범위 밖 행은 skipped)
+    watchCfmByChannel: RETAKE_WATCH_CFM_BY_CHANNEL, // requesterUserId 빈 경우 채널별 CFM 폴백 태그
   });
   const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
   cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
