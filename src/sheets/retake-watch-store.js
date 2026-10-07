@@ -9,6 +9,7 @@
  *   8  operationCode         | 9  operationName  | 10 watchChannel  | 11 watchThreadTs
  *   12 startDate             | 13 endDate        | 14 notifiedAt    | 15 note
  *   16 requesterUserId(완료 알림에서 @멘션할 수정 요청자/CFM Slack ID)
+ *   17 ownerUserId(미제출 리마인더에서 @멘션할 "소환한 담당자/APM" Slack ID)
  *
  * status 값: watching(감시중) → notified(완료 알림 발송) / dropped(DROP) / expired(14일 컷오프) / skipped(감시 대상 채널 아님)
  */
@@ -30,8 +31,9 @@ const COL = {
   notifiedAt:   14,
   note:         15,
   requesterUserId: 16,
+  ownerUserId:  17,
 };
-const COLUMN_COUNT = 17;
+const COLUMN_COUNT = 18;
 
 /**
  * @param {{
@@ -83,6 +85,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
         notifiedAt:    r[COL.notifiedAt]    || "",
         note:          r[COL.note]          || "",
         requesterUserId: (r[COL.requesterUserId] || "").trim(),
+        ownerUserId:     (r[COL.ownerUserId] || "").trim(),
       });
     }
     return parsed;
@@ -130,6 +133,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     row[COL.notifiedAt]    = "";
     row[COL.note]          = watch.note           || "";
     row[COL.requesterUserId] = watch.requesterUserId || "";
+    row[COL.ownerUserId]     = watch.ownerUserId     || "";
 
     // RAW: 값을 시트 UI처럼 해석하지 않고 문자열 그대로 저장한다.
     // USER_ENTERED면 watchThreadTs("1700000000.000100")가 숫자로 바뀌어 소수부가 사라지고,

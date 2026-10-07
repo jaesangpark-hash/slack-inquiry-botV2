@@ -66,6 +66,7 @@ const SAMPLE_WATCH = {
   startDate: "2026-09-22T00:00:00+09:00",
   endDate: "2026-09-25T23:59:00+09:00",
   requesterUserId: "U_CFM",
+  ownerUserId: "U_APM",
 };
 
 describe("createRetakeWatchStore.registerWatch", () => {
@@ -85,7 +86,7 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(sheetsClient.appendCalls.length, 0);
   });
 
-  test("정상 append — 16컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
+  test("정상 append — 18컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
     const sheetsClient = makeFakeSheetsClient({ getRows: [["등록시각", "status"]] }); // 헤더만
     const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
     const res = await store.registerWatch(SAMPLE_WATCH);
@@ -98,9 +99,10 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(call.range, "리테이크 감시!A:P");
     assert.strictEqual(call.opts.valueInputOption, "RAW"); // ts·uuid 소수부/문자열 보존 (형민님 검수)
     const row = call.rows[0];
-    assert.strictEqual(row.length, 17);
+    assert.strictEqual(row.length, 18);
     assert.strictEqual(row[1], "watching");            // status
     assert.strictEqual(row[16], "U_CFM");              // requesterUserId (CFM 멘션용)
+    assert.strictEqual(row[17], "U_APM");              // ownerUserId (소환 담당자 멘션용)
     assert.strictEqual(row[2], "task-judge-1");        // judgeTaskUuid
     assert.strictEqual(row[3], "task-judge-1,task-sub-2"); // allTaskUuids join
     assert.strictEqual(row[4], "proj-1");              // projectUuid

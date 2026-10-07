@@ -855,6 +855,9 @@ JSON만 출력. 코드블록 금지.
             endDate,
             // 완료 알림에서 @멘션할 수정 요청자(CFM = 원문 작성자)
             requesterUserId: data.requesterUserId || "",
+            // 미제출 리마인더에서 @멘션할 "소환한 담당자"(= 이모지/직접 실행한 APM).
+            // draft에 없으면 이 날짜 모달을 제출한 실행자(body.user.id)로 폴백 — 둘 다 소환 당사자.
+            ownerUserId: data.ownerUserId || body.user.id || "",
           });
         } catch (watchErr) {
           console.error("[retake-watch] 감시행 등록 실패(비치명적):", watchErr.message);
