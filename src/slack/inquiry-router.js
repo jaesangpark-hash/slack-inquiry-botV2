@@ -117,7 +117,32 @@ module.exports = function createInquiryRouter(deps) {
       const lines        = originalText.split("\n").map(l => l.trim()).filter(l => l);
       const HEADER_RE    = /^[-*・•]?\s*(\d+)\s*\|\s*\[.+?\]\s*.+?\/\s*(\d+)\s*PIVO\s*납품/;
       const headerMatches   = lines.map(l => l.match(HEADER_RE)).filter(Boolean);
-      const headerEpisodes  = headerMatches.map(m => m[2]);
+      let headerEpisodes    = headerMatches.map(m => m[2]);
+
+      // ★위 템플릿("PIVO ID | [브랜드] 작품명 / 회차 PIVO 납품")에 안 맞는 형식이 실제로 더 많다.
+      //   납품 스레드엔 PIVO ID 없이 탭으로만 구분된 줄이 섞여 온다(실측 1,500줄+):
+      //     [카카오픽코마] 뱀파이어님의 대리식사⇥247 PIVO납품
+      //     [카카오픽코마] 19금 로판에 친구와 빙의될 확률 APP⇥⇥51 PIVO 납품
+      //   이걸 못 읽으면 AI가 스레드 전체에서 다른 작품의 숫자를 끌어다 쓴다(78화 오독의 원인).
+      //   회차는 **작품명 뒤 구분자 다음의 맨 앞 숫자**다 — 납품시트 Job name 928개 고유 패턴을
+      //   전수 대조해 확정했다(「164 外伝11」=164, 「178 外伝25 (완결)」=178, 예외 0건).
+      //   제목 속 숫자(19금·100가지·11번째)는 구분자 앞이라 안 걸린다.
+      if (!headerEpisodes.length) {
+        // 구분자는 탭 · 연속공백 · 슬래시 셋 다 온다(실측 비율: 「/」 897 > 탭 10).
+        const ALT_RE = /^[-*・•]?\s*\[[^\]]+\]\s*\S.*?(?:\t+|\s{2,}|\s*\/\s*)(\d+(?:\s*[-~]\s*\d+)?)\b/;
+        headerEpisodes = lines
+          .filter(l => !/^~.*~$/.test(l))                                   // 취소선 = 취소된 건
+          .filter(l => !/\[(납품일\s*변경|.*납품\s*예정|홀딩|보류)\]/.test(l))  // 납품 요청 아님
+          .filter(l => /PIVO\s*납품/i.test(l))
+          .map(l => l.match(ALT_RE)).filter(Boolean)
+          .map(m => m[1].replace(/\s+/g, ""));
+        if (headerEpisodes.length) console.log(`[retake-header] 탭 구분 형식에서 회차 ${headerEpisodes.length}건 추출: ${headerEpisodes.join(", ")}`);
+      }
+      // 헤더에서 회차를 찾았는데 AI가 다른 값을 넣었으면 헤더를 믿는다(AI는 스레드 전체를 본다).
+      if (headerEpisodes.length === 1 && retakeAnalysis.episode !== headerEpisodes[0]) {
+        if (retakeAnalysis.episode) console.log(`[retake-header] 회차 교정: AI "${retakeAnalysis.episode}" → 헤더 "${headerEpisodes[0]}"`);
+        retakeAnalysis.episode = headerEpisodes[0];
+      }
       // AI가 못 잡았을 때만 헤더 템플릿 선두 숫자(PIVO ID)로 보완 — 단건일 때만 채택
       if (!retakeAnalysis.pivoId && headerMatches.length === 1) {
         retakeAnalysis.pivoId = headerMatches[0][1];
