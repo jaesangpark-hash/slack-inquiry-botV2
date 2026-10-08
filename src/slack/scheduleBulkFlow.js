@@ -717,11 +717,14 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     ];
     for (const op of opList) {
       const { opCode, opName, epsWith, epsAssigned, epTotal, selectable } = op;
-      // ★고를 수 없는 건 입력란 대신 이유를 적는다(2026-10-08). 조용히 빼면 "왜 없지?"를 알 수 없고,
-      //   작업자 미배정은 정상 상태가 아니라 데이터를 고쳐야 하는 신호다.
+      // ★고를 수 없는 건 입력란 대신 이유를 적는다(2026-10-08). 조용히 빼면 "태스크는 있는데
+      //   왜 선택지에 없지?"를 알 방법이 없다.
+      //   단 경고조로 쓰지 않는다 — 검수 계열에 작업자를 안 붙이고 운영하는 작품이 실제로 있고
+      //   (PV-146958은 그래서 리테이크를 식자에 걸어왔다), 그 경우 매번 문제처럼 보이면 안 된다.
+      //   사실만 적고 판단은 APM에게 맡긴다.
       if (selectable === false) {
         blocks.push({ type: "section", text: { type: "mrkdwn",
-          text: `• *${opName}* — 선택 불가 (작업자 미배정 ${epsWith?.length ?? 0}/${epTotal ?? "?"}화). 배정 상태 확인 필요.` } });
+          text: `• *${opName}* — 작업자 미배정이라 선택 불가 (${epsWith?.length ?? 0}/${epTotal ?? "?"}화)` } });
         continue;
       }
       const partial = epsWith && epTotal && epsWith.length < epTotal;
