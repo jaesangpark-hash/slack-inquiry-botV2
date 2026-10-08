@@ -128,7 +128,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ── TOTUS: 단일 회차에서 오퍼레이션 목록 추출 ──────────────────────
   // isRetake=true: 완료상태 여부와 무관하게 RETAKE_OP_CODES 화이트리스트 + 작업자 배정된 태스크만 추출
   //                (리테이크 대상은 원래 완료·납품된 화라 상태 필터를 쓰면 항상 0건이 됨)
-  async function _getOpsForEpisode(projectUuid, episode, isRetake = false) {
+  async function _getOpsForEpisodeRaw(projectUuid, episode, isRetake = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
         headers: { Authorization: `Bearer ${TOKEN()}` },
@@ -148,10 +148,12 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           const code = task.오퍼레이션유형;
           if (!code || seen.has(code)) continue;
           if (isRetake) {
-            if (!RETAKE_OP_CODES.has(code) || task.작업자 == null) continue;
+            // ★작업자 미배정이어도 목록에는 담는다(assigned=false). 거르는 건 호출부 몫 —
+            //   조용히 빼면 "왜 선택지에 없지?"를 알 방법이 없다.
+            if (!RETAKE_OP_CODES.has(code)) continue;
           } else if (EXCLUDE_OP_CODES.has(code)) continue;
           seen.add(code);
-          ops.push({ opCode: code, opName: RETAKE_OP_CODES.get(code) || task.오퍼레이션유형명 || code });
+          ops.push({ opCode: code, opName: RETAKE_OP_CODES.get(code) || task.오퍼레이션유형명 || code, assigned: task.작업자 != null });
         }
       }
       return ops;
@@ -173,6 +175,27 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
   function _pickLatestTask(taskUuids, byUuid) {
     return [...taskUuids].sort((a, b) => _taskRecency(byUuid[b]) - _taskRecency(byUuid[a]))[0];
+  }
+
+  // ── 선택한 전 회차의 오퍼레이션 현황 집계(2026-10-08) ──────────────
+  // 예전에는 그룹의 '첫 회차' 하나만 보고 선택지를 만들었다. 그래서 다른 회차에 그 오퍼레이션이
+  // 없으면 모달에서는 멀쩡해 보이다가 실행 단계에서 전체가 멈췄다(재상 님 실사용 보고).
+  // 이제 전 회차를 보고 "몇 회차에 있는지 / 작업자가 붙어 있는지"까지 모달에 적는다.
+  //  ★작업자 미배정은 정상 상태가 아니다(재상 님 확인 2026-10-08) — 조용히 빼지 말고 그 사실을 보여줘야
+  //    데이터가 잘못됐다는 걸 APM이 알아챌 수 있다. 실측(PV-146958 420~444화): 식자검수·번역검수·
+  //    식자번역검수가 25/25회차 전부 작업자 미배정이라 리테이크를 걸 수조차 없었는데 안내가 없었다.
+  async function _collectOpStats(projectUuid, episodes, isRetake) {
+    const perEp = await Promise.all(episodes.map(async (ep) => ({ ep, ops: await _getOpsForEpisodeRaw(projectUuid, ep, isRetake) })));
+    const stats = new Map(); // opCode → { opCode, opName, epsWith:[], epsAssigned:[] }
+    for (const { ep, ops } of perEp) {
+      for (const o of ops) {
+        if (!stats.has(o.opCode)) stats.set(o.opCode, { opCode: o.opCode, opName: o.opName, epsWith: [], epsAssigned: [] });
+        const st = stats.get(o.opCode);
+        st.epsWith.push(ep);
+        if (o.assigned) st.epsAssigned.push(ep);
+      }
+    }
+    return { total: episodes.length, stats: [...stats.values()] };
   }
 
   // ── TOTUS: 단일 회차의 opCode/정확 UUID → task 맵 ─────────────────
@@ -261,7 +284,6 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const pickedLatestNotes = []; // 후보가 여러 개라 최신본을 고른 건 — 로그·안내용
     const expectedSourceTargets = [];
     const actualSourceTargets = [];
-    const ambiguousSourceTargets = [];
     for (const { ep, inventory } of sourceInventories) {
       const sources = [];
       for (const { opCode, opName } of selectedOps) {
@@ -285,15 +307,26 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       }
       sourcesByEpisode[ep] = sources;
     }
-    assertNoAmbiguousMutationTargets(
-      ambiguousSourceTargets,
-      "일괄 리테이크 source 태스크"
-    );
-    assertCompleteMutationTargets(
-      expectedSourceTargets,
-      actualSourceTargets,
-      "일괄 리테이크 source 태스크"
-    );
+    // ★없는 회차는 건너뛰고 나머지를 진행한다(2026-10-08). 예전엔 한 회차라도 태스크가 없으면
+    //   assertCompleteMutationTargets가 전체를 중단시켜, 10회차 중 1개 때문에 아무것도 못 했다.
+    //   대신 무엇을 건너뛰었는지는 반드시 알린다 — 조용히 빠지면 안 돌아간 회차를 아무도 모른다.
+    const skippedSourceTargets = [...new Set(expectedSourceTargets.map(String))]
+      .filter(t => !new Set(actualSourceTargets.map(String)).has(t));
+    if (skippedSourceTargets.length && !actualSourceTargets.length) {
+      // 전부 없으면 진행할 게 없다 — 이건 그대로 멈추는 게 맞다.
+      throw new Error(`리테이크할 소스 태스크를 한 건도 찾지 못했어: ${skippedSourceTargets.join(", ")}`);
+    }
+
+    if (skippedSourceTargets.length) {
+      console.log("[scheduleBulk] 리테이크 건너뛴 대상:", skippedSourceTargets.join(" / "));
+      if (draft.dmChannelId) {
+        await client.chat.postMessage({
+          channel: draft.dmChannelId,
+          text: ["⚠️ 아래는 해당 태스크가 없어 건너뛰었어. 나머지는 그대로 진행할게.",
+                 ...skippedSourceTargets.map(t => `• ${t}`)].join("\n"),
+        }).catch(() => {});
+      }
+    }
 
     // 최신본을 골라 쓴 건은 조용히 넘기지 않는다 — 어느 태스크를 소스로 썼는지 남겨야 추적된다.
     if (pickedLatestNotes.length) {
@@ -682,7 +715,17 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       { type: "section", text: { type: "mrkdwn", text: headerText } },
       { type: "divider" },
     ];
-    for (const { opCode, opName } of opList) {
+    for (const op of opList) {
+      const { opCode, opName, epsWith, epsAssigned, epTotal, selectable } = op;
+      // ★고를 수 없는 건 입력란 대신 이유를 적는다(2026-10-08). 조용히 빼면 "왜 없지?"를 알 수 없고,
+      //   작업자 미배정은 정상 상태가 아니라 데이터를 고쳐야 하는 신호다.
+      if (selectable === false) {
+        blocks.push({ type: "section", text: { type: "mrkdwn",
+          text: `• *${opName}* — 선택 불가 (작업자 미배정 ${epsWith?.length ?? 0}/${epTotal ?? "?"}화). 배정 상태 확인 필요.` } });
+        continue;
+      }
+      const partial = epsWith && epTotal && epsWith.length < epTotal;
+      const label = partial ? `${opName} (${epsWith.length}/${epTotal}화)` : opName;
       const elem = isRetake
         ? { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1", max_value: "365" }
         : { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "5", min_value: "0", max_value: "365" };
@@ -690,9 +733,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         type: "input",
         block_id: `op_${opCode}`,
         optional: isRetake,
-        label: { type: "plain_text", text: opName },
+        label: { type: "plain_text", text: label },
         element: elem,
-        hint: { type: "plain_text", text: isRetake ? "비워두면 이 오퍼레이션 건너뜀" : "일 단위" },
+        hint: { type: "plain_text", text: partial
+          ? `${epTotal - epsWith.length}개 회차엔 이 태스크가 없어 건너뜀`
+          : (isRetake ? "비워두면 이 오퍼레이션 건너뜀" : "일 단위") },
       });
     }
     return {
@@ -915,16 +960,19 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         return;
       }
 
-      // 복수/그룹: 오퍼레이션 기간 조회 후 Modal B로 진행
-      const sampleEps = groups.map(g => g.episodes[0]);
-      const opSets    = await Promise.all(sampleEps.map(ep => _getOpsForEpisode(projectUuid, ep, execMode === "retake")));
-      const seen = new Set();
-      const opList = [];
-      for (const ops of opSets) {
-        for (const op of ops) {
-          if (!seen.has(op.opCode)) { seen.add(op.opCode); opList.push(op); }
-        }
-      }
+      // 복수/그룹: 오퍼레이션 현황을 **전 회차** 기준으로 모아 Modal B로 진행(2026-10-08)
+      const allEpisodes = groups.flatMap(g => g.episodes);
+      const { total: epTotal, stats } = await _collectOpStats(projectUuid, allEpisodes, execMode === "retake");
+      const isRetakeMode = execMode === "retake";
+      const opList = stats.map(st => ({
+        opCode: st.opCode,
+        opName: st.opName,
+        epsWith: st.epsWith,
+        epsAssigned: st.epsAssigned,
+        epTotal,
+        // 리테이크는 작업자가 붙어 있어야 보낼 곳이 있다. 미배정이면 고를 수 없게 하되 목록에는 남긴다.
+        selectable: !isRetakeMode || st.epsAssigned.length > 0,
+      }));
 
       if (!opList.length) {
         const errView = {
