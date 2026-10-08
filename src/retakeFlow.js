@@ -123,7 +123,7 @@ module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkT
     { code: "OTC0014", name: "식자" },
     { code: "OTC0024", name: "식자번역검수" },
     { code: "OTC0015", name: "식자검수" },
-    { code: "OTC0087", name: "납품검수" },
+    // 납품검수(OTC0087)는 리테이크 대상이 아니다(2026-10-08 재상 님 확인) — 복수 회차 쪽과 목록을 맞춘다.
   ];
 
   // ── AI 파싱: 작품명 / 회차 추출 ──────────────────────────

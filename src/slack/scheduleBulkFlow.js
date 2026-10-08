@@ -32,7 +32,9 @@ const RETAKE_OP_CODES = new Map([
   ["OTC0014", "식자"],
   ["OTC0024", "식자번역검수"],
   ["OTC0015", "식자검수"],
-  ["OTC0087", "납품검수"],
+  // ★납품검수(OTC0087)는 뺐다(2026-10-08 재상 님 확인) — 리테이크 대상이 될 일이 없다.
+  //   게다가 선택지에는 뜨는데 소스 조회(_getTaskInventory)는 EXCLUDE_OP_CODES로 걸러내서,
+  //   고르면 "source 태스크 대상이 누락됐어"로 실행 직전에 반드시 멈추는 자리였다.
 ]);
 
 module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDraftId }) {
@@ -159,6 +161,20 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
   }
 
+  // ── 같은 오퍼레이션 태스크가 여러 개일 때 '가장 최근' 것을 고른다(2026-10-08) ──
+  // 리테이크를 한 번 돌린 회차는 같은 오퍼레이션 태스크가 쌓인다(원본 + 리테이크본).
+  // 실측(PV-146958 422화 식자): 둘 다 COMPLETED라 상태로는 구분이 안 되고 마감일만 다르다
+  //   37ed0677… 마감 2026-07-22(원본) / d85e76da… 마감 2026-08-13(리테이크본)
+  // 그래서 마감일 → 시작일 순으로 가장 늦은 것을 소스로 쓴다. 리테이크 체인의 최신본이다.
+  function _taskRecency(task) {
+    const raw = task?.["마감일원본"] || task?.["마감일"] || task?.["시작일원본"] || task?.["시작일"] || "";
+    const t = Date.parse(String(raw).replace(/\./g, "-"));
+    return Number.isFinite(t) ? t : -Infinity;
+  }
+  function _pickLatestTask(taskUuids, byUuid) {
+    return [...taskUuids].sort((a, b) => _taskRecency(byUuid[b]) - _taskRecency(byUuid[a]))[0];
+  }
+
   // ── TOTUS: 단일 회차의 opCode/정확 UUID → task 맵 ─────────────────
   // isRetake=true: 완료상태 태스크도 포함 (리테이크 대상 = 완료된 번역 태스크를 찾아 /retake 호출해야 함)
   // ★조회 실패(네트워크/인증/비-JSON 등)와 "진짜로 태스크가 없음"을 구분하기 위해 fetchError를 담아 반환한다.
@@ -242,6 +258,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       throw new Error(`일부 회차 TOTUS 조회 자체가 실패했어(태스크 없음이 아님) — ${fetchFailedEpisodes.join(" / ")}`);
     }
     const sourcesByEpisode = {}; // { [ep]: [{ opCode, opName, taskUuid }] }
+    const pickedLatestNotes = []; // 후보가 여러 개라 최신본을 고른 건 — 로그·안내용
     const expectedSourceTargets = [];
     const actualSourceTargets = [];
     const ambiguousSourceTargets = [];
@@ -251,12 +268,18 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         const targetKey = `${ep}화/${opName || opCode}`;
         expectedSourceTargets.push(targetKey);
         const candidates = inventory.taskUuidsByOpCode[opCode] || [];
-        if (candidates.length > 1) {
-          ambiguousSourceTargets.push(targetKey);
-          continue;
-        }
-        const taskUuid = candidates[0];
+        // ★여러 개여도 멈추지 않는다(2026-10-08). 예전엔 후보가 2개 이상이면 외부 변경을 시작도
+        //   하지 않고 전체를 중단했는데, 리테이크를 한 번 돌린 회차는 반드시 2개가 되므로
+        //   그 회차가 하나라도 섞이면 복수 회차 리테이크가 통째로 막혔다(재상 님 실사용 보고).
+        //   마감일이 가장 늦은 = 리테이크 체인의 최신본을 소스로 쓴다.
+        const taskUuid = candidates.length > 1
+          ? _pickLatestTask(candidates, inventory.byUuid)
+          : candidates[0];
         if (!taskUuid) continue;
+        if (candidates.length > 1) {
+          const picked = inventory.byUuid[taskUuid];
+          pickedLatestNotes.push(`${ep}화 ${opName || opCode}: 후보 ${candidates.length}개 중 마감 ${picked?.["마감일"] || "?"} 태스크 사용`);
+        }
         sources.push({ opCode, opName, taskUuid });
         actualSourceTargets.push(targetKey);
       }
@@ -271,6 +294,18 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       actualSourceTargets,
       "일괄 리테이크 source 태스크"
     );
+
+    // 최신본을 골라 쓴 건은 조용히 넘기지 않는다 — 어느 태스크를 소스로 썼는지 남겨야 추적된다.
+    if (pickedLatestNotes.length) {
+      console.log("[scheduleBulk] 리테이크 소스 최신본 선택:", pickedLatestNotes.join(" / "));
+      if (draft.dmChannelId) {
+        await client.chat.postMessage({
+          channel: draft.dmChannelId,
+          text: ["ℹ️ 이미 리테이크한 적 있는 회차가 있어 최신 태스크를 소스로 썼어.",
+                 ...pickedLatestNotes.map(n => `• ${n}`)].join("\n"),
+        }).catch(() => {});
+      }
+    }
 
     for (const ep of allEps) {
       if (completedEpisodes.has(Number(ep))) continue;
