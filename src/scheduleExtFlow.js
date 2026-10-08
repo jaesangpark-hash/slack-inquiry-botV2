@@ -470,7 +470,31 @@ module.exports = function registerScheduleExtFlow(app, {
       ? info.episodes.map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b)
       : (info.episode ? [parseInt(info.episode, 10)] : []);
     if (!episodes.length) {
-      await client.chat.postMessage({ channel: dmChannel, text: "⚠️ 회차를 특정할 수 없어. 직접 확인해줘." });
+      // ★여기서 끝내지 않는다(2026-10-08). 예전엔 "직접 확인해줘" 한 줄만 보내고 return 해서,
+      //   APM이 처음부터 다시 소환해야 했다. 회차 입력 모달이 이미 있으니(schext_open_days_modal,
+      //   회차가 비어 있으면 입력란을 띄운다) 그 경로로 이어준다.
+      const retryId = `schext_pending_${Date.now()}`;
+      draftStore.set(retryId, {
+        type: "schext_pending",
+        ownerUserId, workName, pivoId,
+        episode: null, episodes: [],
+        delivery, sourceLink, requesterUserId,
+        originalChannelId: originalChannelId || null,
+        originalTs: originalTs || null,
+        dmChannelId: dmChannel,
+      });
+      await client.chat.postMessage({
+        channel: dmChannel,
+        text: "⚠️ 회차를 특정할 수 없어. 직접 입력해줘.",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn",
+            text: `*📅 일정 연장 요청*\n*작품명:* ${workName}\n⚠️ 회차를 특정할 수 없어. 직접 입력해줘.` } },
+          { type: "actions", elements: [
+            { type: "button", action_id: "schext_open_days_modal", style: "primary",
+              text: { type: "plain_text", text: "회차·연장 일수 입력" }, value: retryId },
+          ]},
+        ],
+      });
       return;
     }
     const episodeLabel = _formatEpisodeLabel(episodes);

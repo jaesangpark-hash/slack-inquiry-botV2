@@ -845,6 +845,19 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
   });
 
+  // 프로젝트를 못 찾았을 때 "다시 입력" — 같은 입력 모달로 되돌린다(2026-10-08)
+  app.action("schbulk_retry_input", async ({ ack, body, client }) => {
+    await ack();
+    try {
+      const { draftId, dmChannelId, mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");
+      const view = buildModalAView(draftId, dmChannelId || body.channel?.id || body.user.id, mode, execMode);
+      if (body.view?.id) await client.views.update({ view_id: body.view.id, view });
+      else await client.views.open({ trigger_id: body.trigger_id, view });
+    } catch (e) {
+      console.error("[scheduleBulk] retry_input 오류:", e.message);
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // View: Modal A submit → TOTUS 조회 → Modal B (update)
   // 로딩 모달을 trigger_id로 먼저 열고, 조회 완료 후 Modal B로 update
@@ -909,9 +922,19 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       const displayName   = projectResult?.resolvedName || workName || `PIVO ${pivoId}`;
       const projectUuid   = projectResult?.uuid || null;
       if (!projectUuid) {
+        // ★에러만 띄우고 끝내지 않는다(2026-10-08). 예전엔 오류 모달 한 장으로 끝나서,
+        //   오타 하나를 고치려 해도 처음 버튼부터 다시 눌러야 했다. 같은 입력 화면으로 되돌린다.
         const errView = {
           type: "modal", title: { type: "plain_text", text: "오류" },
-          blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ *${displayName}* 프로젝트를 찾지 못했어. 작품명 또는 PIVO ID를 확인해줘.` } }],
+          close: { type: "plain_text", text: "닫기" },
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `⚠️ *${displayName}* 프로젝트를 찾지 못했어. 작품명 또는 PIVO ID를 확인해줘.` } },
+            { type: "actions", elements: [
+              { type: "button", action_id: "schbulk_retry_input", style: "primary",
+                text: { type: "plain_text", text: "다시 입력" },
+                value: JSON.stringify({ draftId, dmChannelId, mode, execMode }) },
+            ]},
+          ],
         };
         if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(e => console.error("[scheduleBulk] 프로젝트미발견 errView update 실패:", e.message));
         else await client.chat.postMessage({ channel: dmChannelId, text: `⚠️ TOTUS에서 *${displayName}* 프로젝트를 찾지 못했어.` });
