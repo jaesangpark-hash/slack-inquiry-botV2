@@ -81,6 +81,7 @@ const INTERACTION_SURFACES = Object.freeze([
   surface("view", "schbulk_step1", POLICY.OWNER_APM),
   surface("view", "schbulk_step2", POLICY.OWNER_APM),
   surface("action", "schbulk_apply", POLICY.OWNER_APM),
+  surface("action", "schbulk_retry_input", POLICY.OWNER_APM),
   surface("action", "schbulk_open_adjust", POLICY.OWNER_APM),
   surface("view", "schbulk_adjust", POLICY.OWNER_APM),
 

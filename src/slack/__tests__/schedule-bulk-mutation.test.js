@@ -84,9 +84,25 @@ function makeClient({ failCompletionNotice = false, failProgressNotice = false }
   };
 }
 
+// 리테이크 경로는 calculatedSchedule 이 아니라 opList/opDurations 로 대상 오퍼레이션을 정한다
+// (2026-10-08 변경). 테스트가 일정 쪽 draft 모양만 만들면 _applyRetakeSchedule 첫 줄에서
+// "일수를 하나 이상 입력해줘"로 멈춰 fetch 가 한 번도 안 일어난다 — 그래서 여기서 파생시킨다.
+function withRetakeOps(draft) {
+  if (draft.execMode !== "retake" || draft.opList) return draft;
+  const ops = new Map();
+  for (const g of draft.calculatedSchedule || []) {
+    for (const op of g.opSchedule || []) if (!ops.has(op.opCode)) ops.set(op.opCode, op.opName);
+  }
+  return {
+    ...draft,
+    opList: [...ops].map(([opCode, opName]) => ({ opCode, opName })),
+    opDurations: Object.fromEntries([...ops.keys()].map(c => [c, 1])),
+  };
+}
+
 function createHarness(draftOverrides = {}) {
   const app = makeApp();
-  const draftStore = new Map([["bulk-1", makeDraft(draftOverrides)]]);
+  const draftStore = new Map([["bulk-1", withRetakeOps(makeDraft(draftOverrides))]]);
   registerScheduleBulkFlow(app, {
     draftStore,
     generateDraftId: () => "generated",
@@ -281,7 +297,10 @@ describe("scheduleBulkFlow mutation truth", () => {
     assert.equal(draftStore.get("bulk-1").bulkMutationStatus, "ready");
   });
 
-  test("일괄 리테이크 source가 한 회차라도 없으면 생성 POST를 시작하지 않는다", async () => {
+  // ★2026-10-08 동작 변경: 소스가 없는 회차는 전체를 멈추는 대신 건너뛰고 나머지를 진행한다.
+  //   10회차 중 1개 때문에 아무것도 못 돌던 문제 때문(재상 님 실사용 보고).
+  //   대신 건너뛴 대상을 반드시 알려야 한다 — 조용히 빠지면 안 돈 회차를 아무도 모른다.
+  test("일괄 리테이크 source가 없는 회차는 건너뛰고 나머지는 진행하되 건너뛴 대상을 알린다", async () => {
     const calculatedSchedule = [{
       groupLabel: "1-2화",
       episodes: [1, 2],
@@ -289,37 +308,58 @@ describe("scheduleBulkFlow mutation truth", () => {
       endDate: "2026-07-21",
       opSchedule: [{ opCode: "OTC0012", opName: "번역", startDate: "2026-07-20", endDate: "2026-07-21" }],
     }];
-    const { draftStore, handler } = createHarness({ execMode: "retake", calculatedSchedule });
+    const { handler } = createHarness({ execMode: "retake", calculatedSchedule });
     const client = makeClient();
     const fetchCalls = await invokeWithFetch(handler, client, async url => {
       if (url.includes("episode=1")) return jobResponse({ taskUuid: "source-1" });
       if (url.includes("episode=2")) return jobResponse({ includeTask: false });
+      if (url.includes("source-1/retake")) return makeResponse({ success: true, data: { createdTaskUuids: ["created-1"] } });
+      if (url.endsWith("/tasks/dates")) return makeResponse({ success: true, data: { 실패: 0 } });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
+    assert.equal(retakeCalls.length, 1, "소스가 있는 1화만 생성한다");
+    assert.ok(retakeCalls.every(([url]) => url.includes("source-1")), "2화에는 POST하지 않는다");
+    assert.ok(client.calls.some(call => call.text?.includes("2화/번역")), "건너뛴 대상을 알린다");
+  });
+
+  test("소스가 한 회차도 없으면 생성 POST를 시작하지 않는다", async () => {
+    const { draftStore, handler } = createHarness({ execMode: "retake" });
+    const client = makeClient();
+    const fetchCalls = await invokeWithFetch(handler, client, async url => {
+      if (url.includes("/jobs?episode=")) return jobResponse({ includeTask: false });
       throw new Error(`mutation must not start: ${url}`);
     });
 
     assert.equal(fetchCalls.filter(([url]) => url.endsWith("/retake")).length, 0);
     assert.equal(draftStore.get("bulk-1").bulkMutationStatus, "ready");
-    assert.ok(client.calls.some(call => call.text?.includes("2화/OTC0012")));
   });
 
-  test("일괄 리테이크 source 번역 태스크가 복수면 임의 선택 없이 생성 POST를 중단한다", async () => {
-    const { draftStore, handler } = createHarness({ execMode: "retake" });
+  // ★2026-10-08 동작 변경: 후보가 여러 개여도 멈추지 않는다.
+  //   리테이크를 한 번 돌린 회차는 반드시 2개가 되므로, 그 회차가 섞이면 통째로 막혔다.
+  //   마감일이 가장 늦은 = 리테이크 체인의 최신본을 소스로 쓰고, 무엇을 썼는지 알린다.
+  test("일괄 리테이크 source 태스크가 복수면 마감일이 가장 늦은 것을 쓰고 알린다", async () => {
+    const { handler } = createHarness({ execMode: "retake" });
     const client = makeClient();
     const fetchCalls = await invokeWithFetch(handler, client, async url => {
       if (url.includes("/jobs?episode=")) {
         return jobResponse({
           tasks: [
-            { uuid: "source-a", 오퍼레이션유형: "OTC0012", 상태: "COMPLETED", 작업자: { 이메일: "a@example.com" } },
-            { uuid: "source-b", 오퍼레이션유형: "OTC0012", 상태: "COMPLETED", 작업자: { 이메일: "b@example.com" } },
+            { uuid: "source-a", 오퍼레이션유형: "OTC0012", 오퍼레이션유형명: "번역", 상태: "COMPLETED", 마감일: "2026-07-01", 작업자: { 이메일: "a@example.com" } },
+            { uuid: "source-b", 오퍼레이션유형: "OTC0012", 오퍼레이션유형명: "번역", 상태: "COMPLETED", 마감일: "2026-07-15", 작업자: { 이메일: "b@example.com" } },
           ],
         });
       }
-      throw new Error(`mutation must not start: ${url}`);
+      if (url.includes("source-b/retake")) return makeResponse({ success: true, data: { createdTaskUuids: ["created-b"] } });
+      if (url.endsWith("/tasks/dates")) return makeResponse({ success: true, data: { 실패: 0 } });
+      throw new Error(`unexpected URL: ${url}`);
     });
 
-    assert.equal(fetchCalls.filter(([url]) => url.endsWith("/retake")).length, 0);
-    assert.equal(draftStore.get("bulk-1").bulkMutationStatus, "ready");
-    assert.ok(client.calls.some(call => call.text?.includes("후보가 여러 개")));
+    const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
+    assert.equal(retakeCalls.length, 1);
+    assert.ok(retakeCalls[0][0].includes("source-b"), "마감일이 늦은 쪽을 소스로 쓴다");
+    assert.ok(client.calls.some(call => call.text?.includes("최신 태스크를 소스로 썼어")), "어느 것을 썼는지 알린다");
   });
 
   test("일괄 리테이크 명시적 success=false는 ready로 남아 안전하게 재시도한다", async () => {
