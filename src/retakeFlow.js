@@ -31,7 +31,7 @@ function buildWorkerMention(workerEmail, workerSlackIds) {
 // app.js 에서 require("./retakeFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore }) 로 호출
 // ══════════════════════════════════════════════════════════════════
 
-module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId, retakeChannels, retakeWatchChannels, retakeWatchStore }) {
+module.exports = function registerRetakeFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId, retakeWatchChannels, retakeWatchStore }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
   const TOKEN = () => process.env.PLATFORM_API_TOKEN;

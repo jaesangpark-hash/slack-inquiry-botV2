@@ -8,6 +8,7 @@
  *   - state==="COMPLETED" → 납품검수 링크 붙여 납품 스레드(watchChannel/watchThreadTs)에 답글 → notified
  *   - state==="DROP"      → dropped(닫음)
  *   - 등록 후 14일 경과 미완료 → expired
+ *   - 감시 대상 채널(watchChannels) 아님 → skipped(무발송, tick에서 일괄 기록)
  *   - 그 외(PROCESSING 등)  → watching 유지(무발송)
  *
  * 멱등·재시도: 답글 postMessage 성공 후에만 notified 마킹한다(실패 시 watching 유지 → 다음 tick 재시도).
@@ -108,17 +109,8 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     return `${head}\n${linkLine}`;
   }
 
-  // 감시행 1건 처리
+  // 감시행 1건 처리 (범위 밖 채널 필터는 tick에서 선분리·일괄 처리하므로 여기선 대상 채널 행만 들어온다)
   async function _processRow(row) {
-    // 감시 대상 채널 필터 — 지정된 채널(RETAKE_WATCH_CHANNELS) 소환건만 알림.
-    // 범위 밖 채널 행은 알림하지 않고 종료 처리(skipped) → 재처리·오알림 방지.
-    // (watchChannels 미지정이면 필터 없음 — 테스트/하위호환용)
-    if (watchChannels && !watchChannels.has(row.watchChannel)) {
-      await retakeWatchStore.markStatus(row.rowIndex, "skipped", { note: "감시 대상 채널 아님" });
-      console.log(`[retake-watch] 범위 밖 채널 → skipped — row:${row.rowIndex} ch:${row.watchChannel}`);
-      return;
-    }
-
     const task = await _getTask(row.judgeTaskUuid);
     // 게이트웨이 단건 조회(GET /tasks/{uuid}) 응답은 키가 한글(상태). 값은 COMPLETED·DROP 등 영문 그대로.
     const state = task?.["상태"] || null;
@@ -167,7 +159,26 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
       return;
     }
     if (!rows.length) return;
-    console.log(`[retake-watch] tick — watching ${rows.length}건`);
+
+    // 범위 밖 채널 행은 개별 markStatus를 연달아 호출하지 않고, 모아서 한 번의 batchUpdate로 skipped 기록한다.
+    // (행이 많아도 Sheets 호출 1회 → 쓰로틀 방지). watchChannels 미지정이면 필터 없음(테스트/하위호환).
+    if (watchChannels) {
+      const outOfScope = rows.filter(r => !watchChannels.has(r.watchChannel));
+      if (outOfScope.length) {
+        try {
+          await retakeWatchStore.markStatusMany(
+            outOfScope.map(r => ({ rowIndex: r.rowIndex, status: "skipped", note: "감시 대상 채널 아님" }))
+          );
+          console.log(`[retake-watch] 범위 밖 채널 ${outOfScope.length}건 → skipped(일괄)`);
+        } catch (e) {
+          console.error(`[retake-watch] skipped 일괄 기록 실패 — ${e.message}`);
+        }
+      }
+      rows = rows.filter(r => watchChannels.has(r.watchChannel));
+    }
+
+    if (!rows.length) return;
+    console.log(`[retake-watch] tick — watching(대상) ${rows.length}건`);
     for (const row of rows) {
       try {
         await _processRow(row);

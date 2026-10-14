@@ -184,7 +184,7 @@ const retakeWatchStore = createRetakeWatchStore({
 
 const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
-  retakeChannels: RETAKE_CHANNELS, retakeWatchChannels: RETAKE_WATCH_CHANNELS, retakeWatchStore,
+  retakeWatchChannels: RETAKE_WATCH_CHANNELS, retakeWatchStore,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {

@@ -240,3 +240,43 @@ describe("createRetakeWatchStore 활성 게이트 (시트ID·gridId 둘 다 필�
     assert.strictEqual(store.enabled, true);
   });
 });
+
+describe("createRetakeWatchStore.markStatusMany", () => {
+  test("여러 행을 batchUpdate 1회로 기록 (호출 한 번, 행마다 status+note 2 request)", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([
+      { rowIndex: 5, status: "skipped", note: "감시 대상 채널 아님" },
+      { rowIndex: 6, status: "skipped", note: "감시 대상 채널 아님" },
+      { rowIndex: 7, status: "skipped", note: "감시 대상 채널 아님" },
+    ]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);          // 호출 1회
+    assert.strictEqual(sheetsClient.batchUpdateCalls[0].requests.length, 6); // 3행 × (status+note)
+    // 첫 행 status request 위치 검증 (status 컬럼 = 1)
+    const r0 = sheetsClient.batchUpdateCalls[0].requests[0].updateCells;
+    assert.strictEqual(r0.range.startColumnIndex, 1);
+    assert.strictEqual(r0.rows[0].values[0].userEnteredValue.stringValue, "skipped");
+  });
+
+  test("note 없으면 행당 request 1개(status만)", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([{ rowIndex: 5, status: "skipped" }]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls[0].requests.length, 1);
+  });
+
+  test("빈 배열·rowIndex 없는 항목은 호출 안 함", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([]);
+    await store.markStatusMany([{ status: "skipped" }]); // rowIndex 없음
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("감시 off면 기록 안 함", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, watchSheetId: "", watchSheetRange: "리테이크 감시!A:P", watchGridSheetId: 777 });
+    await store.markStatusMany([{ rowIndex: 5, status: "skipped" }]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+});
