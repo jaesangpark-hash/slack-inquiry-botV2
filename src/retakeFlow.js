@@ -449,7 +449,7 @@ JSON만 출력. 코드블록 금지.
             text: { type: "plain_text", text: "작업 유형 선택" },
             style: "primary", value: draftId },
           { type: "button", action_id: "retake_correct_by_pivoid",
-            text: { type: "plain_text", text: "✏️ 작품명 정정 (PIVO ID)" },
+            text: { type: "plain_text", text: "✏️ 작품명·회차 정정" },
             value: draftId },
           { type: "button", action_id: "retake_close",
             text: { type: "plain_text", text: "❌ 종료" },
@@ -459,8 +459,10 @@ JSON만 출력. 코드블록 금지.
     });
   }
 
-  // ── [작품명 정정] 버튼 → PIVO ID 입력 모달 ────────────────
+  // ── [작품명·회차 정정] 버튼 → 정정 모달 ────────────────
   // AI 매칭이 잘못된 작품으로 확정됐을 때, 확정된 pivoId로 덮어써 바로잡는 안전장치.
+  // ★회차도 같이 고칠 수 있어야 한다(2026-10-14 재상 님 보고). 예전엔 pivoId만 받아서,
+  //   AI가 화수를 "찾긴 찾았는데 틀린" 경우 되돌릴 길이 없어 종료 후 처음부터 다시 해야 했다.
   app.action("retake_correct_by_pivoid", async ({ ack, body, client }) => {
     await ack();
     const draftId = body.actions[0].value;
@@ -472,16 +474,22 @@ JSON만 출력. 코드블록 금지.
       view: {
         type: "modal", callback_id: "submit_retake_correct_pivoid",
         private_metadata: JSON.stringify({ draftId }),
-        title:  { type: "plain_text", text: "작품명 정정" },
+        title:  { type: "plain_text", text: "작품명·회차 정정" },
         submit: { type: "plain_text", text: "정정" },
         close:  { type: "plain_text", text: "취소" },
         blocks: [
           { type: "section", text: { type: "mrkdwn",
-            text: `현재 매칭된 작품명: \`${data.workName || "없음"}\`\n올바른 pivoId를 입력하면 작품명을 다시 확정할게.` } },
+            text: `현재 매칭: \`${data.workName || "없음"}\` · \`${data.episode || "?"}화\`\n고칠 것만 바꿔줘. pivoId를 비워두면 작품명은 그대로 두고 회차만 바뀐다.` } },
           { type: "input", block_id: "rt_correct_pivoid_block",
             label: { type: "plain_text", text: "pivoId (6자리)" },
+            optional: true,
             element: { type: "plain_text_input", action_id: "value",
               placeholder: { type: "plain_text", text: "예: 184748" } } },
+          { type: "input", block_id: "rt_correct_episode_block",
+            label: { type: "plain_text", text: "회차 (숫자만)" },
+            element: { type: "plain_text_input", action_id: "value",
+              initial_value: data.episode ? String(data.episode) : "",
+              placeholder: { type: "plain_text", text: "예: 54" } } },
         ],
       },
     });
@@ -493,20 +501,23 @@ JSON만 출력. 코드블록 금지.
     const data = draftStore.get(draftId);
     if (!data) return;
 
-    const pivoId = view.state.values.rt_correct_pivoid_block?.value?.value?.trim() || "";
-    if (!pivoId) {
-      await client.chat.postMessage({ channel: data.dmChannelId, text: "pivoId를 입력해줘." });
+    const pivoId     = view.state.values.rt_correct_pivoid_block?.value?.value?.trim() || "";
+    const episodeRaw = view.state.values.rt_correct_episode_block?.value?.value?.trim() || "";
+    const episode    = episodeRaw.replace(/[^0-9]/g, "");
+    if (!episode) {
+      await client.chat.postMessage({ channel: data.dmChannelId, text: "회차를 숫자로 입력해줘." });
       return;
     }
 
-    const { displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId);
+    // pivoId를 비우면 작품은 그대로 두고 회차만 고친다 — 작품은 맞는데 화수만 틀린 경우가 실제로 많다.
+    const resolved = pivoId ? await _resolveByPivoId(pivoId) : null;
     draftStore.delete(draftId);
 
     await _proceedRetakeOperationSelect(client, data.dmChannelId, {
-      workName:        displayWorkName,
-      workNameKo:      koreanProjectName,
-      pivoId:          resolvedPivoId,
-      episode:         data.episode,
+      workName:        resolved ? resolved.displayWorkName   : data.workName,
+      workNameKo:      resolved ? resolved.koreanProjectName : (data.workNameKo || null),
+      pivoId:          resolved ? resolved.resolvedPivoId    : (data.pivoId || null),
+      episode,
       sourceLink:      data.sourceLink      || "",
       requesterName:   data.requesterName   || "",
       requesterUserId: data.requesterUserId || null,
