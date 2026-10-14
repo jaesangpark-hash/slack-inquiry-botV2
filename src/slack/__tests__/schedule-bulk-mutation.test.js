@@ -406,6 +406,76 @@ describe("scheduleBulkFlow mutation truth", () => {
     assert.ok(client.calls.some(call => call.text?.includes("Totus에서 생성 여부")));
   });
 
+  // ★회차 하나가 실패해도 성공한 회차는 다시 만들지 않는다 — 리테이크는 되돌릴 수 없는
+  //   외부 변경이라 중복 생성이 곧 사고다. 재시도 경로를 지켜보는 테스트는 빠지면 안 된다.
+  test("회차별 리테이크 부분 실패 후 재시도는 성공한 회차를 다시 만들지 않는다", async () => {
+    const calculatedSchedule = [
+      {
+        groupLabel: "1-2화",
+        episodes: [1, 2],
+        startDate: "2026-07-20",
+        endDate: "2026-07-21",
+        opSchedule: [{ opCode: "OTC0012", opName: "번역", startDate: "2026-07-20", endDate: "2026-07-21" }],
+      },
+    ];
+    const { draftStore, handler } = createHarness({ execMode: "retake", calculatedSchedule });
+    const client = makeClient();
+    let episode1Lookups = 0;
+    let episode2Lookups = 0;
+    let source2Retakes  = 0;
+    const fetchCalls = await invokeWithFetch(handler, client, async (url, options = {}) => {
+      if (url.includes("/jobs?episode=1")) {
+        episode1Lookups++;
+        // 1회차는 1차 시도에서 생성 완료 — 이후 조회부터는 생성본이 함께 보인다
+        return episode1Lookups === 1
+          ? jobResponse({ taskUuid: "source-1" })
+          : jobResponse({ taskUuids: ["source-1", "created-1"] });
+      }
+      if (url.includes("/jobs?episode=2")) {
+        episode2Lookups++;
+        // 1·2차 소스 조회까지는 원본만, 2차 생성 이후(3번째)부터 생성본이 보인다
+        return episode2Lookups <= 2
+          ? jobResponse({ taskUuid: "source-2" })
+          : jobResponse({ taskUuids: ["source-2", "created-2"] });
+      }
+      if (url.includes("source-1/retake")) {
+        return makeResponse({ success: true, data: { createdTaskUuids: ["created-1"] } });
+      }
+      if (url.includes("source-2/retake")) {
+        source2Retakes++;
+        // 1차엔 Totus 가 명시적으로 실패를 돌려준다 → 안전하게 재시도 가능한 확정 실패
+        return source2Retakes === 1
+          ? makeResponse({ success: false, error: { message: "temporary failure" } })
+          : makeResponse({ success: true, data: { createdTaskUuids: ["created-2"] } });
+      }
+      if (url.endsWith("/tasks/dates")) return makeResponse({ success: true, data: { 실패: 0 } });
+      throw new Error(`unexpected URL: ${url} ${options.method || "GET"}`);
+    }, 2);
+
+    const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
+    assert.equal(
+      retakeCalls.filter(([url]) => url.includes("source-1")).length, 1,
+      "1화는 1차에서 성공했으므로 재시도 때 다시 만들지 않는다"
+    );
+    assert.equal(
+      retakeCalls.filter(([url]) => url.includes("source-2")).length, 2,
+      "2화만 1차 실패 → 2차 재생성"
+    );
+    assert.ok(
+      client.calls.some(call => call.text?.includes("리테이크 부분 실패")),
+      "1차 시도가 부분 실패로 알려져야 한다"
+    );
+    const datePayload = JSON.parse(
+      fetchCalls.find(([url]) => url.endsWith("/tasks/dates"))[1].body
+    );
+    assert.deepEqual(
+      datePayload.map(task => task.uuid).sort(),
+      ["created-1", "created-2"],
+      "기존 source 가 아니라 새로 생성된 태스크만 날짜 반영"
+    );
+    assert.equal(draftStore.has("bulk-1"), false);
+  });
+
   // ★예전엔 한 회차라도 소스 태스크가 없으면 전체를 중단했다. 2026-10-08부터는 그 회차만 빼고
   //   나머지를 진행한다 — 대신 무엇을 뺀 건지 반드시 알려야 한다.
   test("소스 태스크가 없는 회차는 건너뛰고 나머지를 반영하며 건너뛴 사실을 알린다", async () => {

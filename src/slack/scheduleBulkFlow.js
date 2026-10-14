@@ -130,6 +130,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   //                (리테이크 대상은 원래 완료·납품된 화라 상태 필터를 쓰면 항상 0건이 됨)
   //                ★작업자 미배정도 담고 assigned=false 로 표시한다 — 조용히 빼면 왜 선택지에
   //                  없는지 알 수 없다(2026-10-08). 거르는 건 호출부 몫.
+  // 조회 실패를 담은 빈 배열 — 호출부는 길이 0으로 보고 순회하되, fetchError 로 실패를 구분한다.
+  function _opsFetchFailure(message) {
+    const failed = [];
+    failed.fetchError = message;
+    return failed;
+  }
+
   async function _getOpsForEpisodeRaw(projectUuid, episode, isRetake = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
@@ -140,7 +147,14 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         throw new Error(`TOTUS API 비-JSON 응답 (HTTP ${res.status}, content-type: ${ct || "없음"}) — ${(await res.text()).slice(0, 200)}`);
       }
       const json = await res.json();
-      if (!json.success) return [];
+      // ★TOTUS 가 success:false 를 돌려주는 건 권한·로그인 등 오류지 "태스크가 없음"이 아니다.
+      //   연결이 끊긴 경우만 고쳐두고 여긴 빈 배열로 내려보내서, 모달엔 그대로 「n개 회차엔 이 태스크가
+      //   없어 건너뜀」이라는 거짓 안내가 나갔다(2026-10-14 리뷰 2차). _getTaskInventory 와 같게 맞춘다.
+      if (!json.success) {
+        const detail = json?.error?.message || json?.message || JSON.stringify(json).slice(0, 200);
+        console.error("[scheduleBulk] 오퍼레이션 조회 success=false (ep=" + episode + "):", detail);
+        return _opsFetchFailure(`TOTUS API success=false — ${detail}`);
+      }
       const job = (json.data || [])[0];
       if (!job) return [];
       const seen = new Set();
@@ -164,9 +178,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       // ★조회 실패를 빈 배열로만 돌려주면 호출부가 "이 회차엔 태스크가 없다"로 집계해, 모달에
       //   「n개 회차엔 이 태스크가 없어 건너뜀」이라는 거짓 안내가 나간다(2026-10-14 벤더 리뷰).
       //   없는 것과 못 본 것은 다르다 — 배열에 실패 사실을 달아 올려보낸다(기존 호출부는 그대로 동작).
-      const failed = [];
-      failed.fetchError = e.message;
-      return failed;
+      return _opsFetchFailure(e.message);
     }
   }
 
