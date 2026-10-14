@@ -1005,7 +1005,14 @@ JSON만 출력. 코드블록 금지.
   app.action("open_retake_info_modal", async ({ ack, body, client }) => {
     await ack();
     const pending = draftStore.get(body.actions[0].value);
-    if (!pending) return;
+    // ★초안은 메모리에만 있어서 봇이 재기동하면 사라진다. 그때 그냥 return 하면 버튼을 눌러도
+    //   아무 일도 안 일어나서 "봇이 고장났나" 로만 보였다(2026-10-14 벤더 리뷰).
+    if (!pending) {
+      await client.chat.postMessage({ channel: body.user.id,
+        text: "⚠️ 초안 정보가 만료됐어(봇 재기동 등). 리테이크를 처음부터 다시 시작해줘." })
+        .catch(e => console.error("[retake] 만료 안내 DM 실패:", e.message));
+      return;
+    }
 
     await client.views.open({
       trigger_id: body.trigger_id,

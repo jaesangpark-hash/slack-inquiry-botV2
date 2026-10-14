@@ -406,7 +406,9 @@ describe("scheduleBulkFlow mutation truth", () => {
     assert.ok(client.calls.some(call => call.text?.includes("Totus에서 생성 여부")));
   });
 
-  test("회차별 리테이크 부분 실패 후 재시도는 성공 회차를 건너뛴다", async () => {
+  // ★예전엔 한 회차라도 소스 태스크가 없으면 전체를 중단했다. 2026-10-08부터는 그 회차만 빼고
+  //   나머지를 진행한다 — 대신 무엇을 뺀 건지 반드시 알려야 한다.
+  test("소스 태스크가 없는 회차는 건너뛰고 나머지를 반영하며 건너뛴 사실을 알린다", async () => {
     const calculatedSchedule = [
       {
         groupLabel: "1-2화",
@@ -419,42 +421,82 @@ describe("scheduleBulkFlow mutation truth", () => {
     const { draftStore, handler } = createHarness({ execMode: "retake", calculatedSchedule });
     const client = makeClient();
     let episode1Lookups = 0;
-    let episode2Lookups = 0;
     const fetchCalls = await invokeWithFetch(handler, client, async (url, options = {}) => {
-      if (url.includes("/jobs?episode=2")) {
-        episode2Lookups++;
-        if (episode2Lookups === 1) return jobResponse({ includeTask: false });
-        return episode2Lookups === 2
-          ? jobResponse({ taskUuid: "source-2" })
-          : jobResponse({ taskUuids: ["source-2", "created-2"] });
-      }
+      if (url.includes("/jobs?episode=2")) return jobResponse({ includeTask: false });
       if (url.includes("/jobs?episode=1")) {
         episode1Lookups++;
-        return episode1Lookups <= 2
+        return episode1Lookups === 1
           ? jobResponse({ taskUuid: "source-1" })
           : jobResponse({ taskUuids: ["source-1", "created-1"] });
       }
       if (url.includes("source-1/retake")) {
         return makeResponse({ success: true, data: { createdTaskUuids: ["created-1"] } });
       }
-      if (url.includes("source-2/retake")) {
-        return makeResponse({ success: true, data: { createdTaskUuids: ["created-2"] } });
-      }
       if (url.endsWith("/tasks/dates")) return makeResponse({ success: true, data: { 실패: 0 } });
       throw new Error(`unexpected URL: ${url} ${options.method || "GET"}`);
-    }, 2);
+    });
 
     const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
-    assert.equal(retakeCalls.length, 2, "1화와 2화를 각각 한 번만 생성");
-    assert.equal(retakeCalls.filter(([url]) => url.includes("source-1")).length, 1);
+    assert.equal(retakeCalls.length, 1, "태스크가 있는 1화만 생성");
+    assert.ok(retakeCalls[0][0].includes("source-1"));
     const datePayload = JSON.parse(
       fetchCalls.find(([url]) => url.endsWith("/tasks/dates"))[1].body
     );
-    assert.deepEqual(
-      datePayload.map(task => task.uuid).sort(),
-      ["created-1", "created-2"],
-      "기존 source 태스크가 아니라 새로 생성된 태스크만 날짜 반영"
-    );
+    assert.deepEqual(datePayload.map(task => task.uuid), ["created-1"]);
+    const skipNotice = client.calls.find(call => call.text?.includes("해당 태스크가 없어 건너뛰었어"));
+    assert.ok(skipNotice, "건너뛴 대상을 알려야 한다");
+    assert.ok(skipNotice.text.includes("2화"));
+    // ★완료 알림은 계획 개수가 아니라 실제 반영 개수를 말해야 한다(2026-10-14 벤더 리뷰).
+    const done = client.calls.find(call => call.text?.includes("일정 반영 완료"));
+    assert.ok(done, "완료 알림이 있어야 한다");
+    assert.ok(done.text.includes("1개 (계획 2개 중)"), done.text);
+    assert.equal(draftStore.has("bulk-1"), false);
+  });
+
+  // ★오퍼레이션은 "한 회차라도 작업자가 붙어 있으면" 모달을 통과한다. 그 안에서
+  //   미배정인 회차는 만들어도 받을 사람이 없다(2026-10-14 벤더 리뷰).
+  test("작업자 미배정 회차는 리테이크에서 빼고 알린다", async () => {
+    const calculatedSchedule = [
+      {
+        groupLabel: "1-2화",
+        episodes: [1, 2],
+        startDate: "2026-07-20",
+        endDate: "2026-07-21",
+        opSchedule: [{ opCode: "OTC0012", opName: "번역", startDate: "2026-07-20", endDate: "2026-07-21" }],
+      },
+    ];
+    const { draftStore, handler } = createHarness({ execMode: "retake", calculatedSchedule });
+    const client = makeClient();
+    let episode1Lookups = 0;
+    const fetchCalls = await invokeWithFetch(handler, client, async url => {
+      if (url.includes("/jobs?episode=2")) {
+        return jobResponse({ tasks: [{
+          uuid: "source-2",
+          오퍼레이션유형: "OTC0012",
+          오퍼레이션유형명: "번역",
+          상태: "IN_PROGRESS",
+          작업자: null,
+        }] });
+      }
+      if (url.includes("/jobs?episode=1")) {
+        episode1Lookups++;
+        return episode1Lookups === 1
+          ? jobResponse({ taskUuid: "source-1" })
+          : jobResponse({ taskUuids: ["source-1", "created-1"] });
+      }
+      if (url.includes("source-1/retake")) {
+        return makeResponse({ success: true, data: { createdTaskUuids: ["created-1"] } });
+      }
+      if (url.endsWith("/tasks/dates")) return makeResponse({ success: true, data: { 실패: 0 } });
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
+    assert.equal(retakeCalls.length, 1, "작업자가 붙은 1화만 생성");
+    assert.ok(retakeCalls[0][0].includes("source-1"));
+    const notice = client.calls.find(call => call.text?.includes("작업자가 배정돼 있지 않아"));
+    assert.ok(notice, "미배정으로 뺀 사실을 알려야 한다");
+    assert.ok(notice.text.includes("2화"));
     assert.equal(draftStore.has("bulk-1"), false);
   });
 

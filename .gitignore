@@ -16,3 +16,6 @@ scripts/vendor-sync.env
 
 # 구버전 봇 백업 (모듈화 이관 시 보관) — git 추적/커밋 제외
 legacy/
+
+# 로컬 MCP 서버 설정(개인 환경) — 공유 대상 아님
+.mcp.json
