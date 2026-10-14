@@ -102,8 +102,8 @@ function collectRegisteredSurfaceKeys() {
 }
 
 describe("interaction access policy", () => {
-  test("소스에 등록된 surface 101개가 정책표와 중복·누락 없이 일치한다", () => {
-    assert.equal(INTERACTION_SURFACES.length, 101);
+  test("소스에 등록된 surface 102개가 정책표와 중복·누락 없이 일치한다", () => {
+    assert.equal(INTERACTION_SURFACES.length, 102);
     const policyKeys = INTERACTION_SURFACES.map(
       rule => `${rule.kind}:${rule.registrationKey}`
     );
