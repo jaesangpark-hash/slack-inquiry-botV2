@@ -126,8 +126,10 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── TOTUS: 단일 회차에서 오퍼레이션 목록 추출 ──────────────────────
-  // isRetake=true: 완료상태 여부와 무관하게 RETAKE_OP_CODES 화이트리스트 + 작업자 배정된 태스크만 추출
+  // isRetake=true: 완료상태 여부와 무관하게 RETAKE_OP_CODES 화이트리스트로만 추출
   //                (리테이크 대상은 원래 완료·납품된 화라 상태 필터를 쓰면 항상 0건이 됨)
+  //                ★작업자 미배정도 담고 assigned=false 로 표시한다 — 조용히 빼면 왜 선택지에
+  //                  없는지 알 수 없다(2026-10-08). 거르는 건 호출부 몫.
   async function _getOpsForEpisodeRaw(projectUuid, episode, isRetake = false) {
     try {
       const res  = await fetch(`${BASE()}/api/v1/projects/${projectUuid}/jobs?episode=${parseInt(episode, 10)}`, {
@@ -159,7 +161,12 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       return ops;
     } catch (e) {
       console.error("[scheduleBulk] 오퍼레이션 조회 오류 (ep=" + episode + "):", e.message);
-      return [];
+      // ★조회 실패를 빈 배열로만 돌려주면 호출부가 "이 회차엔 태스크가 없다"로 집계해, 모달에
+      //   「n개 회차엔 이 태스크가 없어 건너뜀」이라는 거짓 안내가 나간다(2026-10-14 벤더 리뷰).
+      //   없는 것과 못 본 것은 다르다 — 배열에 실패 사실을 달아 올려보낸다(기존 호출부는 그대로 동작).
+      const failed = [];
+      failed.fetchError = e.message;
+      return failed;
     }
   }
 
@@ -174,7 +181,21 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     return Number.isFinite(t) ? t : -Infinity;
   }
   function _pickLatestTask(taskUuids, byUuid) {
-    return [...taskUuids].sort((a, b) => _taskRecency(byUuid[b]) - _taskRecency(byUuid[a]))[0];
+    // ★날짜가 둘 다 없으면 -Infinity 끼리 빼서 NaN 이 되고, 정렬이 사실상 입력 순서가 된다
+    //   (2026-10-14 벤더 리뷰). 같은 회차를 두 번 돌려도 같은 것이 뽑히도록 동률 기준을 둔다 —
+    //   시작일을 한 번 더 보고, 그래도 같으면 uuid 사전순. 임의 선택보다 재현 가능한 쪽이 낫다.
+    const startedAt = (u) => {
+      const raw = byUuid[u]?.["시작일원본"] || byUuid[u]?.["시작일"] || "";
+      const t = Date.parse(String(raw).replace(/\./g, "-"));
+      return Number.isFinite(t) ? t : -Infinity;
+    };
+    return [...taskUuids].sort((a, b) => {
+      const d = _taskRecency(byUuid[b]) - _taskRecency(byUuid[a]);
+      if (Number.isFinite(d) && d !== 0) return d;
+      const s = startedAt(b) - startedAt(a);
+      if (Number.isFinite(s) && s !== 0) return s;
+      return String(a).localeCompare(String(b));
+    })[0];
   }
 
   // ── 선택한 전 회차의 오퍼레이션 현황 집계(2026-10-08) ──────────────
@@ -185,9 +206,19 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   //    데이터가 잘못됐다는 걸 APM이 알아챌 수 있다. 실측(PV-146958 420~444화): 식자검수·번역검수·
   //    식자번역검수가 25/25회차 전부 작업자 미배정이라 리테이크를 걸 수조차 없었는데 안내가 없었다.
   async function _collectOpStats(projectUuid, episodes, isRetake) {
-    const perEp = await Promise.all(episodes.map(async (ep) => ({ ep, ops: await _getOpsForEpisodeRaw(projectUuid, ep, isRetake) })));
+    // ★동시성 제한(2026-10-14 벤더 리뷰) — 25회차를 한꺼번에 Promise.all 로 때리면 TOTUS 쪽에 부담이
+    //   간다. 모달을 띄우기 전 조회라 몇 초 늦어도 되므로 3개씩 끊어 보낸다.
+    const perEp = [];
+    const LIMIT = 3;
+    for (let i = 0; i < episodes.length; i += LIMIT) {
+      const chunk = episodes.slice(i, i + LIMIT);
+      const got = await Promise.all(chunk.map(async (ep) => ({ ep, ops: await _getOpsForEpisodeRaw(projectUuid, ep, isRetake) })));
+      perEp.push(...got);
+    }
     const stats = new Map(); // opCode → { opCode, opName, epsWith:[], epsAssigned:[] }
+    const failedEps = [];    // 조회 자체가 실패한 회차 — "태스크 없음"과 구분해서 모달에 알린다
     for (const { ep, ops } of perEp) {
+      if (ops.fetchError) { failedEps.push({ ep, error: ops.fetchError }); continue; }
       for (const o of ops) {
         if (!stats.has(o.opCode)) stats.set(o.opCode, { opCode: o.opCode, opName: o.opName, epsWith: [], epsAssigned: [] });
         const st = stats.get(o.opCode);
@@ -195,7 +226,8 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         if (o.assigned) st.epsAssigned.push(ep);
       }
     }
-    return { total: episodes.length, stats: [...stats.values()] };
+    // 실패한 회차는 집계 분모에서도 뺀다 — 안 그러면 "n개 회차엔 없음"에 섞여 거짓 표기가 된다
+    return { total: episodes.length - failedEps.length, stats: [...stats.values()], failedEps };
   }
 
   // ── TOTUS: 단일 회차의 opCode/정확 UUID → task 맵 ─────────────────
@@ -284,6 +316,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const pickedLatestNotes = []; // 후보가 여러 개라 최신본을 고른 건 — 로그·안내용
     const expectedSourceTargets = [];
     const actualSourceTargets = [];
+    const unassignedTargets = []; // 작업자 미배정이라 뺀 회차 — "태스크 없음"과 구분해서 알린다
     for (const { ep, inventory } of sourceInventories) {
       const sources = [];
       for (const { opCode, opName } of selectedOps) {
@@ -298,6 +331,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           ? _pickLatestTask(candidates, inventory.byUuid)
           : candidates[0];
         if (!taskUuid) continue;
+        // ★오퍼레이션은 "한 회차라도 작업자가 붙어 있으면" 선택 가능이라 모달을 통과한다. 그 안에서
+        //   미배정인 회차는 리테이크를 만들어도 받을 사람이 없다(2026-10-14 벤더 리뷰).
+        //   전체를 막지 않고 그 회차만 빼되, 뺀 사실은 반드시 알린다.
+        if (inventory.byUuid[taskUuid]?.["작업자"] == null) {
+          unassignedTargets.push(targetKey);
+          continue;
+        }
         if (candidates.length > 1) {
           const picked = inventory.byUuid[taskUuid];
           pickedLatestNotes.push(`${ep}화 ${opName || opCode}: 후보 ${candidates.length}개 중 마감 ${picked?.["마감일"] || "?"} 태스크 사용`);
@@ -311,10 +351,17 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     //   assertCompleteMutationTargets가 전체를 중단시켜, 10회차 중 1개 때문에 아무것도 못 했다.
     //   대신 무엇을 건너뛰었는지는 반드시 알린다 — 조용히 빠지면 안 돌아간 회차를 아무도 모른다.
     const skippedSourceTargets = [...new Set(expectedSourceTargets.map(String))]
-      .filter(t => !new Set(actualSourceTargets.map(String)).has(t));
-    if (skippedSourceTargets.length && !actualSourceTargets.length) {
-      // 전부 없으면 진행할 게 없다 — 이건 그대로 멈추는 게 맞다.
-      throw new Error(`리테이크할 소스 태스크를 한 건도 찾지 못했어: ${skippedSourceTargets.join(", ")}`);
+      .filter(t => !new Set(actualSourceTargets.map(String)).has(t)
+                && !new Set(unassignedTargets.map(String)).has(t));
+    // ★이미 전부 생성된 뒤 날짜만 재시도하는 경우 pendingEpisodes가 비어 expected 자체가 0이다.
+    //   그건 "못 찾은 것"이 아니므로 막으면 안 된다.
+    if (expectedSourceTargets.length && !actualSourceTargets.length) {
+      // 전부 빠지면 진행할 게 없다 — 이건 그대로 멈추는 게 맞다. 사유는 구분해서 적는다.
+      const reasons = [
+        ...(skippedSourceTargets.length ? [`태스크 없음: ${skippedSourceTargets.join(", ")}`] : []),
+        ...(unassignedTargets.length ? [`작업자 미배정: ${unassignedTargets.join(", ")}`] : []),
+      ];
+      throw new Error(`리테이크할 소스 태스크를 한 건도 찾지 못했어 — ${reasons.join(" / ") || "대상 없음"}`);
     }
 
     if (skippedSourceTargets.length) {
@@ -324,7 +371,18 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           channel: draft.dmChannelId,
           text: ["⚠️ 아래는 해당 태스크가 없어 건너뛰었어. 나머지는 그대로 진행할게.",
                  ...skippedSourceTargets.map(t => `• ${t}`)].join("\n"),
-        }).catch(() => {});
+        }).catch(e => console.error("[scheduleBulk] 건너뜀 안내 DM 실패:", e.message));
+      }
+    }
+
+    if (unassignedTargets.length) {
+      console.log("[scheduleBulk] 작업자 미배정으로 건너뛴 대상:", unassignedTargets.join(" / "));
+      if (draft.dmChannelId) {
+        await client.chat.postMessage({
+          channel: draft.dmChannelId,
+          text: ["⚠️ 아래는 작업자가 배정돼 있지 않아 건너뛰었어(만들어도 받을 사람이 없음). 나머지는 그대로 진행할게.",
+                 ...unassignedTargets.map(t => `• ${t}`)].join("\n"),
+        }).catch(e => console.error("[scheduleBulk] 미배정 안내 DM 실패:", e.message));
       }
     }
 
@@ -336,7 +394,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           channel: draft.dmChannelId,
           text: ["ℹ️ 이미 리테이크한 적 있는 회차가 있어 최신 태스크를 소스로 썼어.",
                  ...pickedLatestNotes.map(n => `• ${n}`)].join("\n"),
-        }).catch(() => {});
+        }).catch(e => console.error("[scheduleBulk] 최신본 선택 안내 DM 실패:", e.message));
       }
     }
 
@@ -345,6 +403,11 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
       try {
         const sources = sourcesByEpisode[ep] || [];
+        // ★소스가 한 개도 없는 회차는 생성 루프에 넣지 않는다(2026-10-14). 예전엔 그냥 들어가서
+        //   빈 createdTaskUuids 로 assertGloballyUniqueCreatedTaskUuids 에 걸렸고, 「생성 결과를 확인할 수
+        //   없어」로 묶여 건너뛰기로 한 회차 하나가 전체를 확인 대기 상태로 몰았다.
+        //   위에서 이미 건너뛴 사실을 알렸으므로 여기선 조용히 넘어간다.
+        if (!sources.length) continue;
         const createdTaskUuids = [];
         try {
           for (const { opCode, opName, taskUuid } of sources) {
@@ -477,6 +540,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     }
 
     const payload = [];
+    // ★완료 알림은 계획 개수가 아니라 실제 반영 개수를 써야 한다(2026-10-14 벤더 리뷰).
+    //   예전엔 그룹당 "회차×오퍼레이션"을 그대로 적어서, 태스크가 없어 건너뛴 것까지 반영된 것처럼 보였다.
+    const appliedByGroup = new Map();
     const expectedTargets = [];
     const actualTargets = [];
     const ambiguousTargets = [];
@@ -490,6 +556,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           if (!task || !opSchedule) continue;
           actualTargets.push(targetKey);
           payload.push({ uuid: taskUuid, startDate: opSchedule.startDate, endDate: opSchedule.endDate });
+          appliedByGroup.set(group, (appliedByGroup.get(group) || 0) + 1);
         }
         continue;
       }
@@ -505,6 +572,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         if (!taskUuid) continue;
         actualTargets.push(targetKey);
         payload.push({ uuid: taskUuid, startDate: opSchedule.startDate, endDate: opSchedule.endDate });
+        appliedByGroup.set(group, (appliedByGroup.get(group) || 0) + 1);
       }
     }
 
@@ -541,9 +609,12 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     const current = draftStore.get(draft.draftId) || draft;
     draftStore.set(draft.draftId, { ...current, bulkMutationStatus: "applied" });
 
-    const groupSummary = calculatedSchedule.map((g, i) =>
-      `그룹 ${i + 1} (${g.groupLabel}) · 납품 ${toMD(g.endDate)} · ${g.episodes.length * g.opSchedule.length}개`
-    ).join("\n");
+    const groupSummary = calculatedSchedule.map((g, i) => {
+      const planned = g.episodes.length * g.opSchedule.length;
+      const applied = appliedByGroup.get(g) || 0;
+      const countText = applied === planned ? `${applied}개` : `${applied}개 (계획 ${planned}개 중)`;
+      return `그룹 ${i + 1} (${g.groupLabel}) · 납품 ${toMD(g.endDate)} · ${countText}`;
+    }).join("\n");
     try {
       await client.chat.postMessage({
         channel: dmChannelId,
@@ -635,7 +706,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   // ── Modal A 뷰 빌더 ───────────────────────────────────────────────
   // mode:    "single" | "multi" | "bulk"
   // execMode: "schedule" | "retake"
-  function buildModalAView(draftId, dmChannelId, mode = "bulk", execMode = "schedule") {
+  // prefill: 직전 입력값(★프로젝트를 못 찾아 "다시 입력"으로 돌아올 때 쓴다).
+  //   예전엔 빈 모달이 띄서 오타 하나 고치려고 화수·날짜를 전부 다시 쌓았다(2026-10-14 벤더 리뷰).
+  function buildModalAView(draftId, dmChannelId, mode = "bulk", execMode = "schedule", prefill = {}) {
     const isSingle = mode === "single";
     const isBulk   = mode === "bulk";
     const titleText = execMode === "retake"
@@ -647,7 +720,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         type: "input", block_id: "work_name",
         label: { type: "plain_text", text: "작품명" },
         optional: execMode === "retake",
-        element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
+        element: { type: "plain_text_input", action_id: "value",
+          ...(prefill.workName ? { initial_value: String(prefill.workName) } : {}),
+          placeholder: { type: "plain_text", text: "예: 二つの世界の主人公" } },
       },
     ];
     if (execMode === "retake") {
@@ -655,26 +730,30 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         type: "input", block_id: "pivo_id",
         label: { type: "plain_text", text: "PIVO ID (작품명 대신 입력 가능)" },
         optional: true,
-        element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 38873" } },
+        element: { type: "plain_text_input", action_id: "value",
+          ...(prefill.pivoId ? { initial_value: String(prefill.pivoId) } : {}),
+          placeholder: { type: "plain_text", text: "예: 38873" } },
       });
     }
     blocks.push({
       type: "input", block_id: "ep_start",
       label: { type: "plain_text", text: isSingle ? "화수" : "시작 화수" },
-      element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+      element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1",
+        ...(prefill.epStart ? { initial_value: String(prefill.epStart) } : {}) },
     });
     if (!isSingle) {
       blocks.push({
         type: "input", block_id: "ep_end",
         label: { type: "plain_text", text: "끝 화수" },
-        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", min_value: "1",
+          ...(prefill.epEnd ? { initial_value: String(prefill.epEnd) } : {}) },
       });
     }
     if (isBulk) {
       blocks.push({
         type: "input", block_id: "group_size",
         label: { type: "plain_text", text: "그룹당 회차 수" },
-        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "3", min_value: "1" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: String(prefill.groupSize || 3), min_value: "1" },
         hint: { type: "plain_text", text: "나머지 회차는 마지막 그룹으로 자동 묶음 (예: 1-11화, 3화 그룹 → 1-3 / 4-6 / 7-9 / 10-11)" },
       });
     }
@@ -683,14 +762,15 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       blocks.push({
         type: "input", block_id: "first_start",
         label: { type: "plain_text", text: isSingle ? "시작일" : "첫 번째 그룹 시작일" },
-        element: { type: "datepicker", action_id: "value" },
+        element: { type: "datepicker", action_id: "value",
+          ...(prefill.firstStart ? { initial_date: String(prefill.firstStart) } : {}) },
       });
     }
     if (isBulk) {
       blocks.push({
         type: "input", block_id: "gap_days",
         label: { type: "plain_text", text: "그룹간 갭 (일)" },
-        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: "7", min_value: "0", max_value: "365" },
+        element: { type: "number_input", is_decimal_allowed: false, action_id: "value", initial_value: String(prefill.gapDays ?? 7), min_value: "0", max_value: "365" },
         hint: { type: "plain_text", text: "이전 그룹 시작일 + N일 = 다음 그룹 시작일 (번역 마감 기준 N일 간격)" },
       });
     }
@@ -706,15 +786,24 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── Modal B 뷰 빌더 (TOTUS 오퍼레이션 기반, 동적 생성) ───────────
-  function buildModalBView(draftId, opList, execMode = "schedule") {
+  function buildModalBView(draftId, opList, execMode = "schedule", failedEps = []) {
     const isRetake = execMode === "retake";
+    // ★머리말은 실제 동작과 맞춰야 한다(2026-10-14 벤더 리뷰). 「활성 태스크가 있는 것만 표시」는
+    //   사실이 아니다 — 리테이크 목록은 완료 태스크까지 담고, 작업자 미배정도 사유를 적어 남긴다.
     const headerText = isRetake
-      ? "그룹 내 모든 회차에 동일 적용. TOTUS에 활성 태스크가 있는 오퍼레이션만 표시돼."
+      ? "그룹 내 모든 회차에 동일 적용. 리테이크 가능한 오퍼레이션을 모두 표시하고, 고를 수 없는 건 사유를 적어뒀어."
       : "그룹 내 모든 회차에 동일 적용. *0일*이면 해당 오퍼레이션 건너뜀.";
     const blocks = [
       { type: "section", text: { type: "mrkdwn", text: headerText } },
       { type: "divider" },
     ];
+    // 조회 자체가 실패한 회차는 "태스크 없음"과 다르다 — 분모에서 뺐다는 사실을 여기서 알린다.
+    if (failedEps && failedEps.length) {
+      blocks.push({ type: "section", text: { type: "mrkdwn",
+        text: [`⚠️ 아래 회차는 TOTUS 조회 자체가 실패해서 집계에서 뺐어(태스크가 없다는 뜻이 아님).`,
+               ...failedEps.map(f => `• ${f.ep}화 — ${f.error}`)].join("\n") } });
+      blocks.push({ type: "divider" });
+    }
     for (const op of opList) {
       const { opCode, opName, epsWith, epsAssigned, epTotal, selectable } = op;
       // ★고를 수 없는 건 입력란 대신 이유를 적는다(2026-10-08). 조용히 빼면 "태스크는 있는데
@@ -743,13 +832,22 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           : (isRetake ? "비워두면 이 오퍼레이션 건너뜀" : "일 단위") },
       });
     }
+    // ★고를 수 있는 오퍼레이션이 하나도 없으면 submit 버튼을 빼야 한다(2026-10-14 벤더 리뷰).
+    //   예전엔 사유만 나열된 모달에도 「시뮬레이션 보기 →」가 남아 있어서, 누르면 전부 0일인
+    //   빈 일정이 계산되고 그 다음 단계에 가서야 막혔다. 막을 거면 여기서 막는다.
+    const hasSelectable = opList.some(op => op.selectable !== false);
+    if (!hasSelectable) {
+      blocks.push({ type: "divider" });
+      blocks.push({ type: "section", text: { type: "mrkdwn",
+        text: "⚠️ 지금 고를 수 있는 오퍼레이션이 없어 진행할 수 없어. TOTUS에서 작업자 배정을 확인한 뒤 다시 시도해줘." } });
+    }
     return {
       type: "modal",
       callback_id: "schbulk_step2",
       private_metadata: JSON.stringify({ draftId }),
       title: { type: "plain_text", text: "오퍼레이션 일수" },
-      submit: { type: "plain_text", text: "시뮬레이션 보기 →" },
-      close:  { type: "plain_text", text: "취소" },
+      ...(hasSelectable ? { submit: { type: "plain_text", text: "시뮬레이션 보기 →" } } : {}),
+      close:  { type: "plain_text", text: hasSelectable ? "취소" : "닫기" },
       blocks,
     };
   }
@@ -850,7 +948,8 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     await ack();
     try {
       const { draftId, dmChannelId, mode = "bulk", execMode = "schedule" } = JSON.parse(body.actions[0].value || "{}");
-      const view = buildModalAView(draftId, dmChannelId || body.channel?.id || body.user.id, mode, execMode);
+      const prefill = draftStore.get(draftId)?.lastInput || {};
+      const view = buildModalAView(draftId, dmChannelId || body.channel?.id || body.user.id, mode, execMode, prefill);
       if (body.view?.id) await client.views.update({ view_id: body.view.id, view });
       else await client.views.open({ trigger_id: body.trigger_id, view });
     } catch (e) {
@@ -882,6 +981,13 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       epEnd     = parseInt(v.ep_end?.value?.value     || "1", 10);
       groupSize = parseInt(v.group_size?.value?.value || "3", 10);
       gapDays   = parseInt(v.gap_days?.value?.value   || "7", 10);
+    }
+
+    // ★조회가 실패해 "다시 입력"으로 돌아올 때 써야 하므로, 검증보다 먼저 보관한다.
+    {
+      const prev = draftStore.get(draftId) || {};
+      draftStore.set(draftId, { ...prev, draftId, dmChannelId, execMode,
+        lastInput: { workName, pivoId, epStart, epEnd, groupSize, gapDays, firstStart } });
     }
 
     const groups = buildGroups(epStart, epEnd, groupSize);
@@ -988,7 +1094,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
       // 복수/그룹: 오퍼레이션 현황을 **전 회차** 기준으로 모아 Modal B로 진행(2026-10-08)
       const allEpisodes = groups.flatMap(g => g.episodes);
-      const { total: epTotal, stats } = await _collectOpStats(projectUuid, allEpisodes, execMode === "retake");
+      const { total: epTotal, stats, failedEps } = await _collectOpStats(projectUuid, allEpisodes, execMode === "retake");
       const isRetakeMode = execMode === "retake";
       const opList = stats.map(st => ({
         opCode: st.opCode,
@@ -1001,9 +1107,14 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       }));
 
       if (!opList.length) {
+        // 조회가 실패해서 0건인 것과 회차가 없어서 0건인 것은 원인이 다르다 — 섞어서 안내하지 않는다.
+        const reason = (failedEps && failedEps.length)
+          ? [`⚠️ 오퍼레이션을 하나도 못 모았어. 아래 회차는 TOTUS 조회 자체가 실패했어.`,
+             ...failedEps.map(f => `• ${f.ep}화 — ${f.error}`)].join("\n")
+          : `⚠️ 조회된 오퍼레이션이 없어. 회차 번호를 확인해줘.`;
         const errView = {
           type: "modal", title: { type: "plain_text", text: "오류" },
-          blocks: [{ type: "section", text: { type: "mrkdwn", text: `⚠️ 조회된 오퍼레이션이 없어. 회차 번호를 확인해줘.` } }],
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: reason } }],
         };
         if (loadingViewId) await client.views.update({ view_id: loadingViewId, view: errView }).catch(e => console.error("[scheduleBulk] 오퍼레이션0 errView update 실패:", e.message));
         return;
@@ -1014,7 +1125,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       draftStore.set(draftId, { ...prev, workName: displayName, projectUuid, groups, firstStart, gapDays, opList, execMode });
 
       // 로딩 모달 → Modal B
-      const modalB = buildModalBView(draftId, opList, execMode);
+      const modalB = buildModalBView(draftId, opList, execMode, failedEps);
       if (loadingViewId) {
         await client.views.update({ view_id: loadingViewId, view: modalB }).catch(e => console.error("[scheduleBulk] Modal B update 실패(사용자 로딩모달 정지 가능):", e.message));
       } else {
@@ -1093,7 +1204,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
         text: reviewRequired
           ? "⚠️ 리테이크 생성 결과를 확인할 수 없어 자동 재시도하지 않았어. Totus에서 생성 여부를 확인해야 해."
           : `⚠️ ${isRetake ? "재생성" : "반영"} 중 오류: ${error.message}`,
-      }).catch(() => {});
+      }).catch(e => console.error("[scheduleBulk] 오류 알림 DM 실패:", e.message));
     }
   }
 
