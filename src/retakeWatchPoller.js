@@ -31,12 +31,26 @@ const EXPIRY_DAYS = 14;
 const EDITOR_LINK_BASE = "https://main.totus.pro/ko/editor?uuid=";
 const DELIVERY_REVIEW_OP_CODE = "OTC0087";
 
-module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels, watchCfmByChannel }) {
+module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels, watchCfmByChannel, notifyAfterHour, nowFn }) {
   const BASE  = base  || (() => process.env.PLATFORM_API_URL);
   const TOKEN = token || (() => process.env.PLATFORM_API_TOKEN);
+  // 완료 알림 발송 허용 시작 시각(KST, 정시 단위). 그 전에 완료돼도 발송을 보류한다.
+  // null/undefined면 게이트 없음(즉시 발송 — 하위호환). 현주님 요청: 16시 이전엔 확인 못 하시니 보류.
+  const NOTIFY_AFTER_HOUR = (notifyAfterHour === 0 || notifyAfterHour) ? notifyAfterHour : null;
+  const NOW = nowFn || (() => new Date());
 
   function _authHeaders() {
     return { headers: { Authorization: `Bearer ${TOKEN()}` } };
+  }
+
+  // 현재 KST 시(0~23) — 발송 허용 시각 판정용
+  function _kstHour() {
+    return new Date(NOW().getTime() + 9 * 3600 * 1000).getUTCHours();
+  }
+  // 지금 완료 알림을 보내도 되는 시각인지 (NOTIFY_AFTER_HOUR 미설정이면 항상 허용)
+  function _isNotifyWindow() {
+    if (NOTIFY_AFTER_HOUR == null) return true;
+    return _kstHour() >= NOTIFY_AFTER_HOUR;
   }
 
   // GET /api/v1/tasks/{uuid} — 판정대상 태스크 단건 조회
@@ -105,6 +119,12 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     const state = task?.["상태"] || null;
 
     if (state === "COMPLETED") {
+      // 발송 허용 시각(기본 16시) 이전이면 보류 — watching 유지로 두고 다음 tick에서 재판정.
+      // 현주님이 그 전엔 확인을 못 하시므로, 16시 이전 완료분은 16시 첫 tick에 한꺼번에 나간다.
+      if (!_isNotifyWindow()) {
+        console.log(`[retake-watch] 완료 but 발송 보류(${NOTIFY_AFTER_HOUR}시 이전) — row:${row.rowIndex} ${row.workName} ${row.episode}화`);
+        return;
+      }
       const reviewLink = await _resolveDeliveryReviewLink(row.jobUuid);
       // 답글 성공 후에만 notified 마킹 (멱등·재시도 안전)
       await slackClient.chat.postMessage({
@@ -178,5 +198,5 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     }
   }
 
-  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired, _cleanWorkName };
+  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired, _cleanWorkName, _isNotifyWindow, _kstHour };
 };

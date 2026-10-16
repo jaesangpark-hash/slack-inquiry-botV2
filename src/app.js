@@ -124,6 +124,15 @@ const RETAKE_WATCH_SHEET_RANGE = process.env.RETAKE_WATCH_SHEET_RANGE || RETAKE_
 const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.env.RETAKE_WATCH_GRID_ID.trim() !== "")
   ? parseInt(process.env.RETAKE_WATCH_GRID_ID, 10)
   : undefined;
+// 완료 알림 발송 허용 시작 시각(KST 정시). 그 전에 완료돼도 발송 보류 → 해당 시각 첫 tick에 한꺼번에 발송.
+// 현주님 요청: 16시 이전엔 어차피 확인 못 하시니 16시부터 발송. 기본 16, "off"면 게이트 없음(즉시 발송).
+const RETAKE_WATCH_NOTIFY_AFTER_HOUR = (() => {
+  const raw = (process.env.RETAKE_WATCH_NOTIFY_AFTER_HOUR || "").trim();
+  if (raw.toLowerCase() === "off") return null;
+  if (raw === "") return 16; // 기본 16시
+  const h = parseInt(raw, 10);
+  return Number.isInteger(h) && h >= 0 && h <= 23 ? h : 16;
+})();
 // 감시는 시트ID·gridId가 "둘 다" 있을 때만 켠다(등록 + 30분 폴러 함께).
 // gridId만 빠지면 상태 기록이 안 돼 같은 완료 답글이 30분마다 반복되므로, 하나라도 없으면 경고 1회 후 둘 다 끈다.
 const RETAKE_WATCH_ENABLED = !!RETAKE_WATCH_SHEET_ID && Number.isFinite(RETAKE_WATCH_GRID_ID);
@@ -415,7 +424,11 @@ if (RETAKE_WATCH_ENABLED) {
     apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
     watchChannels: RETAKE_WATCH_CHANNELS, // 감시 대상 채널 필터(범위 밖 행은 skipped)
     watchCfmByChannel: RETAKE_WATCH_CFM_BY_CHANNEL, // requesterUserId 빈 경우 채널별 CFM 폴백 태그
+    notifyAfterHour: RETAKE_WATCH_NOTIFY_AFTER_HOUR, // 이 시각(KST) 이전 완료분은 발송 보류
   });
+  if (RETAKE_WATCH_NOTIFY_AFTER_HOUR != null) {
+    console.log(`[retake-watch] 완료 알림 발송 허용 시각: ${RETAKE_WATCH_NOTIFY_AFTER_HOUR}시 이후(KST) — 이전 완료분은 보류 후 일괄 발송`);
+  }
   const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
   cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
   console.log(`[retake-watch] 리테이크 감시 폴러 등록 완료 (cron: ${pollCron})`);
