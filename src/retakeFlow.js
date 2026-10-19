@@ -488,7 +488,9 @@ JSON만 출력. 코드블록 금지.
           { type: "input", block_id: "rt_correct_episode_block",
             label: { type: "plain_text", text: "회차 (숫자만)" },
             element: { type: "plain_text_input", action_id: "value",
-              initial_value: data.episode ? String(data.episode) : "",
+              // 값이 없을 때 initial_value: "" 를 보내면 Slack 이 모달을 거부할 수 있다 —
+              // 거부되면 화면 자체가 안 열리므로, 없을 땐 키를 아예 뺀다(2026-10-19 벤더 리포트).
+              ...(data.episode ? { initial_value: String(data.episode) } : {}),
               placeholder: { type: "plain_text", text: "예: 54" } } },
         ],
       },
@@ -503,11 +505,21 @@ JSON만 출력. 코드블록 금지.
 
     const pivoId     = view.state.values.rt_correct_pivoid_block?.value?.value?.trim() || "";
     const episodeRaw = view.state.values.rt_correct_episode_block?.value?.value?.trim() || "";
-    const episode    = episodeRaw.replace(/[^0-9]/g, "");
-    if (!episode) {
-      await client.chat.postMessage({ channel: data.dmChannelId, text: "회차를 숫자로 입력해줘." });
+    // ★안내는 모달이 닫힌 뒤에 DM으로 나간다 — 다시 열라는 말을 같이 적어야 한다(2026-10-19 AIA).
+    const _reopenHint = "\n창은 이미 닫혔으니 `✏️ 작품명·회차 정정`을 다시 눌러줘.";
+    if (!episodeRaw) {
+      await client.chat.postMessage({ channel: data.dmChannelId,
+        text: "회차를 숫자로 입력해줘." + _reopenHint });
       return;
     }
+    // ★숫자 아닌 글자를 지워서 쓰면 "12-13" 이 조용히 1213화가 된다(2026-10-19 벤더 리포트).
+    //   임의로 고치지 말고 다시 받는다 — 틀린 회차로 리테이크가 나가는 것보다 한 번 더 묻는 게 낫다.
+    if (!/^\d+$/.test(episodeRaw)) {
+      await client.chat.postMessage({ channel: data.dmChannelId,
+        text: `회차는 숫자만 넣어줘 — \`${episodeRaw}\` 는 그대로 쓸 수 없어. (\`54화\` 가 아니라 \`54\`)` + _reopenHint });
+      return;
+    }
+    const episode = episodeRaw;
 
     // pivoId를 비우면 작품은 그대로 두고 회차만 고친다 — 작품은 맞는데 화수만 틀린 경우가 실제로 많다.
     const resolved = pivoId ? await _resolveByPivoId(pivoId) : null;
@@ -1053,7 +1065,7 @@ JSON만 출력. 코드블록 금지.
           { type: "input", block_id: "rt_episode_block",
             label: { type: "plain_text", text: "화수 (숫자만)" },
             element: { type: "plain_text_input", action_id: "value",
-              initial_value: pending.episode || "",
+              initial_value: pending.episode ? String(pending.episode) : "",
               placeholder: { type: "plain_text", text: "예: 3" } } },
         ],
       },

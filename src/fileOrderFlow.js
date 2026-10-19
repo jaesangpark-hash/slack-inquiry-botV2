@@ -495,7 +495,7 @@ JSON만 출력. 코드블록 금지.
           { type: "input", block_id: "fo_episode_block",
             label: { type: "plain_text", text: "화수 (숫자만)" },
             element: { type: "plain_text_input", action_id: "value",
-              initial_value: pending.episode || "",
+              initial_value: pending.episode ? String(pending.episode) : "",
               placeholder: { type: "plain_text", text: "예: 204" } } },
         ],
       },
