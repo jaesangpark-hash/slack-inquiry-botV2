@@ -798,6 +798,34 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
   }
 
   // ── Modal B 뷰 빌더 (TOTUS 오퍼레이션 기반, 동적 생성) ───────────
+  // Slack section text 는 3000자 제한이다. TOTUS 장애로 전 회차가 실패하면 실패 사유를 전부
+  // 이어붙여 이 한도를 넘고, views.update 가 거부돼 화면이 「조회 중」에서 멈춘다.
+  // 1줄이 최대 ~270자라 11회차쯤부터 걸린다(2026-10-19 벤더 리포트). 앞 몇 줄만 보이고 나머지는 센다.
+  const SECTION_TEXT_LIMIT  = 2900;  // 3000에서 여유를 둔다
+  const FAILED_EPS_MAX_LINE = 5;
+  const FAILED_EPS_LINE_CAP = 300;   // 사유 하나가 통째로 긴 경우도 있다
+
+  function _formatFailedEps(headline, failedEps) {
+    const lines = (failedEps || []).map(f => {
+      const line = `• ${f.ep}화 — ${f.error}`;
+      return line.length > FAILED_EPS_LINE_CAP ? line.slice(0, FAILED_EPS_LINE_CAP - 1) + "…" : line;
+    });
+    const shown = [];
+    let len = headline.length;
+    for (const line of lines) {
+      if (shown.length >= FAILED_EPS_MAX_LINE) break;
+      if (len + line.length + 1 > SECTION_TEXT_LIMIT) break;
+      shown.push(line);
+      len += line.length + 1;
+    }
+    const rest = lines.length - shown.length;
+    const out = [headline, ...shown];
+    if (rest > 0) out.push(`…외 ${rest}개`);
+    const text = out.join("\n");
+    // 머리말 자체가 길어도 한도를 넘기지 않는다
+    return text.length > SECTION_TEXT_LIMIT ? text.slice(0, SECTION_TEXT_LIMIT - 1) + "…" : text;
+  }
+
   function buildModalBView(draftId, opList, execMode = "schedule", failedEps = []) {
     const isRetake = execMode === "retake";
     // ★머리말은 실제 동작과 맞춰야 한다(2026-10-14 벤더 리뷰). 「활성 태스크가 있는 것만 표시」는
@@ -812,8 +840,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
     // 조회 자체가 실패한 회차는 "태스크 없음"과 다르다 — 분모에서 뺐다는 사실을 여기서 알린다.
     if (failedEps && failedEps.length) {
       blocks.push({ type: "section", text: { type: "mrkdwn",
-        text: [`⚠️ 아래 회차는 TOTUS 조회 자체가 실패해서 집계에서 뺐어(태스크가 없다는 뜻이 아님).`,
-               ...failedEps.map(f => `• ${f.ep}화 — ${f.error}`)].join("\n") } });
+        text: _formatFailedEps(
+          `⚠️ 아래 회차는 TOTUS 조회 자체가 실패해서 집계에서 뺐어(태스크가 없다는 뜻이 아님).`,
+          failedEps) } });
       blocks.push({ type: "divider" });
     }
     for (const op of opList) {
@@ -1121,8 +1150,9 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
       if (!opList.length) {
         // 조회가 실패해서 0건인 것과 회차가 없어서 0건인 것은 원인이 다르다 — 섞어서 안내하지 않는다.
         const reason = (failedEps && failedEps.length)
-          ? [`⚠️ 오퍼레이션을 하나도 못 모았어. 아래 회차는 TOTUS 조회 자체가 실패했어.`,
-             ...failedEps.map(f => `• ${f.ep}화 — ${f.error}`)].join("\n")
+          ? _formatFailedEps(
+              `⚠️ 오퍼레이션을 하나도 못 모았어. 아래 회차는 TOTUS 조회 자체가 실패했어.`,
+              failedEps)
           : `⚠️ 조회된 오퍼레이션이 없어. 회차 번호를 확인해줘.`;
         const errView = {
           type: "modal", title: { type: "plain_text", text: "오류" },

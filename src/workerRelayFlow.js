@@ -621,7 +621,7 @@ JSON만 출력. 코드블록 금지.
             type: "input", block_id: "episode_block",
             label: { type: "plain_text", text: "화수" },
             element: { type: "plain_text_input", action_id: "episode_input",
-              initial_value: pending.episode || "",
+              initial_value: pending.episode ? String(pending.episode) : "",
               placeholder: { type: "plain_text", text: "예: 130" } },
           }] : []),
         ],

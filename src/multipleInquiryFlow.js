@@ -331,7 +331,7 @@ ${text}`.trim();
       blocks.push({ type: "input", block_id: "mi_episode_block",
         label: { type: "plain_text", text: "화수 (숫자만)" },
         element: { type: "plain_text_input", action_id: "value",
-          initial_value: item.episode || "",
+          initial_value: item.episode ? String(item.episode) : "",
           placeholder: { type: "plain_text", text: "예: 221" } } });
     }
     if (missing.includes("extend_or_date")) {
