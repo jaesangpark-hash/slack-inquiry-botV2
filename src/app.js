@@ -449,6 +449,7 @@ if (RETAKE_WATCH_ENABLED && RETAKE_WATCH_CHANNELS.size) {
       retakeWatchStore,
       slackClient: app.client,
       watchChannels: RETAKE_WATCH_CHANNELS,
+      apiFetch: retakeApiFetch, // 발송 직전 Totus 상태 재확인(완료/드랍 제외) — retakeFlow._apiFetch 재사용
     });
     cron.schedule(reminderCronRaw, () => retakeReminderPoller.tick().catch(e => console.error("[retake-reminder] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
     console.log(`[retake-reminder] 미제출 리마인더 등록 완료 (cron: ${reminderCronRaw})`);
