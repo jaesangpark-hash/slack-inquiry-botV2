@@ -37,6 +37,7 @@ const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
 const createRetakeWatchStore = require("./sheets/retake-watch-store");
 const createRetakeWatchPoller = require("./retakeWatchPoller");
+const createRetakeReminderPoller = require("./retakeReminderPoller");
 const createProgress = require("./slack/progress");
 const createInquiryAnalyzer = require("./ai/inquiry-analyzer");
 const createInquiryPublisher = require("./slack/inquiry-publisher");
@@ -123,6 +124,15 @@ const RETAKE_WATCH_SHEET_RANGE = process.env.RETAKE_WATCH_SHEET_RANGE || RETAKE_
 const RETAKE_WATCH_GRID_ID     = (process.env.RETAKE_WATCH_GRID_ID && process.env.RETAKE_WATCH_GRID_ID.trim() !== "")
   ? parseInt(process.env.RETAKE_WATCH_GRID_ID, 10)
   : undefined;
+// 완료 알림 발송 허용 시작 시각(KST 정시). 그 전에 완료돼도 발송 보류 → 해당 시각 첫 tick에 한꺼번에 발송.
+// 현주님 요청: 16시 이전엔 어차피 확인 못 하시니 16시부터 발송. 기본 16, "off"면 게이트 없음(즉시 발송).
+const RETAKE_WATCH_NOTIFY_AFTER_HOUR = (() => {
+  const raw = (process.env.RETAKE_WATCH_NOTIFY_AFTER_HOUR || "").trim();
+  if (raw.toLowerCase() === "off") return null;
+  if (raw === "") return 16; // 기본 16시
+  const h = parseInt(raw, 10);
+  return Number.isInteger(h) && h >= 0 && h <= 23 ? h : 16;
+})();
 // 감시는 시트ID·gridId가 "둘 다" 있을 때만 켠다(등록 + 30분 폴러 함께).
 // gridId만 빠지면 상태 기록이 안 돼 같은 완료 답글이 30분마다 반복되므로, 하나라도 없으면 경고 1회 후 둘 다 끈다.
 const RETAKE_WATCH_ENABLED = !!RETAKE_WATCH_SHEET_ID && Number.isFinite(RETAKE_WATCH_GRID_ID);
@@ -184,7 +194,7 @@ const retakeWatchStore = createRetakeWatchStore({
 
 const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, generateDraftId, draftStore, sheetsClient, fetchDeliveryDate, resolveApmUserId,
-  retakeChannels: RETAKE_CHANNELS, retakeWatchChannels: RETAKE_WATCH_CHANNELS, retakeWatchStore,
+  retakeWatchChannels: RETAKE_WATCH_CHANNELS, retakeWatchStore,
 });
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
@@ -414,12 +424,38 @@ if (RETAKE_WATCH_ENABLED) {
     apiFetch: retakeApiFetch, // retakeFlow._apiFetch 재사용 (loggedCall 래핑)
     watchChannels: RETAKE_WATCH_CHANNELS, // 감시 대상 채널 필터(범위 밖 행은 skipped)
     watchCfmByChannel: RETAKE_WATCH_CFM_BY_CHANNEL, // requesterUserId 빈 경우 채널별 CFM 폴백 태그
+    notifyAfterHour: RETAKE_WATCH_NOTIFY_AFTER_HOUR, // 이 시각(KST) 이전 완료분은 발송 보류
   });
+  if (RETAKE_WATCH_NOTIFY_AFTER_HOUR != null) {
+    console.log(`[retake-watch] 완료 알림 발송 허용 시각: ${RETAKE_WATCH_NOTIFY_AFTER_HOUR}시 이후(KST) — 이전 완료분은 보류 후 일괄 발송`);
+  }
   const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
   cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
   console.log(`[retake-watch] 리테이크 감시 폴러 등록 완료 (cron: ${pollCron})`);
 } else {
   console.log("[retake-watch] 감시 비활성 — 폴러 미등록");
+}
+
+// ── 미제출 리테이크 일괄 리마인더 ──────────────────────────
+// 평일 18시(기본)에 오늘 등록된 미제출(watching) 리테이크를 모아 소환 담당자(ownerUserId)를 태그해 공지.
+// 감시(RETAKE_WATCH_ENABLED)·대상 채널(RETAKE_WATCH_CHANNELS)이 있어야 켠다.
+// RETAKE_REMINDER_CRON으로 주기 조절(기본 "0 18 * * 1-5" = 평일 18:00 KST), "off"면 끈다.
+if (RETAKE_WATCH_ENABLED && RETAKE_WATCH_CHANNELS.size) {
+  const reminderCronRaw = (process.env.RETAKE_REMINDER_CRON && process.env.RETAKE_REMINDER_CRON.trim()) || "0 18 * * 1-5";
+  if (reminderCronRaw.toLowerCase() === "off") {
+    console.log("[retake-reminder] 리마인더 비활성(RETAKE_REMINDER_CRON=off)");
+  } else {
+    const retakeReminderPoller = createRetakeReminderPoller({
+      retakeWatchStore,
+      slackClient: app.client,
+      watchChannels: RETAKE_WATCH_CHANNELS,
+      apiFetch: retakeApiFetch, // 발송 직전 Totus 상태 재확인(완료/드랍 제외) — retakeFlow._apiFetch 재사용
+    });
+    cron.schedule(reminderCronRaw, () => retakeReminderPoller.tick().catch(e => console.error("[retake-reminder] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
+    console.log(`[retake-reminder] 미제출 리마인더 등록 완료 (cron: ${reminderCronRaw})`);
+  }
+} else {
+  console.log("[retake-reminder] 리마인더 미등록 — 감시 비활성 또는 대상 채널 없음");
 }
 
 // ── ToTalk 멘션 폴러 — 툰식이 테스트 완료 후 아래 주석 해제

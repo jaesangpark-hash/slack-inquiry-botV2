@@ -9,8 +9,9 @@
  *   8  operationCode         | 9  operationName  | 10 watchChannel  | 11 watchThreadTs
  *   12 startDate             | 13 endDate        | 14 notifiedAt    | 15 note
  *   16 requesterUserId(완료 알림에서 @멘션할 수정 요청자/CFM Slack ID)
+ *   17 ownerUserId(미제출 리마인더에서 @멘션할 "소환한 담당자/APM" Slack ID)
  *
- * status 값: watching(감시중) → notified(완료 알림 발송) / dropped(DROP) / expired(14일 컷오프)
+ * status 값: watching(감시중) → notified(완료 알림 발송) / dropped(DROP) / expired(14일 컷오프) / skipped(감시 대상 채널 아님)
  */
 const COL = {
   registeredAt: 0,
@@ -30,8 +31,9 @@ const COL = {
   notifiedAt:   14,
   note:         15,
   requesterUserId: 16,
+  ownerUserId:  17,
 };
-const COLUMN_COUNT = 17;
+const COLUMN_COUNT = 18;
 
 /**
  * @param {{
@@ -83,6 +85,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
         notifiedAt:    r[COL.notifiedAt]    || "",
         note:          r[COL.note]          || "",
         requesterUserId: (r[COL.requesterUserId] || "").trim(),
+        ownerUserId:     (r[COL.ownerUserId] || "").trim(),
       });
     }
     return parsed;
@@ -130,6 +133,7 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     row[COL.notifiedAt]    = "";
     row[COL.note]          = watch.note           || "";
     row[COL.requesterUserId] = watch.requesterUserId || "";
+    row[COL.ownerUserId]     = watch.ownerUserId     || "";
 
     // RAW: 값을 시트 UI처럼 해석하지 않고 문자열 그대로 저장한다.
     // USER_ENTERED면 watchThreadTs("1700000000.000100")가 숫자로 바뀌어 소수부가 사라지고,
@@ -204,5 +208,43 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     console.log(`[retake-watch] 상태 갱신 — row:${rowIndex} status:${status}`);
   }
 
-  return { registerWatch, loadWatching, markStatus, enabled, _loadRows, COL };
+  /**
+   * 여러 행의 status(+선택 note)를 "한 번의 batchUpdate 호출"로 갱신한다.
+   * 범위 밖 채널 행을 첫 tick에 다량 정리할 때 markStatus를 행마다 부르면
+   * Sheets 호출이 연달아 터져 한도에 걸릴 수 있어, 모아서 1회로 쓴다.
+   * @param {Array<{ rowIndex: number, status: string, note?: string }>} items
+   */
+  async function markStatusMany(items) {
+    if (!enabled) {
+      console.warn(`[retake-watch] markStatusMany skip — enabled:${enabled}`);
+      return;
+    }
+    const list = (items || []).filter(it => it && it.rowIndex);
+    if (!list.length) return;
+
+    const requests = [];
+    for (const { rowIndex, status, note } of list) {
+      requests.push({
+        updateCells: {
+          range: { sheetId: watchGridSheetId, startRowIndex: rowIndex - 1, endRowIndex: rowIndex, startColumnIndex: COL.status, endColumnIndex: COL.status + 1 },
+          rows: [{ values: [{ userEnteredValue: { stringValue: String(status) } }] }],
+          fields: "userEnteredValue.stringValue",
+        },
+      });
+      if (note != null) {
+        requests.push({
+          updateCells: {
+            range: { sheetId: watchGridSheetId, startRowIndex: rowIndex - 1, endRowIndex: rowIndex, startColumnIndex: COL.note, endColumnIndex: COL.note + 1 },
+            rows: [{ values: [{ userEnteredValue: { stringValue: String(note) } }] }],
+            fields: "userEnteredValue.stringValue",
+          },
+        });
+      }
+    }
+
+    await sheetsClient.batchUpdate(watchSheetId, requests);
+    console.log(`[retake-watch] 상태 일괄 갱신 — ${list.length}건(호출 1회)`);
+  }
+
+  return { registerWatch, loadWatching, markStatus, markStatusMany, enabled, _loadRows, COL };
 };

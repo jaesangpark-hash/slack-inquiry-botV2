@@ -66,6 +66,7 @@ const SAMPLE_WATCH = {
   startDate: "2026-09-22T00:00:00+09:00",
   endDate: "2026-09-25T23:59:00+09:00",
   requesterUserId: "U_CFM",
+  ownerUserId: "U_APM",
 };
 
 describe("createRetakeWatchStore.registerWatch", () => {
@@ -85,7 +86,7 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(sheetsClient.appendCalls.length, 0);
   });
 
-  test("정상 append — 16컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
+  test("정상 append — 18컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
     const sheetsClient = makeFakeSheetsClient({ getRows: [["등록시각", "status"]] }); // 헤더만
     const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
     const res = await store.registerWatch(SAMPLE_WATCH);
@@ -98,9 +99,10 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(call.range, "리테이크 감시!A:P");
     assert.strictEqual(call.opts.valueInputOption, "RAW"); // ts·uuid 소수부/문자열 보존 (형민님 검수)
     const row = call.rows[0];
-    assert.strictEqual(row.length, 17);
+    assert.strictEqual(row.length, 18);
     assert.strictEqual(row[1], "watching");            // status
     assert.strictEqual(row[16], "U_CFM");              // requesterUserId (CFM 멘션용)
+    assert.strictEqual(row[17], "U_APM");              // ownerUserId (소환 담당자 멘션용)
     assert.strictEqual(row[2], "task-judge-1");        // judgeTaskUuid
     assert.strictEqual(row[3], "task-judge-1,task-sub-2"); // allTaskUuids join
     assert.strictEqual(row[4], "proj-1");              // projectUuid
@@ -238,5 +240,45 @@ describe("createRetakeWatchStore 활성 게이트 (시트ID·gridId 둘 다 필�
     const sheetsClient = makeFakeSheetsClient();
     const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
     assert.strictEqual(store.enabled, true);
+  });
+});
+
+describe("createRetakeWatchStore.markStatusMany", () => {
+  test("여러 행을 batchUpdate 1회로 기록 (호출 한 번, 행마다 status+note 2 request)", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([
+      { rowIndex: 5, status: "skipped", note: "감시 대상 채널 아님" },
+      { rowIndex: 6, status: "skipped", note: "감시 대상 채널 아님" },
+      { rowIndex: 7, status: "skipped", note: "감시 대상 채널 아님" },
+    ]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);          // 호출 1회
+    assert.strictEqual(sheetsClient.batchUpdateCalls[0].requests.length, 6); // 3행 × (status+note)
+    // 첫 행 status request 위치 검증 (status 컬럼 = 1)
+    const r0 = sheetsClient.batchUpdateCalls[0].requests[0].updateCells;
+    assert.strictEqual(r0.range.startColumnIndex, 1);
+    assert.strictEqual(r0.rows[0].values[0].userEnteredValue.stringValue, "skipped");
+  });
+
+  test("note 없으면 행당 request 1개(status만)", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([{ rowIndex: 5, status: "skipped" }]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls[0].requests.length, 1);
+  });
+
+  test("빈 배열·rowIndex 없는 항목은 호출 안 함", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    await store.markStatusMany([]);
+    await store.markStatusMany([{ status: "skipped" }]); // rowIndex 없음
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("감시 off면 기록 안 함", async () => {
+    const sheetsClient = makeFakeSheetsClient();
+    const store = createRetakeWatchStore({ sheetsClient, watchSheetId: "", watchSheetRange: "리테이크 감시!A:P", watchGridSheetId: 777 });
+    await store.markStatusMany([{ rowIndex: 5, status: "skipped" }]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
   });
 });

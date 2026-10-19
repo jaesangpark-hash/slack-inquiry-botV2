@@ -21,10 +21,17 @@ const daysAgoIso = (n) => new Date(Date.now() - n * 24 * 3600 * 1000).toISOStrin
 
 function makeStore(rows) {
   const markCalls = [];
+  const markManyCalls = []; // markStatusMany 호출 단위(배치) 기록
   return {
     loadWatching: async () => rows,
     markStatus: async (rowIndex, status, extra) => { markCalls.push({ rowIndex, status, extra }); },
+    // 범위 밖 skipped 일괄 기록 — 배치 1건을 markManyCalls에, 개별 항목은 markCalls에도 반영
+    markStatusMany: async (items) => {
+      markManyCalls.push(items);
+      for (const it of items) markCalls.push({ rowIndex: it.rowIndex, status: it.status, extra: { note: it.note } });
+    },
     markCalls,
+    markManyCalls,
   };
 }
 
@@ -178,6 +185,40 @@ describe("retakeWatchPoller 감시 대상 채널 필터 (watchChannels)", () => 
     assert.strictEqual(slack.postCalls.length, 0);       // 알림 안 감
     assert.strictEqual(store.markCalls.length, 1);
     assert.strictEqual(store.markCalls[0].status, "skipped");
+    assert.strictEqual(store.markManyCalls.length, 1);   // 일괄(배치) 1회
+  });
+
+  test("범위 밖 채널 여러 건 → markStatusMany 한 번에(배치) skipped", async () => {
+    const store = makeStore([
+      { ...BASE_ROW, rowIndex: 5, watchChannel: "C_OTHER1" },
+      { ...BASE_ROW, rowIndex: 6, watchChannel: "C_OTHER2" },
+      { ...BASE_ROW, rowIndex: 7, watchChannel: "C_OTHER3" },
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({ ...deps({ store, slack, apiFetch }), watchChannels: new Set(["C09B8QLR5FG"]) });
+    await poller.tick();
+
+    assert.strictEqual(slack.postCalls.length, 0);
+    assert.strictEqual(store.markManyCalls.length, 1);   // 3건이어도 호출 1회
+    assert.strictEqual(store.markManyCalls[0].length, 3);
+    assert.ok(store.markManyCalls[0].every(it => it.status === "skipped"));
+  });
+
+  test("범위 밖 + 대상 채널 혼재 → 범위 밖은 일괄 skipped, 대상은 개별 알림", async () => {
+    const store = makeStore([
+      { ...BASE_ROW, rowIndex: 5, watchChannel: "C_OTHER" },
+      { ...BASE_ROW, rowIndex: 6, watchChannel: "C09B8QLR5FG" },
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({ ...deps({ store, slack, apiFetch }), watchChannels: new Set(["C09B8QLR5FG"]) });
+    await poller.tick();
+
+    assert.strictEqual(store.markManyCalls.length, 1);       // 범위 밖 1건 일괄
+    assert.strictEqual(store.markManyCalls[0][0].rowIndex, 5);
+    assert.strictEqual(slack.postCalls.length, 1);           // 대상 채널 1건 알림
+    assert.strictEqual(slack.postCalls[0].channel, "C09B8QLR5FG");
   });
 
   test("대상 채널이면 정상 알림", async () => {
@@ -288,5 +329,78 @@ describe("retakeWatchPoller 작품명 정리 (_cleanWorkName)", () => {
     assert.match(slack.postCalls[0].text, /\*그린라이트 64화 \[식자검수\]\*/);
     assert.doesNotMatch(slack.postCalls[0].text, /PV-177835/);
     assert.doesNotMatch(slack.postCalls[0].text, /カオ|グリーン|（仮）/);
+  });
+});
+
+describe("retakeWatchPoller 완료 알림 시각 게이트 (notifyAfterHour)", () => {
+  // KST = UTC+9. UTC 06:00 → KST 15:00, UTC 07:30 → KST 16:30, UTC 08:00 → KST 17:00
+  const atUtc = (iso) => () => new Date(iso);
+
+  test("16시 이전 완료 → 발송 보류(무발송·무마킹, watching 유지)", async () => {
+    const store = makeStore([{ ...BASE_ROW }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      notifyAfterHour: 16,
+      nowFn: atUtc("2026-10-16T06:00:00Z"), // KST 15:00
+    });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 0);   // 보류 → 발송 안 함
+    assert.strictEqual(store.markCalls.length, 0);   // watching 유지
+  });
+
+  test("16시 이후 완료 → 정상 발송 + notified", async () => {
+    const store = makeStore([{ ...BASE_ROW }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      notifyAfterHour: 16,
+      nowFn: atUtc("2026-10-16T07:30:00Z"), // KST 16:30
+    });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+
+  test("정확히 16:00이면 발송 허용", async () => {
+    const poller = createRetakeWatchPoller({
+      ...deps({ store: makeStore([]), slack: makeSlack(), apiFetch: makeApiFetch({ taskState: "PROCESSING" }) }),
+      notifyAfterHour: 16,
+      nowFn: atUtc("2026-10-16T07:00:00Z"), // KST 16:00
+    });
+    assert.strictEqual(poller._kstHour(), 16);
+    assert.strictEqual(poller._isNotifyWindow(), true);
+  });
+
+  test("notifyAfterHour 미설정(게이트 off)이면 시각 무관 즉시 발송", async () => {
+    const store = makeStore([{ ...BASE_ROW }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "COMPLETED", reviewRows: [] });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      nowFn: atUtc("2026-10-16T06:00:00Z"), // KST 15:00 but no gate
+    });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);   // 게이트 없으니 발송
+    assert.strictEqual(store.markCalls[0].status, "notified");
+  });
+
+  test("보류 중 DROP·만료 판정은 게이트와 무관하게 동작", async () => {
+    const store = makeStore([{ ...BASE_ROW }]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ taskState: "DROP" });
+    const poller = createRetakeWatchPoller({
+      ...deps({ store, slack, apiFetch }),
+      watchChannels: new Set(["C09B8QLR5FG"]),
+      notifyAfterHour: 16,
+      nowFn: atUtc("2026-10-16T06:00:00Z"), // KST 15:00
+    });
+    await poller.tick();
+    assert.strictEqual(store.markCalls[0].status, "dropped"); // 게이트는 완료 발송만 막음
   });
 });

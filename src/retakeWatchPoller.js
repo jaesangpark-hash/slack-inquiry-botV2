@@ -8,6 +8,7 @@
  *   - state==="COMPLETED" → 납품검수 링크 붙여 납품 스레드(watchChannel/watchThreadTs)에 답글 → notified
  *   - state==="DROP"      → dropped(닫음)
  *   - 등록 후 14일 경과 미완료 → expired
+ *   - 감시 대상 채널(watchChannels) 아님 → skipped(무발송, tick에서 일괄 기록)
  *   - 그 외(PROCESSING 등)  → watching 유지(무발송)
  *
  * 멱등·재시도: 답글 postMessage 성공 후에만 notified 마킹한다(실패 시 watching 유지 → 다음 tick 재시도).
@@ -22,18 +23,34 @@
  * }} deps
  */
 
+const { cleanWorkName } = require("./retakeTitle");
+
 // 등록 후 이 일수를 넘겨도 미완료면 만료 처리 (n8n 리테이크 완료체크 워크플로우와 동일 — 코드 상수, 비밀 아님)
 const EXPIRY_DAYS = 14;
 // 납품검수(OTC0087) 편집기 링크 베이스
 const EDITOR_LINK_BASE = "https://main.totus.pro/ko/editor?uuid=";
 const DELIVERY_REVIEW_OP_CODE = "OTC0087";
 
-module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels, watchCfmByChannel }) {
+module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClient, apiFetch, base, token, watchChannels, watchCfmByChannel, notifyAfterHour, nowFn }) {
   const BASE  = base  || (() => process.env.PLATFORM_API_URL);
   const TOKEN = token || (() => process.env.PLATFORM_API_TOKEN);
+  // 완료 알림 발송 허용 시작 시각(KST, 정시 단위). 그 전에 완료돼도 발송을 보류한다.
+  // null/undefined면 게이트 없음(즉시 발송 — 하위호환). 현주님 요청: 16시 이전엔 확인 못 하시니 보류.
+  const NOTIFY_AFTER_HOUR = (notifyAfterHour === 0 || notifyAfterHour) ? notifyAfterHour : null;
+  const NOW = nowFn || (() => new Date());
 
   function _authHeaders() {
     return { headers: { Authorization: `Bearer ${TOKEN()}` } };
+  }
+
+  // 현재 KST 시(0~23) — 발송 허용 시각 판정용
+  function _kstHour() {
+    return new Date(NOW().getTime() + 9 * 3600 * 1000).getUTCHours();
+  }
+  // 지금 완료 알림을 보내도 되는 시각인지 (NOTIFY_AFTER_HOUR 미설정이면 항상 허용)
+  function _isNotifyWindow() {
+    if (NOTIFY_AFTER_HOUR == null) return true;
+    return _kstHour() >= NOTIFY_AFTER_HOUR;
   }
 
   // GET /api/v1/tasks/{uuid} — 판정대상 태스크 단건 조회
@@ -77,20 +94,7 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     return Date.now() - regMs > EXPIRY_DAYS * 24 * 3600 * 1000;
   }
 
-  // 작품명 표시 정리 — 납품 채널에 뿌릴 때 내부 코드·플랫폼 태그·일본어 원제를 벗겨 한국어 제목만 남긴다.
-  // 예) "[PV-177835] [카카오픽코마] 그린라이트 グリーンライト（仮）" → "그린라이트"
-  //     "...옆집에는 호랑이가 산다 隣には虎が住んでいる（仮）APP"      → "옆집에는 호랑이가 산다 APP"
-  // 한글(가-힣)·숫자·라틴(APP/WEB 등 구분자)은 보존하고, 일본어 가나·한자 구간과 （仮） 표기만 제거한다.
-  // 정리 결과가 비면(한자만으로 된 예외적 제목 등) 원본을 그대로 쓴다(정보 손실 방지).
-  function _cleanWorkName(raw) {
-    if (!raw) return raw;
-    let s = String(raw);
-    s = s.replace(/^(?:\s*\[[^\]]*\]\s*)+/, "");          // 맨 앞 [PV-…]·[플랫폼] 태그 제거
-    s = s.replace(/[（(]\s*仮\s*[）)]/g, "");              // （仮）/(仮) 가제 표기 제거
-    s = s.replace(/[々぀-ヿ㐀-䶿一-鿿]+/g, ""); // 일본어 가나·한자 구간 제거
-    s = s.replace(/\s{2,}/g, " ").trim();                  // 중복 공백 정리
-    return s || String(raw).trim();
-  }
+  const _cleanWorkName = cleanWorkName; // 공용 모듈 재노출(테스트 호환)
 
   function _buildCompletionText(row, reviewLink) {
     // 수정 요청자(CFM)를 알림 맨 앞에 @멘션해 바로 알 수 있게 한다.
@@ -108,22 +112,19 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     return `${head}\n${linkLine}`;
   }
 
-  // 감시행 1건 처리
+  // 감시행 1건 처리 (범위 밖 채널 필터는 tick에서 선분리·일괄 처리하므로 여기선 대상 채널 행만 들어온다)
   async function _processRow(row) {
-    // 감시 대상 채널 필터 — 지정된 채널(RETAKE_WATCH_CHANNELS) 소환건만 알림.
-    // 범위 밖 채널 행은 알림하지 않고 종료 처리(skipped) → 재처리·오알림 방지.
-    // (watchChannels 미지정이면 필터 없음 — 테스트/하위호환용)
-    if (watchChannels && !watchChannels.has(row.watchChannel)) {
-      await retakeWatchStore.markStatus(row.rowIndex, "skipped", { note: "감시 대상 채널 아님" });
-      console.log(`[retake-watch] 범위 밖 채널 → skipped — row:${row.rowIndex} ch:${row.watchChannel}`);
-      return;
-    }
-
     const task = await _getTask(row.judgeTaskUuid);
     // 게이트웨이 단건 조회(GET /tasks/{uuid}) 응답은 키가 한글(상태). 값은 COMPLETED·DROP 등 영문 그대로.
     const state = task?.["상태"] || null;
 
     if (state === "COMPLETED") {
+      // 발송 허용 시각(기본 16시) 이전이면 보류 — watching 유지로 두고 다음 tick에서 재판정.
+      // 현주님이 그 전엔 확인을 못 하시므로, 16시 이전 완료분은 16시 첫 tick에 한꺼번에 나간다.
+      if (!_isNotifyWindow()) {
+        console.log(`[retake-watch] 완료 but 발송 보류(${NOTIFY_AFTER_HOUR}시 이전) — row:${row.rowIndex} ${row.workName} ${row.episode}화`);
+        return;
+      }
       const reviewLink = await _resolveDeliveryReviewLink(row.jobUuid);
       // 답글 성공 후에만 notified 마킹 (멱등·재시도 안전)
       await slackClient.chat.postMessage({
@@ -167,7 +168,26 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
       return;
     }
     if (!rows.length) return;
-    console.log(`[retake-watch] tick — watching ${rows.length}건`);
+
+    // 범위 밖 채널 행은 개별 markStatus를 연달아 호출하지 않고, 모아서 한 번의 batchUpdate로 skipped 기록한다.
+    // (행이 많아도 Sheets 호출 1회 → 쓰로틀 방지). watchChannels 미지정이면 필터 없음(테스트/하위호환).
+    if (watchChannels) {
+      const outOfScope = rows.filter(r => !watchChannels.has(r.watchChannel));
+      if (outOfScope.length) {
+        try {
+          await retakeWatchStore.markStatusMany(
+            outOfScope.map(r => ({ rowIndex: r.rowIndex, status: "skipped", note: "감시 대상 채널 아님" }))
+          );
+          console.log(`[retake-watch] 범위 밖 채널 ${outOfScope.length}건 → skipped(일괄)`);
+        } catch (e) {
+          console.error(`[retake-watch] skipped 일괄 기록 실패 — ${e.message}`);
+        }
+      }
+      rows = rows.filter(r => watchChannels.has(r.watchChannel));
+    }
+
+    if (!rows.length) return;
+    console.log(`[retake-watch] tick — watching(대상) ${rows.length}건`);
     for (const row of rows) {
       try {
         await _processRow(row);
@@ -178,5 +198,5 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
     }
   }
 
-  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired, _cleanWorkName };
+  return { tick, _processRow, _resolveDeliveryReviewLink, _isExpired, _cleanWorkName, _isNotifyWindow, _kstHour };
 };
