@@ -46,6 +46,7 @@ const row = (over = {}) => ({
   episode: "21",
   operationName: "식자",
   watchChannel: "C09B8QLR5FG",
+  watchThreadTs: "1790904681.097009",
   ownerUserId: "U_APM",
   ...over,
 });
@@ -65,7 +66,40 @@ describe("retakeReminderPoller.tick", () => {
     assert.match(post.text, /미제출 리테이크 알림/);
     assert.match(post.text, /테스트작품 21화 \[식자\]/);
     assert.match(post.text, /<@U_APM>/);
-    assert.ok(!post.thread_ts, "스레드 아닌 채널 최상위 메시지");
+    assert.strictEqual(post.thread_ts, "1790904681.097009", "납품 스레드에 답글");
+  });
+
+  test("납품 스레드(watchThreadTs)에 답글로 달린다", async () => {
+    const store = makeStore([row({ watchThreadTs: "1790999999.123456" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.strictEqual(slack.postCalls[0].thread_ts, "1790999999.123456");
+  });
+
+  test("납품 스레드가 다르면 스레드별로 답글(여러 건)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, watchThreadTs: "T_A", workName: "작품1" }),
+      row({ rowIndex: 6, watchThreadTs: "T_A", workName: "작품2" }),
+      row({ rowIndex: 7, watchThreadTs: "T_B", workName: "작품3" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 2); // 스레드 2개 → 2건
+    const byTs = Object.fromEntries(slack.postCalls.map(p => [p.thread_ts, p.text]));
+    assert.match(byTs["T_A"], /2건/);  // T_A에 2건
+    assert.match(byTs["T_B"], /1건/);  // T_B에 1건
+  });
+
+  test("watchThreadTs 없으면 채널 최상위로 fallback(답글 아님)", async () => {
+    const store = makeStore([row({ watchThreadTs: "" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.ok(!slack.postCalls[0].thread_ts);
   });
 
   test("어제 등록분은 제외(오늘 요청분만)", async () => {
