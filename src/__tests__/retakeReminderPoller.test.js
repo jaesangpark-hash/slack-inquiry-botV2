@@ -282,22 +282,20 @@ describe("retakeReminderPoller 발송 직전 Totus 재확인 (apiFetch)", () => 
   });
 });
 
-describe("retakeReminderPoller 헤더=소환자 + 각 줄 cc 현주님(CFM)", () => {
-  const CFM = new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]); // 채널 → 현주님
-
-  test("헤더에 소환자 태그, 각 줄에 cc 현주님", async () => {
+describe("retakeReminderPoller 헤더=소환자 (CFM cc·PM 없음)", () => {
+  test("헤더에 소환자 태그, 각 줄은 작품만(cc/PM 없음)", async () => {
     const store = makeStore([row({ ownerUserId: "U_OWNER" })]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, watchCfmByChannel: CFM,
+      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH,
     });
     await poller.tick();
 
     assert.strictEqual(slack.postCalls.length, 1);
     const t = slack.postCalls[0].text;
     assert.match(t, /\[미제출 리테이크 알림\]\* <@U_OWNER> 오늘/); // 헤더=소환자
-    assert.match(t, /\[식자\]\* — cc <@U07G8KC2EE6>$/m);          // 줄 끝 cc=현주님
-    assert.doesNotMatch(t, /PM/);                                 // PM 태그 없음
+    assert.doesNotMatch(t, /cc /);                                // cc 없음
+    assert.doesNotMatch(t, /PM/);                                 // PM 없음
   });
 
   test("소환자 여러 명이면 헤더에 중복 없이 모두 태그", async () => {
@@ -308,24 +306,12 @@ describe("retakeReminderPoller 헤더=소환자 + 각 줄 cc 현주님(CFM)", ()
     ]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, watchCfmByChannel: CFM,
+      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH,
     });
     await poller.tick();
     const head = slack.postCalls[0].text.split("\n")[0];
     assert.match(head, /<@U_A>/);
     assert.match(head, /<@U_B>/);
     assert.strictEqual((head.match(/<@U_A>/g) || []).length, 1); // 중복 제거
-  });
-
-  test("CFM 미설정이면 cc 생략(헤더 소환자는 유지)", async () => {
-    const store = makeStore([row({ ownerUserId: "U_OWNER" })]);
-    const slack = makeSlack();
-    const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, // CFM 미설정
-    });
-    await poller.tick();
-    const t = slack.postCalls[0].text;
-    assert.doesNotMatch(t, /cc /);
-    assert.match(t, /\[미제출 리테이크 알림\]\* <@U_OWNER>/);
   });
 });

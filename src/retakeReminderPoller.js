@@ -35,7 +35,7 @@ const DONE_STATES = new Set(["COMPLETED", "DROP"]);
  *   token: function,                            // () => PLATFORM_API_TOKEN
  * }} deps
  */
-module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackClient, watchChannels, watchCfmByChannel, apiFetch, base, token }) {
+module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackClient, watchChannels, apiFetch, base, token }) {
   const BASE  = base  || (() => process.env.PLATFORM_API_URL);
   const TOKEN = token || (() => process.env.PLATFORM_API_TOKEN);
 
@@ -73,22 +73,15 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     }
   }
 
-  // 채널의 CFM(현주님) Slack ID — watchCfmByChannel 매핑에서 조회(없으면 null)
-  function _cfmId(channel) {
-    return (watchCfmByChannel && watchCfmByChannel.get(channel)) || null;
-  }
-
-  // 공지 본문 — 헤더에 소환 담당자(들) 태그, 각 줄에 cc로 CFM(현주님) 태그.
-  function _buildText(channel, rows) {
-    const cfm = _cfmId(channel);
+  // 공지 본문 — 헤더에 소환 담당자(들) 태그, 각 줄은 작품·회차·작업유형.
+  function _buildText(rows) {
     // 헤더: 소환 담당자 — 여러 명이면 중복 제거해 모두 태그(없으면 생략)
     const owners = [...new Set(rows.map(r => r.ownerUserId).filter(Boolean))];
     const ownerMentions = owners.length ? owners.map(id => `<@${id}>`).join(" ") + " " : "";
     const head = `⏰ *[미제출 리테이크 알림]* ${ownerMentions}오늘 요청된 수정 건 중 아직 완료되지 않은 ${rows.length}건입니다. 제출 확인 부탁드립니다!`;
-    const cc = cfm ? ` — cc <@${cfm}>` : "";
     const lines = rows.map(r => {
       const work = cleanWorkName(r.workName) || "작품";
-      return `• *${work} ${r.episode || "?"}화 [${r.operationName || "-"}]*${cc}`;
+      return `• *${work} ${r.episode || "?"}화 [${r.operationName || "-"}]*`;
     });
     return `${head}\n${lines.join("\n")}`;
   }
@@ -137,7 +130,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     }
     for (const { channel, threadTs, rows: grp } of byThread.values()) {
       try {
-        const msg = { channel, text: _buildText(channel, grp) };
+        const msg = { channel, text: _buildText(grp) };
         if (threadTs) msg.thread_ts = threadTs; // 납품 스레드에 답글
         await slackClient.chat.postMessage(msg);
         console.log(`[retake-reminder] 미제출 ${grp.length}건 공지 — ch:${channel} thread:${threadTs || "(최상위)"}`);
