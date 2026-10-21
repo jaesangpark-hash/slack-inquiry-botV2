@@ -10,6 +10,8 @@
  *   12 startDate             | 13 endDate        | 14 notifiedAt    | 15 note
  *   16 requesterUserId(완료 알림에서 @멘션할 수정 요청자/CFM Slack ID)
  *   17 ownerUserId(미제출 리마인더에서 @멘션할 "소환한 담당자/APM" Slack ID)
+ *   18 workerChannel(작업자 채널 ID — 미제출 리마인더를 작업자 수정요청 스레드에 답글로 달기 위함)
+ *   19 workerThreadTs(작업자 채널에 보낸 수정요청 메시지 ts — 그 스레드에 답글)
  *
  * status 값: watching(감시중) → notified(완료 알림 발송) / dropped(DROP) / expired(14일 컷오프) / skipped(감시 대상 채널 아님)
  */
@@ -32,8 +34,10 @@ const COL = {
   note:         15,
   requesterUserId: 16,
   ownerUserId:  17,
+  workerChannel: 18,
+  workerThreadTs: 19,
 };
-const COLUMN_COUNT = 18;
+const COLUMN_COUNT = 20;
 
 /**
  * @param {{
@@ -86,6 +90,8 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
         note:          r[COL.note]          || "",
         requesterUserId: (r[COL.requesterUserId] || "").trim(),
         ownerUserId:     (r[COL.ownerUserId] || "").trim(),
+        workerChannel:   (r[COL.workerChannel] || "").trim(),
+        workerThreadTs:  (r[COL.workerThreadTs] || "").trim(),
       });
     }
     return parsed;
@@ -246,5 +252,39 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     console.log(`[retake-watch] 상태 일괄 갱신 — ${list.length}건(호출 1회)`);
   }
 
-  return { registerWatch, loadWatching, markStatus, markStatusMany, enabled, _loadRows, COL };
+  /**
+   * judgeTaskUuid로 행을 찾아 작업자 채널·스레드ts(인접 2칸)를 기록한다.
+   * 작업자 채널 수정요청 메시지를 보낸 "뒤"에 그 ts를 저장해, 미제출 리마인더가
+   * 그 스레드에 답글로 달 수 있게 한다. 해당 행이 없으면 no-op(감시 대상 아님 등).
+   * @param {string} judgeTaskUuid
+   * @param {{ workerChannel: string, workerThreadTs: string }} info
+   */
+  async function setWorkerThread(judgeTaskUuid, { workerChannel, workerThreadTs } = {}) {
+    if (!enabled || !judgeTaskUuid) return { updated: false };
+    const rows = await _loadRows();
+    const hit = rows.find(r => r.judgeTaskUuid === judgeTaskUuid);
+    if (!hit) return { updated: false, reason: "행 없음" };
+
+    const requests = [{
+      updateCells: {
+        range: {
+          sheetId: watchGridSheetId,
+          startRowIndex: hit.rowIndex - 1,
+          endRowIndex: hit.rowIndex,
+          startColumnIndex: COL.workerChannel,
+          endColumnIndex: COL.workerThreadTs + 1,
+        },
+        rows: [{ values: [
+          { userEnteredValue: { stringValue: String(workerChannel || "") } },
+          { userEnteredValue: { stringValue: String(workerThreadTs || "") } }, // stringValue라 ts 소수부 보존
+        ] }],
+        fields: "userEnteredValue.stringValue",
+      },
+    }];
+    await sheetsClient.batchUpdate(watchSheetId, requests);
+    console.log(`[retake-watch] 작업자 스레드 기록 — row:${hit.rowIndex} ch:${workerChannel} ts:${workerThreadTs}`);
+    return { updated: true, rowIndex: hit.rowIndex };
+  }
+
+  return { registerWatch, loadWatching, markStatus, markStatusMany, setWorkerThread, enabled, _loadRows, COL };
 };

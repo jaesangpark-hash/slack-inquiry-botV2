@@ -315,3 +315,43 @@ describe("retakeReminderPoller 헤더=소환자 (CFM cc·PM 없음)", () => {
     assert.strictEqual((head.match(/<@U_A>/g) || []).length, 1); // 중복 제거
   });
 });
+
+describe("retakeReminderPoller 작업자 수정요청 스레드 리마인드", () => {
+  test("workerChannel·workerThreadTs 있으면 그 스레드에 답글 추가 발송", async () => {
+    const store = makeStore([row({ workerChannel: "C_WORK", workerThreadTs: "1790888.000100" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    // 공지(납품) 스레드 답글 1 + 작업자 스레드 답글 1 = 2
+    assert.strictEqual(slack.postCalls.length, 2);
+    const worker = slack.postCalls.find(p => p.channel === "C_WORK");
+    assert.ok(worker, "작업자 채널 발송 있어야 함");
+    assert.strictEqual(worker.thread_ts, "1790888.000100");
+    assert.match(worker.text, /아직 제출되지 않은/);
+  });
+
+  test("workerThreadTs 없으면 작업자 리마인드 안 함(공지만)", async () => {
+    const store = makeStore([row({ workerChannel: "C_WORK", workerThreadTs: "" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.ok(!slack.postCalls.some(p => p.channel === "C_WORK"));
+  });
+
+  test("작업자 스레드별로 묶어 답글(같은 스레드 2건 → 1답글)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, workName: "작품1", workerChannel: "C_W", workerThreadTs: "T1" }),
+      row({ rowIndex: 6, workName: "작품2", workerChannel: "C_W", workerThreadTs: "T1" }),
+      row({ rowIndex: 7, workName: "작품3", workerChannel: "C_W", workerThreadTs: "T2" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    const workerPosts = slack.postCalls.filter(p => p.channel === "C_W");
+    assert.strictEqual(workerPosts.length, 2); // T1, T2 각 1건
+    const t1 = workerPosts.find(p => p.thread_ts === "T1");
+    assert.match(t1.text, /작품1/);
+    assert.match(t1.text, /작품2/);
+  });
+});

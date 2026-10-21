@@ -86,6 +86,12 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     return `${head}\n${lines.join("\n")}`;
   }
 
+  // 작업자 수정요청 스레드에 다는 리마인드 답글 — 그 스레드 자체가 해당 건이라 간결하게.
+  function _buildWorkerText(rows) {
+    const items = rows.map(r => `*${cleanWorkName(r.workName) || "작품"} ${r.episode || "?"}화 [${r.operationName || "-"}]*`).join(", ");
+    return `⏰ 아직 제출되지 않은 수정 건이 있어요 — ${items}. 제출 확인 부탁드립니다!`;
+  }
+
   /**
    * 리마인더 1회 실행 — 오늘 등록된 미제출 watching 행 중 Totus상 미완료만 채널별로 공지한다.
    */
@@ -138,7 +144,25 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
         console.error(`[retake-reminder] 공지 발송 실패 ch:${channel} thread:${threadTs} — ${e.message}`);
       }
     }
+
+    // 작업자 채널 수정요청 스레드에도 리마인드 — workerChannel·workerThreadTs 있는 행만, 스레드별 답글.
+    // 작업자 채널 메시지가 안 나간(ts 없는) 건은 skip.
+    const byWorkerThread = new Map(); // key = workerChannel + "\u0000" + workerThreadTs
+    for (const r of target) {
+      if (!r.workerChannel || !r.workerThreadTs) continue;
+      const key = `${r.workerChannel}\u0000${r.workerThreadTs}`;
+      if (!byWorkerThread.has(key)) byWorkerThread.set(key, { channel: r.workerChannel, threadTs: r.workerThreadTs, rows: [] });
+      byWorkerThread.get(key).rows.push(r);
+    }
+    for (const { channel, threadTs, rows: grp } of byWorkerThread.values()) {
+      try {
+        await slackClient.chat.postMessage({ channel, thread_ts: threadTs, text: _buildWorkerText(grp) });
+        console.log(`[retake-reminder] 작업자 스레드 리마인드 — ch:${channel} thread:${threadTs} (${grp.length}건)`);
+      } catch (e) {
+        console.error(`[retake-reminder] 작업자 리마인드 실패 ch:${channel} thread:${threadTs} — ${e.message}`);
+      }
+    }
   }
 
-  return { tick, _buildText, _todayKst, _getTaskState, _isStillPending };
+  return { tick, _buildText, _buildWorkerText, _todayKst, _getTaskState, _isStillPending };
 };
