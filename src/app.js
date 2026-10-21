@@ -432,6 +432,16 @@ if (RETAKE_WATCH_ENABLED) {
   const pollCron = (process.env.RETAKE_WATCH_POLL_CRON && process.env.RETAKE_WATCH_POLL_CRON.trim()) || "*/30 * * * *";
   cron.schedule(pollCron, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] tick 오류:", e.message)), { timezone: "Asia/Seoul" });
   console.log(`[retake-watch] 리테이크 감시 폴러 등록 완료 (cron: ${pollCron})`);
+
+  // 저녁 15분 주기 보강 — 18시 이후엔 기본 30분(:00,:30)에 더해 :15,:45도 돌려 15분 주기로 만든다.
+  // 기본 "15,45 18-23 * * *"(18~23시의 :15·:45). RETAKE_WATCH_EVENING_CRON로 조절, "off"면 끔.
+  const eveningCronRaw = (process.env.RETAKE_WATCH_EVENING_CRON && process.env.RETAKE_WATCH_EVENING_CRON.trim()) || "15,45 18-23 * * *";
+  if (eveningCronRaw.toLowerCase() === "off") {
+    console.log("[retake-watch] 저녁 15분 보강 비활성(RETAKE_WATCH_EVENING_CRON=off)");
+  } else {
+    cron.schedule(eveningCronRaw, () => retakeWatchPoller.tick().catch(e => console.error("[retake-watch] 저녁 tick 오류:", e.message)), { timezone: "Asia/Seoul" });
+    console.log(`[retake-watch] 저녁 15분 보강 폴러 등록 (cron: ${eveningCronRaw})`);
+  }
 } else {
   console.log("[retake-watch] 감시 비활성 — 폴러 미등록");
 }
@@ -449,7 +459,6 @@ if (RETAKE_WATCH_ENABLED && RETAKE_WATCH_CHANNELS.size) {
       retakeWatchStore,
       slackClient: app.client,
       watchChannels: RETAKE_WATCH_CHANNELS,
-      watchCfmByChannel: RETAKE_WATCH_CFM_BY_CHANNEL, // 각 줄 cc로 CFM(현주님) 태그
       apiFetch: retakeApiFetch, // 발송 직전 Totus 상태 재확인(완료/드랍 제외) — retakeFlow._apiFetch 재사용
     });
     cron.schedule(reminderCronRaw, () => retakeReminderPoller.tick().catch(e => console.error("[retake-reminder] tick 오류:", e.message)), { timezone: "Asia/Seoul" });

@@ -46,6 +46,7 @@ const row = (over = {}) => ({
   episode: "21",
   operationName: "식자",
   watchChannel: "C09B8QLR5FG",
+  watchThreadTs: "1790904681.097009",
   ownerUserId: "U_APM",
   ...over,
 });
@@ -65,7 +66,40 @@ describe("retakeReminderPoller.tick", () => {
     assert.match(post.text, /미제출 리테이크 알림/);
     assert.match(post.text, /테스트작품 21화 \[식자\]/);
     assert.match(post.text, /<@U_APM>/);
-    assert.ok(!post.thread_ts, "스레드 아닌 채널 최상위 메시지");
+    assert.strictEqual(post.thread_ts, "1790904681.097009", "납품 스레드에 답글");
+  });
+
+  test("납품 스레드(watchThreadTs)에 답글로 달린다", async () => {
+    const store = makeStore([row({ watchThreadTs: "1790999999.123456" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.strictEqual(slack.postCalls[0].thread_ts, "1790999999.123456");
+  });
+
+  test("납품 스레드가 다르면 스레드별로 답글(여러 건)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, watchThreadTs: "T_A", workName: "작품1" }),
+      row({ rowIndex: 6, watchThreadTs: "T_A", workName: "작품2" }),
+      row({ rowIndex: 7, watchThreadTs: "T_B", workName: "작품3" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 2); // 스레드 2개 → 2건
+    const byTs = Object.fromEntries(slack.postCalls.map(p => [p.thread_ts, p.text]));
+    assert.match(byTs["T_A"], /2건/);  // T_A에 2건
+    assert.match(byTs["T_B"], /1건/);  // T_B에 1건
+  });
+
+  test("watchThreadTs 없으면 채널 최상위로 fallback(답글 아님)", async () => {
+    const store = makeStore([row({ watchThreadTs: "" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.ok(!slack.postCalls[0].thread_ts);
   });
 
   test("어제 등록분은 제외(오늘 요청분만)", async () => {
@@ -248,22 +282,20 @@ describe("retakeReminderPoller 발송 직전 Totus 재확인 (apiFetch)", () => 
   });
 });
 
-describe("retakeReminderPoller 헤더=소환자 + 각 줄 cc 현주님(CFM)", () => {
-  const CFM = new Map([["C09B8QLR5FG", "U07G8KC2EE6"]]); // 채널 → 현주님
-
-  test("헤더에 소환자 태그, 각 줄에 cc 현주님", async () => {
+describe("retakeReminderPoller 헤더=소환자 (CFM cc·PM 없음)", () => {
+  test("헤더에 소환자 태그, 각 줄은 작품만(cc/PM 없음)", async () => {
     const store = makeStore([row({ ownerUserId: "U_OWNER" })]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, watchCfmByChannel: CFM,
+      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH,
     });
     await poller.tick();
 
     assert.strictEqual(slack.postCalls.length, 1);
     const t = slack.postCalls[0].text;
     assert.match(t, /\[미제출 리테이크 알림\]\* <@U_OWNER> 오늘/); // 헤더=소환자
-    assert.match(t, /\[식자\]\* — cc <@U07G8KC2EE6>$/m);          // 줄 끝 cc=현주님
-    assert.doesNotMatch(t, /PM/);                                 // PM 태그 없음
+    assert.doesNotMatch(t, /cc /);                                // cc 없음
+    assert.doesNotMatch(t, /PM/);                                 // PM 없음
   });
 
   test("소환자 여러 명이면 헤더에 중복 없이 모두 태그", async () => {
@@ -274,24 +306,12 @@ describe("retakeReminderPoller 헤더=소환자 + 각 줄 cc 현주님(CFM)", ()
     ]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, watchCfmByChannel: CFM,
+      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH,
     });
     await poller.tick();
     const head = slack.postCalls[0].text.split("\n")[0];
     assert.match(head, /<@U_A>/);
     assert.match(head, /<@U_B>/);
     assert.strictEqual((head.match(/<@U_A>/g) || []).length, 1); // 중복 제거
-  });
-
-  test("CFM 미설정이면 cc 생략(헤더 소환자는 유지)", async () => {
-    const store = makeStore([row({ ownerUserId: "U_OWNER" })]);
-    const slack = makeSlack();
-    const poller = createRetakeReminderPoller({
-      retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, // CFM 미설정
-    });
-    await poller.tick();
-    const t = slack.postCalls[0].text;
-    assert.doesNotMatch(t, /cc /);
-    assert.match(t, /\[미제출 리테이크 알림\]\* <@U_OWNER>/);
   });
 });
