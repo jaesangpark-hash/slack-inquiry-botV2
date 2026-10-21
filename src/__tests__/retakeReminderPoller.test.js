@@ -110,17 +110,46 @@ describe("retakeReminderPoller.tick", () => {
     assert.strictEqual(slack.postCalls.length, 0);
   });
 
-  test("watching 외 상태(notified/dropped/expired/skipped)는 제외", async () => {
+  test("미제출·완료 없이 드랍/만료만 있으면 무발송(안내도 안 함)", async () => {
     const store = makeStore([
-      row({ status: "notified" }),
-      row({ status: "dropped" }),
-      row({ status: "expired" }),
-      row({ status: "skipped" }),
+      row({ rowIndex: 5, status: "dropped" }),
+      row({ rowIndex: 6, status: "expired" }),
     ]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
     await poller.tick();
     assert.strictEqual(slack.postCalls.length, 0);
+  });
+
+  test("미제출 0 + 완료(notified) 있으면 → 납품 스레드에 '전체 제출 완료' 안내(태그 없음)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified" }),
+      row({ rowIndex: 6, status: "notified" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    const post = slack.postCalls[0];
+    assert.strictEqual(post.thread_ts, "1790904681.097009"); // 납품 스레드에 답글
+    assert.match(post.text, /모두 제출 완료/);
+    assert.doesNotMatch(post.text, /<@/); // 아무도 태그 안 함
+  });
+
+  test("완료만 있어도 미제출(watching)이 하나라도 있으면 안내 대신 리마인더", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified", workName: "완료작품" }),
+      row({ rowIndex: 6, status: "watching", workName: "미제출작품", ownerUserId: "U_OWNER" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    const t = slack.postCalls[0].text;
+    assert.match(t, /미제출 리테이크 알림/);        // 리마인더
+    assert.match(t, /미제출작품/);
+    assert.doesNotMatch(t, /완료작품/);              // 완료건은 리마인더 목록에서 제외
+    assert.doesNotMatch(t, /모두 제출 완료/);        // 안내 아님
   });
 
   test("감시 대상 채널 아니면 제외", async () => {

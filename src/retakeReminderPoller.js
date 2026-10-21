@@ -86,6 +86,11 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     return `${head}\n${lines.join("\n")}`;
   }
 
+  // 미제출 0건일 때 납품 스레드에 다는 "전체 제출 완료" 안내 — 아무도 태그하지 않는다.
+  function _buildAllClearText() {
+    return `✅ 현 시점 기준, 오늘 요청된 리테이크 수정 건이 모두 제출 완료되었습니다. 감사합니다!`;
+  }
+
   // 작업자 수정요청 스레드에 다는 리마인드 답글 — 그 스레드 자체가 해당 건이라 간결하게.
   function _buildWorkerText(rows) {
     const items = rows.map(r => `*${cleanWorkName(r.workName) || "작품"} ${r.episode || "?"}화 [${r.operationName || "-"}]*`).join(", ");
@@ -104,51 +109,57 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
       return;
     }
     const today = _todayKst();
-    const candidates = rows.filter(r =>
-      r.status === "watching" &&
+    // 오늘 등록 + 감시 대상 채널의 모든 행(상태 무관). 완료 안내 판정에 완료(notified)건도 필요해서 상태로 안 거른다.
+    const todayWatch = rows.filter(r =>
       (r.registeredAt || "").slice(0, 10) === today &&
       (!watchChannels || watchChannels.has(r.watchChannel))
     );
-    if (!candidates.length) {
-      console.log("[retake-reminder] 오늘 미제출 후보 없음 — 공지 skip");
+    if (!todayWatch.length) {
+      console.log("[retake-reminder] 오늘 감시 대상 행 없음 — skip");
       return;
     }
 
-    // 발송 직전 Totus 재확인 — 이미 완료(COMPLETED)·드랍(DROP)된 건 제외(완료 폴러와의 타이밍 경합 방지).
-    const target = [];
-    for (const r of candidates) {
-      if (await _isStillPending(r)) target.push(r);
+    // watching 행만 발송 직전 Totus 재확인 → 지금도 미완료(COMPLETED·DROP·조회실패 제외)인 것만 "미제출"로 본다.
+    const pending = [];
+    for (const r of todayWatch) {
+      if (r.status === "watching" && await _isStillPending(r)) pending.push(r);
     }
-    if (!target.length) {
-      console.log(`[retake-reminder] 후보 ${candidates.length}건 모두 완료/드랍/조회실패 — 공지 skip`);
-      return;
-    }
+    const pendingSet = new Set(pending.map(r => r.rowIndex));
 
-    // 납품 스레드(watchThreadTs)별 그룹 → 각 스레드에 답글 1건.
-    // 완료 알림(✅)과 같은 "그날 납품 스레드" 안에 들어가게 한다(새 스레드 생성 방지).
-    // watchThreadTs가 비면 fallback으로 채널 최상위 메시지.
+    // 납품 스레드(watchThreadTs)별 그룹 → 스레드마다:
+    //   - 미제출 있으면 그 스레드에 리마인더(소환자 태그) 답글
+    //   - 미제출 없고 완료(notified) 있으면 "모두 제출 완료" 안내 답글(아무도 태그 안 함)
+    //   - 둘 다 아니면(드랍/만료만) 무발송
     const byThread = new Map(); // key = channel + "\u0000" + threadTs
-    for (const r of target) {
+    for (const r of todayWatch) {
       const threadTs = r.watchThreadTs || "";
       const key = `${r.watchChannel}\u0000${threadTs}`;
       if (!byThread.has(key)) byThread.set(key, { channel: r.watchChannel, threadTs, rows: [] });
       byThread.get(key).rows.push(r);
     }
     for (const { channel, threadTs, rows: grp } of byThread.values()) {
+      const grpPending = grp.filter(r => pendingSet.has(r.rowIndex));
+      let text = null;
+      if (grpPending.length) {
+        text = _buildText(grpPending); // 미제출 리마인더
+      } else if (grp.some(r => r.status === "notified")) {
+        text = _buildAllClearText();   // 모두 제출 완료 안내
+      }
+      if (!text) continue;
       try {
-        const msg = { channel, text: _buildText(grp) };
+        const msg = { channel, text };
         if (threadTs) msg.thread_ts = threadTs; // 납품 스레드에 답글
         await slackClient.chat.postMessage(msg);
-        console.log(`[retake-reminder] 미제출 ${grp.length}건 공지 — ch:${channel} thread:${threadTs || "(최상위)"}`);
+        console.log(`[retake-reminder] ${grpPending.length ? `미제출 ${grpPending.length}건 공지` : "전체 제출 완료 안내"} — ch:${channel} thread:${threadTs || "(최상위)"}`);
       } catch (e) {
         console.error(`[retake-reminder] 공지 발송 실패 ch:${channel} thread:${threadTs} — ${e.message}`);
       }
     }
 
-    // 작업자 채널 수정요청 스레드에도 리마인드 — workerChannel·workerThreadTs 있는 행만, 스레드별 답글.
+    // 작업자 채널 수정요청 스레드에도 리마인드 — 미제출(pending) 건 중 workerChannel·workerThreadTs 있는 행만.
     // 작업자 채널 메시지가 안 나간(ts 없는) 건은 skip.
     const byWorkerThread = new Map(); // key = workerChannel + "\u0000" + workerThreadTs
-    for (const r of target) {
+    for (const r of pending) {
       if (!r.workerChannel || !r.workerThreadTs) continue;
       const key = `${r.workerChannel}\u0000${r.workerThreadTs}`;
       if (!byWorkerThread.has(key)) byWorkerThread.set(key, { channel: r.workerChannel, threadTs: r.workerThreadTs, rows: [] });
@@ -164,5 +175,5 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     }
   }
 
-  return { tick, _buildText, _buildWorkerText, _todayKst, _getTaskState, _isStillPending };
+  return { tick, _buildText, _buildWorkerText, _buildAllClearText, _todayKst, _getTaskState, _isStillPending };
 };
