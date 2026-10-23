@@ -58,19 +58,28 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
   }
 
   // 후보 행이 "지금도 미완료"인지 — COMPLETED·DROP이면 false(제외). 조회 실패 시 false(제외, 오탐 방지).
-  async function _isStillPending(row) {
-    if (!apiFetch) return true; // apiFetch 없으면 재확인 생략(시트 watching 신뢰)
+  // watching 행의 현재 상태를 3분류한다:
+  //   "pending" 지금도 미완료(PROCESSING 등, 또는 apiFetch 미주입)  → 리마인더 대상
+  //   "done"    완료/드랍(COMPLETED·DROP)                          → 해결됨
+  //   "unknown" 조회 실패/빈값/예외                                 → 알 수 없음(리마인더 제외 + 완료 안내 차단)
+  async function _classify(row) {
+    if (!apiFetch) return "pending"; // 재확인 생략(시트 watching 신뢰)
     try {
       const state = await _getTaskState(row.judgeTaskUuid);
       if (state == null) {
-        console.warn(`[retake-reminder] 상태 조회 실패/빈값 → 공지 제외 row:${row.rowIndex} ${row.workName} ${row.episode}화`);
-        return false;
+        console.warn(`[retake-reminder] 상태 조회 실패/빈값 → unknown row:${row.rowIndex} ${row.workName} ${row.episode}화`);
+        return "unknown";
       }
-      return !DONE_STATES.has(state);
+      return DONE_STATES.has(state) ? "done" : "pending";
     } catch (e) {
-      console.warn(`[retake-reminder] 상태 조회 예외 → 공지 제외 row:${row.rowIndex} — ${e.message}`);
-      return false;
+      console.warn(`[retake-reminder] 상태 조회 예외 → unknown row:${row.rowIndex} — ${e.message}`);
+      return "unknown";
     }
+  }
+
+  // 하위호환: 리마인더 대상(미제출 확정)인지 여부. unknown·done은 false.
+  async function _isStillPending(row) {
+    return (await _classify(row)) === "pending";
   }
 
   // 공지 본문 — 헤더에 소환 담당자(들) 태그, 각 줄은 작품·회차·작업유형.
@@ -119,17 +128,24 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
       return;
     }
 
-    // watching 행만 발송 직전 Totus 재확인 → 지금도 미완료(COMPLETED·DROP·조회실패 제외)인 것만 "미제출"로 본다.
+    // watching 행을 발송 직전 Totus로 재분류 → pending(미제출 확정)·unknown(조회 실패)을 나눠 담는다.
+    // unknown은 리마인더 목록에선 빠지지만(기존대로), "모두 제출 완료" 안내는 차단해야 한다(틀린 완료 안내 방지).
     const pending = [];
+    const unknownSet = new Set();
     for (const r of todayWatch) {
-      if (r.status === "watching" && await _isStillPending(r)) pending.push(r);
+      if (r.status !== "watching") continue;
+      const cat = await _classify(r);
+      if (cat === "pending") pending.push(r);
+      else if (cat === "unknown") unknownSet.add(r.rowIndex);
+      // done → 둘 다 아님
     }
     const pendingSet = new Set(pending.map(r => r.rowIndex));
 
     // 납품 스레드(watchThreadTs)별 그룹 → 스레드마다:
-    //   - 미제출 있으면 그 스레드에 리마인더(소환자 태그) 답글
-    //   - 미제출 없고 완료(notified) 있으면 "모두 제출 완료" 안내 답글(아무도 태그 안 함)
-    //   - 둘 다 아니면(드랍/만료만) 무발송
+    //   - 미제출(pending) 있으면 그 스레드에 리마인더(소환자 태그) 답글
+    //   - 미제출·조회실패(unknown) 모두 없고 완료(notified) 있으면 "모두 제출 완료" 안내(태그 없음)
+    //   - 조회 실패가 하나라도 있으면 완료 안내 보류(실제로 미제출이 남았을 수 있음 — 형민님 검수)
+    //   - 그 외(드랍/만료만) 무발송
     const byThread = new Map(); // key = channel + "\u0000" + threadTs
     for (const r of todayWatch) {
       const threadTs = r.watchThreadTs || "";
@@ -139,13 +155,17 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     }
     for (const { channel, threadTs, rows: grp } of byThread.values()) {
       const grpPending = grp.filter(r => pendingSet.has(r.rowIndex));
+      const grpHasUnknown = grp.some(r => unknownSet.has(r.rowIndex));
       let text = null;
       if (grpPending.length) {
         text = _buildText(grpPending); // 미제출 리마인더
-      } else if (grp.some(r => r.status === "notified")) {
-        text = _buildAllClearText();   // 모두 제출 완료 안내
+      } else if (!grpHasUnknown && grp.some(r => r.status === "notified")) {
+        text = _buildAllClearText();   // 모두 제출 완료 안내(조회 실패 없을 때만)
       }
-      if (!text) continue;
+      if (!text) {
+        if (grpHasUnknown) console.log(`[retake-reminder] 조회 실패 포함 → 완료 안내 보류 — ch:${channel} thread:${threadTs || "(최상위)"}`);
+        continue;
+      }
       try {
         const msg = { channel, text };
         if (threadTs) msg.thread_ts = threadTs; // 납품 스레드에 답글
