@@ -659,3 +659,57 @@ describe("inquiry_cand_pick — draftStore 공유 + draft 생성", () => {
     assert.equal(newDraft.pivoId, "pivo1");
   });
 });
+
+// 후보 선택·작품명 직접 입력을 거쳐 만들어진 draft도 원문 스레드 좌표를 들고 있어야 한다.
+// 빠지면 완료 후 「답변 작성」 모달이 "원문 스레드 정보를 찾을 수 없어"로 끝난다(2026-10-23 실사고).
+describe("원문 스레드 좌표 보존", () => {
+  let app, draftStore;
+
+  beforeEach(() => {
+    draftStore = new Map();
+    app = makeFakeApp();
+    registerDirectInputActions(app, makeDeps(draftStore, {
+      generateDraftId: () => "d_new",
+    }));
+  });
+
+  const pending = {
+    isPending: true,
+    ownerUserId: "U1",
+    userId: "U1",
+    dmChannelId: "D1",
+    sourceLink: "https://slack/x",
+    originalText: "원문",
+    originalChannelId: "C_SRC",
+    originalTs: "1700000000.0001",
+    titleJa: "タイトル",
+  };
+
+  it("후보 선택(inquiry_cand_pick) 경로", async () => {
+    draftStore.set("p1", { ...pending });
+    await app._registered.actions[/^inquiry_cand_pick_\d+$/.source]({
+      ack: async () => {},
+      body: { user: { id: "U1" }, actions: [{ value: JSON.stringify({ pendingId: "p1", pivoId: "pv", projectName: "작품A" }) }] },
+      client: makeFakeClient(),
+    });
+    const d = draftStore.get("d_new");
+    assert.equal(d.originalChannelId, "C_SRC");
+    assert.equal(d.originalTs, "1700000000.0001");
+  });
+
+  it("작품명 직접 입력(manual_title_modal) 경로", async () => {
+    draftStore.set("p2", { ...pending });
+    await app._registered.views["manual_title_modal"]({
+      ack: async () => {},
+      body: { user: { id: "U1" } },
+      view: {
+        private_metadata: JSON.stringify({ pendingId: "p2" }),
+        state: { values: { manual_work_name_ja: { value: { value: "タイトル" } } } },
+      },
+      client: makeFakeClient(),
+    });
+    const d = draftStore.get("d_new");
+    assert.equal(d.originalChannelId, "C_SRC");
+    assert.equal(d.originalTs, "1700000000.0001");
+  });
+});
