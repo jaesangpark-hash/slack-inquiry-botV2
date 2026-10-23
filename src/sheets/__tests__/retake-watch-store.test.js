@@ -86,7 +86,7 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(sheetsClient.appendCalls.length, 0);
   });
 
-  test("정상 append — 18컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
+  test("정상 append — 20컬럼 payload·컬럼 위치·status=watching·allTaskUuids join", async () => {
     const sheetsClient = makeFakeSheetsClient({ getRows: [["등록시각", "status"]] }); // 헤더만
     const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
     const res = await store.registerWatch(SAMPLE_WATCH);
@@ -99,7 +99,7 @@ describe("createRetakeWatchStore.registerWatch", () => {
     assert.strictEqual(call.range, "리테이크 감시!A:P");
     assert.strictEqual(call.opts.valueInputOption, "RAW"); // ts·uuid 소수부/문자열 보존 (형민님 검수)
     const row = call.rows[0];
-    assert.strictEqual(row.length, 18);
+    assert.strictEqual(row.length, 20);
     assert.strictEqual(row[1], "watching");            // status
     assert.strictEqual(row[16], "U_CFM");              // requesterUserId (CFM 멘션용)
     assert.strictEqual(row[17], "U_APM");              // ownerUserId (소환 담당자 멘션용)
@@ -279,6 +279,45 @@ describe("createRetakeWatchStore.markStatusMany", () => {
     const sheetsClient = makeFakeSheetsClient();
     const store = createRetakeWatchStore({ sheetsClient, watchSheetId: "", watchSheetRange: "리테이크 감시!A:P", watchGridSheetId: 777 });
     await store.markStatusMany([{ rowIndex: 5, status: "skipped" }]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+});
+
+describe("createRetakeWatchStore.setWorkerThread", () => {
+  // getValues는 makeFakeSheetsClient의 getRows를 반환. 데이터는 values[1] → rowIndex 2.
+  const getRows = [
+    ["등록시각", "status", "judgeTaskUuid"],
+    ["2026-10-21T10:00:00+09:00", "watching", "task-judge-1"],
+  ];
+
+  test("judgeTaskUuid로 행 찾아 workerChannel·workerThreadTs 기록(batchUpdate 1회, ts 소수부 보존)", async () => {
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.setWorkerThread("task-judge-1", { workerChannel: "C_WORK", workerThreadTs: "1790999999.000100" });
+
+    assert.strictEqual(res.updated, true);
+    assert.strictEqual(res.rowIndex, 2);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);
+    const uc = sheetsClient.batchUpdateCalls[0].requests[0].updateCells;
+    assert.strictEqual(uc.range.startColumnIndex, 18);  // workerChannel(S)
+    assert.strictEqual(uc.range.endColumnIndex, 20);    // workerThreadTs(T)+1
+    assert.strictEqual(uc.rows[0].values[0].userEnteredValue.stringValue, "C_WORK");
+    assert.strictEqual(uc.rows[0].values[1].userEnteredValue.stringValue, "1790999999.000100");
+  });
+
+  test("해당 judgeTaskUuid 행이 없으면 no-op(기록 안 함)", async () => {
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.setWorkerThread("없는-uuid", { workerChannel: "C_WORK", workerThreadTs: "1" });
+    assert.strictEqual(res.updated, false);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("감시 off면 no-op", async () => {
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, watchSheetId: "", watchSheetRange: "리테이크 감시!A:T", watchGridSheetId: 777 });
+    const res = await store.setWorkerThread("task-judge-1", { workerChannel: "C_WORK", workerThreadTs: "1" });
+    assert.strictEqual(res.updated, false);
     assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
   });
 });
