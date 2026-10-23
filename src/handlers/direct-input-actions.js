@@ -513,7 +513,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const workNameKo = vals.manual_work_name_ko?.value?.value?.trim() || "";
     const matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
     const draftId = generateDraftId();
-    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
+    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
@@ -540,6 +540,8 @@ module.exports = function registerDirectInputActions(app, deps) {
       progressMessageTs:  pending.progressTs,
       sourceLink:         pending.sourceLink,
       originalText:       pending.originalText,
+      originalChannelId:  pending.originalChannelId || null,
+      originalTs:         pending.originalTs        || null,
       workName:           koreanProjectName,
       workNameKo:         koreanProjectName,
       pivoId:             pivoId || null,

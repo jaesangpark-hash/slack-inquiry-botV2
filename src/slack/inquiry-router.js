@@ -511,6 +511,10 @@ module.exports = function createInquiryRouter(deps) {
           progressTs:     progressMsg.ts,
           sourceLink,
           originalText,
+          // 원문 스레드 좌표 — 후보 선택/직접 입력을 거쳐 만들어진 draft도
+          // 완료 후 「답변 작성」이 원문에 답글을 달 수 있어야 한다.
+          originalChannelId: channelId,
+          originalTs:        ts,
           titleJa:        analysis.title_ja,
           inquiryType:    analysis.inquiry_type,
           inquiryContent: analysis.translated_ko,
@@ -558,6 +562,8 @@ module.exports = function createInquiryRouter(deps) {
         progressTs:     progressMsg.ts,
         sourceLink,
         originalText,
+        originalChannelId: channelId,
+        originalTs:        ts,
         titleJa:        analysis.title_ja,
         inquiryType:    analysis.inquiry_type,
         inquiryContent: analysis.translated_ko,
