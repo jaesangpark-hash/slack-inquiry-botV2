@@ -473,6 +473,28 @@ if (RETAKE_WATCH_ENABLED && RETAKE_WATCH_CHANNELS.size) {
   console.log("[retake-reminder] 리마인더 미등록 — 감시 비활성 또는 대상 채널 없음");
 }
 
+// ── 감시 시트 자동 정리(rolling 보존) ──────────────────────────
+// 매일(기본 새벽 4:40 KST) 돌면서 등록된 지 RETAKE_WATCH_RETENTION_DAYS(기본 21일) 넘은 행만 삭제.
+// 헤더(1행)와 최근·진행 중 건은 보존 → 시트가 최근 3주치만 유지되어 무한정 쌓이지 않는다.
+// RETAKE_WATCH_CLEANUP_CRON으로 주기 조절, "off"면 끈다.
+if (RETAKE_WATCH_ENABLED) {
+  const cleanupCronRaw = (process.env.RETAKE_WATCH_CLEANUP_CRON && process.env.RETAKE_WATCH_CLEANUP_CRON.trim()) || "40 4 * * *";
+  const retentionDays = (() => {
+    const raw = (process.env.RETAKE_WATCH_RETENTION_DAYS || "").trim();
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 21;
+  })();
+  if (cleanupCronRaw.toLowerCase() === "off") {
+    console.log("[retake-watch] 자동 정리 비활성(RETAKE_WATCH_CLEANUP_CRON=off)");
+  } else {
+    cron.schedule(cleanupCronRaw, () =>
+      retakeWatchStore.cleanupOldRows({ maxAgeDays: retentionDays })
+        .catch(e => console.error("[retake-watch] 정리 오류:", e.message)),
+      { timezone: "Asia/Seoul" });
+    console.log(`[retake-watch] 감시 시트 자동 정리 등록 완료 (cron: ${cleanupCronRaw}, 보존: ${retentionDays}일)`);
+  }
+}
+
 // ── ToTalk 멘션 폴러 — 툰식이 테스트 완료 후 아래 주석 해제
 // const createTotalkMonitor = require("./totalk-monitor");
 // createTotalkMonitor({ cron, slackClient: app.client, sendAlert, sheetsClient }).register();

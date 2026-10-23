@@ -283,6 +283,101 @@ describe("createRetakeWatchStore.markStatusMany", () => {
   });
 });
 
+describe("createRetakeWatchStore.cleanupOldRows (rolling 보존)", () => {
+  // now 고정: 2026-10-23 12:00 KST → maxAgeDays=21 컷오프 = 2026-10-02 12:00 KST
+  const NOW = new Date("2026-10-23T12:00:00+09:00");
+  // 데이터 행 0번째(getRows[1]) = 시트 2행 = 0-base 1
+  const rowOf = (registeredAt, uuid = "") => [registeredAt, "watching", uuid];
+  const HEADER = ["등록시각", "status", "judgeTaskUuid"];
+
+  test("21일 넘은 행만 삭제, 최근 행·헤더 보존(비연속 → 구간별, 내림차순)", async () => {
+    const getRows = [
+      HEADER,
+      rowOf("2026-09-01T10:00:00+09:00", "old-1"),  // 행2(0b1) 삭제
+      rowOf("2026-10-20T10:00:00+09:00", "new-1"),  // 행3(0b2) 보존
+      rowOf("2026-09-30T10:00:00+09:00", "old-2"),  // 행4(0b3) 삭제
+      rowOf("2026-10-22T10:00:00+09:00", "new-2"),  // 행5(0b4) 보존
+    ];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+
+    assert.strictEqual(res.deleted, 2);
+    assert.strictEqual(res.scanned, 4);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);
+    const reqs = sheetsClient.batchUpdateCalls[0].requests;
+    assert.strictEqual(reqs.length, 2); // 비연속 → 구간 2개
+    // 내림차순: 먼저 아래쪽(0b3) 삭제, 그 다음 위쪽(0b1)
+    assert.deepStrictEqual(reqs.map(r => [r.deleteDimension.range.startIndex, r.deleteDimension.range.endIndex]), [[3, 4], [1, 2]]);
+    reqs.forEach(r => {
+      assert.strictEqual(r.deleteDimension.range.dimension, "ROWS");
+      assert.strictEqual(r.deleteDimension.range.sheetId, 777);
+    });
+  });
+
+  test("연속한 오래된 행은 한 구간으로 병합", async () => {
+    const getRows = [
+      HEADER,
+      rowOf("2026-09-01T10:00:00+09:00", "old-1"), // 0b1 삭제
+      rowOf("2026-09-05T10:00:00+09:00", "old-2"), // 0b2 삭제
+      rowOf("2026-10-22T10:00:00+09:00", "new-1"), // 0b3 보존
+    ];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+    assert.strictEqual(res.deleted, 2);
+    const reqs = sheetsClient.batchUpdateCalls[0].requests;
+    assert.strictEqual(reqs.length, 1); // [1,3) 하나로 병합
+    assert.deepStrictEqual([reqs[0].deleteDimension.range.startIndex, reqs[0].deleteDimension.range.endIndex], [1, 3]);
+  });
+
+  test("registeredAt 파싱 불가/빈값 행은 보존(삭제 안 함)", async () => {
+    const getRows = [
+      HEADER,
+      rowOf("", "nodate"),                          // 빈값 → 보존
+      rowOf("언젠가", "bad"),                        // 파싱 불가 → 보존
+      rowOf("2026-09-01T10:00:00+09:00", "old-1"),  // 0b3 삭제
+    ];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+    assert.strictEqual(res.deleted, 1);
+    assert.strictEqual(res.skippedUnparsable, 2);
+    const reqs = sheetsClient.batchUpdateCalls[0].requests;
+    assert.deepStrictEqual([reqs[0].deleteDimension.range.startIndex, reqs[0].deleteDimension.range.endIndex], [3, 4]);
+  });
+
+  test("삭제 대상 없으면 batchUpdate 미호출", async () => {
+    const getRows = [
+      HEADER,
+      rowOf("2026-10-20T10:00:00+09:00", "new-1"),
+      rowOf("2026-10-22T10:00:00+09:00", "new-2"),
+    ];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+    assert.strictEqual(res.deleted, 0);
+    assert.strictEqual(res.scanned, 2);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+
+  test("기본 보존기간 21일 — 옵션 없이 호출돼도 동작", async () => {
+    const getRows = [HEADER, rowOf("2000-01-01T10:00:00+09:00", "ancient")];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const res = await store.cleanupOldRows(); // now=현재, maxAgeDays=21 기본
+    assert.strictEqual(res.deleted, 1);
+  });
+
+  test("감시 off면 no-op(삭제·호출 없음)", async () => {
+    const sheetsClient = makeFakeSheetsClient({ getRows: [["h"], ["2000-01-01T00:00:00+09:00", "watching", "x"]] });
+    const store = createRetakeWatchStore({ sheetsClient, watchSheetId: "", watchSheetRange: "리테이크 감시!A:P", watchGridSheetId: 777 });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+    assert.strictEqual(res.deleted, 0);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
+  });
+});
+
 describe("createRetakeWatchStore.setWorkerThread", () => {
   // getValues는 makeFakeSheetsClient의 getRows를 반환. 데이터는 values[1] → rowIndex 2.
   const getRows = [
