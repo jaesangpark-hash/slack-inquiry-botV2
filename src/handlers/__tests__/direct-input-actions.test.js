@@ -137,20 +137,20 @@ describe("registerDirectInputActions — 등록 검증", () => {
     assert.ok(typeof app._registered.views["submit_inquiry_modal"] === "function");
   });
 
-  it("등록 actions 12개 (string 11 + regex 1)", () => {
+  it("등록 actions 13개 (string 12 + regex 1)", () => {
     // string: inquiry_done, open_inquiry_reply_modal, direct_resupply_btn, direct_schedule_btn,
     //         direct_inquiry_btn, direct_fileorder_btn, open_manual_title_modal,
     //         open_inquiry_modal, send_inquiry_now, route_pick_relay, route_pick_inquiry
     // regex: inquiry_cand_pick_\d+
     const actionCount = Object.keys(app._registered.actions).length;
-    assert.equal(actionCount, 12);
+    assert.equal(actionCount, 13);
   });
 
-  it("등록 views 7개", () => {
+  it("등록 views 8개", () => {
     // submit_inquiry_reply_modal, direct_resupply_modal, direct_schedule_modal,
     // direct_inquiry_modal, direct_fileorder_modal, manual_title_modal, submit_inquiry_modal
     const viewCount = Object.keys(app._registered.views).length;
-    assert.equal(viewCount, 7);
+    assert.equal(viewCount, 8);
   });
 });
 

@@ -29,7 +29,7 @@ const path = require("path");
 const { loggedCall, logEvent, cleanOldLogs, initAlertClient, sendAlert } = require("./apiLogger");
 const { checkPermission } = require("./auth/permission-gate");
 const { createInteractionGuard } = require("./auth/interaction-guard");
-const { isTriggerReaction } = require("./utils/trigger");
+const { isTriggerReaction, matchTriggerReaction, createTriggerEmojiMap } = require("./utils/trigger");
 const createSheetsClient = require("./clients/sheets-client");
 const createTitleMatcher = require("./sheets/title-matcher");
 const createDeliveryDateService = require("./sheets/delivery-date");
@@ -45,7 +45,11 @@ const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEE
 const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
-const triggerEmoji = requireEnv("TRIGGER_EMOJI");
+// 이모지 하나당 언어쌍 하나. 기존 TRIGGER_EMOJI 가 중일이고 한일만 새로 추가한다.
+const triggerEmojis = createTriggerEmojiMap({
+  zhJa: requireEnv("TRIGGER_EMOJI"),
+  koJa: requireEnv("TRIGGER_EMOJI_KO_JA"),
+});
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -65,6 +69,7 @@ const titleMatcher = createTitleMatcher({
   google,
   getGoogleAuth,
   masterSheetId: process.env.MASTER_SHEET_ID,
+  masterSheetKoJaId: process.env.MASTER_SHEET_KOJA_ID,
   alertOnError,
   sheetsClient,
 });
@@ -162,7 +167,7 @@ const interactionApp = createInteractionGuard({
   draftStore,
   checkPermission,
   pmSlackId: PM_SLACK_ID,
-  triggerEmoji,
+  triggerEmojis,
 });
 
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
@@ -391,8 +396,8 @@ require("./handlers/inquiry-entry")(interactionApp, {
   updateProgress,
   withTimeout,
   checkPermission,
-  isTriggerReaction,
-  triggerEmoji,
+  matchTriggerReaction,
+  triggerEmojis,
   fetchThreadContext,
   buildThreadContextText,
   markInquiryProcessed,

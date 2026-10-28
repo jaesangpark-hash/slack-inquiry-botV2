@@ -87,9 +87,9 @@ function isHumanDirectMessage(message) {
   return !!message?.user && !message.subtype && !message.bot_id && message.channel_type === "im";
 }
 
-function isInteractionInScope({ kind, event, message, triggerEmoji }) {
+function isInteractionInScope({ kind, event, message, triggerEmojis }) {
   if (kind === "event") {
-    return !!event && isTriggerReaction(event.reaction, triggerEmoji);
+    return !!event && isTriggerReaction(event.reaction, triggerEmojis);
   }
   if (kind === "message") return isHumanDirectMessage(message);
   return true;
@@ -121,7 +121,7 @@ async function notifyDenied({ kind, client, body, event, message, access }) {
   }
 }
 
-function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, triggerEmoji }) {
+function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, triggerEmojis }) {
   function requirePolicy(kind, matcher) {
     const policy = getAccessPolicy(kind, matcher);
     if (!policy) {
@@ -144,7 +144,7 @@ function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, t
       kind,
       event: args.event,
       message: args.message,
-      triggerEmoji,
+      triggerEmojis,
     })) return undefined;
 
     const reference = interactionReference({

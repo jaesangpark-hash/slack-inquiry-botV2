@@ -98,6 +98,9 @@ const INTERACTION_SURFACES = Object.freeze([
   surface("view", "direct_fileorder_modal", POLICY.OWNER_APM),
   surface("action", "open_manual_title_modal", POLICY.OWNER_APM),
   surface("view", "manual_title_modal", POLICY.OWNER_APM),
+  // PIVO ID 직접 입력 — 작품명 직접 입력과 같은 자리·같은 권한(초안 주인 APM)
+  surface("action", "open_pivo_id_modal", POLICY.OWNER_APM),
+  surface("view", "pivo_id_modal", POLICY.OWNER_APM),
   surface("action", "/^inquiry_cand_pick_\\d+$/", POLICY.OWNER_APM),
   surface("action", "route_pick_relay", POLICY.OWNER_APM),
   surface("action", "route_pick_inquiry", POLICY.OWNER_APM),

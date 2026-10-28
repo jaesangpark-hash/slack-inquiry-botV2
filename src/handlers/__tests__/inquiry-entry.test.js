@@ -79,8 +79,8 @@ function makeDeps(overrides = {}) {
     updateProgress:       noopSpy(),
     withTimeout:          async (fn, _opts) => fn(),  // 바로 실행
     checkPermission:      spy({ allowed: true }),
-    isTriggerReaction:    syncSpy(true),
-    triggerEmoji:         "문의봇소환",
+    matchTriggerReaction: syncSpy({ langPair: null }),
+    triggerEmojis:        new Map([["문의봇소환", null]]),
     fetchThreadContext:   spy([{ ts: "100.000", text: "리테이크 요청", user: "U_MSG" }]),
     buildThreadContextText: syncSpy("스레드 맥락"),
     markInquiryProcessed: noopSpy(),

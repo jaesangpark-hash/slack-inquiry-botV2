@@ -8,6 +8,7 @@
  * @returns {{ routeInquiry: function }}
  */
 const { extractPivoIdGuess } = require("../utils/pivo-id");
+const { buildCandidateBlocks, buildManualEntryBlocks } = require("./work-picker-blocks");
 
 module.exports = function createInquiryRouter(deps) {
   const {
@@ -527,23 +528,19 @@ module.exports = function createInquiryRouter(deps) {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `작품명 *${analysis.title_ko || analysis.title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-              { type: "actions", elements: candResult.multiple.map((r, i) => ({
-                type: "button", action_id: `inquiry_cand_pick_${i}`,
-                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-                value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-              }))},
-            ],
+            blocks: buildCandidateBlocks({
+              candidates: candResult.multiple, pendingId,
+              actionIdPrefix: "inquiry_cand_pick_", pivoActionId: "open_pivo_id_modal",
+            }),
           });
         } else {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `*${analysis.title_ko || analysis.title_ja || "-"}* 와 일치하는 작품이 너무 많아. 더 정확한 작품명을 입력해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `AI 추출 작품명: \`${analysis.title_ja || analysis.title_ko || "없음"}\`` }},
-              { type: "actions", elements: [{ type: "button", action_id: "open_manual_title_modal", text: { type: "plain_text", text: "작품명 직접 입력" }, style: "primary", value: pendingId }]},
-            ],
+            blocks: buildManualEntryBlocks({
+              pendingId, manualActionId: "open_manual_title_modal", pivoActionId: "open_pivo_id_modal",
+              titleHint: analysis.title_ja || analysis.title_ko,
+            }),
           });
         }
         return;
@@ -574,10 +571,10 @@ module.exports = function createInquiryRouter(deps) {
       });
       await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: `시트에서 *${analysis.title_ja || analysis.title_ko || "작품명"}* 을 찾지 못했어.` });
       await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: `AI 추출 작품명: \`${analysis.title_ja || analysis.title_ko || "없음"}\`` }},
-          { type: "actions", elements: [{ type: "button", action_id: "open_manual_title_modal", text: { type: "plain_text", text: "작품명 직접 입력" }, style: "primary", value: pendingId }]},
-        ],
+        blocks: buildManualEntryBlocks({
+          pendingId, manualActionId: "open_manual_title_modal", pivoActionId: "open_pivo_id_modal",
+          titleHint: analysis.title_ja || analysis.title_ko,
+        }),
       });
       return;
     }

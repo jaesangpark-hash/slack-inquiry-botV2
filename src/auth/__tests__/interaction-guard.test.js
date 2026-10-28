@@ -55,7 +55,7 @@ function createHarness({ records = [], permission } = {}) {
     draftStore: new Map(records),
     checkPermission,
     pmSlackId: "U_PM",
-    triggerEmoji: "inquiry",
+    triggerEmojis: new Map([["inquiry", null]]),
   });
   return { app, guarded, checkPermission };
 }
@@ -102,8 +102,8 @@ function collectRegisteredSurfaceKeys() {
 }
 
 describe("interaction access policy", () => {
-  test("소스에 등록된 surface 102개가 정책표와 중복·누락 없이 일치한다", () => {
-    assert.equal(INTERACTION_SURFACES.length, 102);
+  test("소스에 등록된 surface 104개가 정책표와 중복·누락 없이 일치한다", () => {
+    assert.equal(INTERACTION_SURFACES.length, 104);
     const policyKeys = INTERACTION_SURFACES.map(
       rule => `${rule.kind}:${rule.registrationKey}`
     );
@@ -129,7 +129,7 @@ describe("interactive authorization", () => {
       draftStore: new Map(),
       checkPermission: async () => { order.push("permission"); return { allowed: true }; },
       pmSlackId: "U_PM",
-      triggerEmoji: "inquiry",
+      triggerEmojis: new Map([["inquiry", null]]),
     });
     guarded.action("direct_resupply_btn", async ({ ack }) => {
       order.push("handler");

@@ -138,6 +138,9 @@ function assertSecretsBase(env = process.env) {
 function assertGoogleSheets(env = process.env) {
   assertRequired(env, [
     "MASTER_SHEET_ID",
+    // 한일 마스터 — 「픽코마 작품관리 rawdata」의 한일_master 탭.
+    // 중일과 다른 스프레드시트라 ID 가 따로 필요하다.
+    "MASTER_SHEET_KOJA_ID",
     "DELIVERY_SHEET_ID",
     "DELIVERY_SHEET_KO_JA",
     "DELIVERY_SHEET_ZH_JA",
@@ -194,6 +197,10 @@ function assertKpiSheets(env = process.env) {
 function assertTriggerEmoji(env = process.env) {
   assertRequired(env, [
     "TRIGGER_EMOJI",
+    // 한일 소환 이모지. 기존 TRIGGER_EMOJI 가 중일이고, 한일만 새로 만든다.
+    // 어느 쪽 문의인지 채널로는 못 가른다(문의 110건 중 86%가 공용 채널 재팬_요청) —
+    // APM이 찍는 이모지가 유일하게 확실한 신호다.
+    "TRIGGER_EMOJI_KO_JA",
   ], "assertTriggerEmoji");
 }
 
