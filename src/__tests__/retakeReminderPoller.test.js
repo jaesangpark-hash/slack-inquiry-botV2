@@ -110,17 +110,46 @@ describe("retakeReminderPoller.tick", () => {
     assert.strictEqual(slack.postCalls.length, 0);
   });
 
-  test("watching 외 상태(notified/dropped/expired/skipped)는 제외", async () => {
+  test("미제출·완료 없이 드랍/만료만 있으면 무발송(안내도 안 함)", async () => {
     const store = makeStore([
-      row({ status: "notified" }),
-      row({ status: "dropped" }),
-      row({ status: "expired" }),
-      row({ status: "skipped" }),
+      row({ rowIndex: 5, status: "dropped" }),
+      row({ rowIndex: 6, status: "expired" }),
     ]);
     const slack = makeSlack();
     const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
     await poller.tick();
     assert.strictEqual(slack.postCalls.length, 0);
+  });
+
+  test("미제출 0 + 완료(notified) 있으면 → 납품 스레드에 '전체 제출 완료' 안내(태그 없음)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified" }),
+      row({ rowIndex: 6, status: "notified" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    const post = slack.postCalls[0];
+    assert.strictEqual(post.thread_ts, "1790904681.097009"); // 납품 스레드에 답글
+    assert.match(post.text, /모두 제출 완료/);
+    assert.doesNotMatch(post.text, /<@/); // 아무도 태그 안 함
+  });
+
+  test("완료만 있어도 미제출(watching)이 하나라도 있으면 안내 대신 리마인더", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified", workName: "완료작품" }),
+      row({ rowIndex: 6, status: "watching", workName: "미제출작품", ownerUserId: "U_OWNER" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    const t = slack.postCalls[0].text;
+    assert.match(t, /미제출 리테이크 알림/);        // 리마인더
+    assert.match(t, /미제출작품/);
+    assert.doesNotMatch(t, /완료작품/);              // 완료건은 리마인더 목록에서 제외
+    assert.doesNotMatch(t, /모두 제출 완료/);        // 안내 아님
   });
 
   test("감시 대상 채널 아니면 제외", async () => {
@@ -280,6 +309,63 @@ describe("retakeReminderPoller 발송 직전 Totus 재확인 (apiFetch)", () => 
     await poller.tick();
     assert.strictEqual(markCalled, false); // 읽기 전용 — 완료 답글 중복 방지
   });
+
+  // 형민님 검수: 조회 실패(unknown)가 섞인 스레드엔 "모두 제출 완료" 안내를 보내지 않는다.
+  // (조회 실패를 완료로 오인하면, 실제로 미제출이 남았는데도 완료 안내가 나가버린다)
+  test("notified + 조회 실패(watching) 같은 스레드 → 완료 안내 보류(무발송)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified", judgeTaskUuid: "done-1", workName: "완료작품" }),
+      row({ rowIndex: 6, status: "watching", judgeTaskUuid: "fail-1", workName: "조회실패작품" }), // 매핑 없음 → success:false → unknown
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ "done-1": "COMPLETED" }); // fail-1은 조회 실패
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, apiFetch });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 0); // 리마인더도, 완료 안내도 안 함
+  });
+
+  test("조회 예외(unknown) 섞인 스레드도 완료 안내 보류(무발송)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified", workName: "완료작품" }),
+      row({ rowIndex: 6, status: "watching", judgeTaskUuid: "x-1", workName: "예외작품" }),
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ "x-1": "PROCESSING" }, { throwOnCall: true }); // 조회 중 예외 → unknown
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, apiFetch });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 0);
+  });
+
+  test("조회로 전부 완료 확인 + notified → '전체 제출 완료' 안내(조회 실패 없을 때만)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "notified", workName: "완료작품A" }),
+      row({ rowIndex: 6, status: "watching", judgeTaskUuid: "done-2", workName: "완료작품B" }), // COMPLETED → done (unknown 아님)
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ "done-2": "COMPLETED" });
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, apiFetch });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.match(slack.postCalls[0].text, /모두 제출 완료/);
+    assert.doesNotMatch(slack.postCalls[0].text, /<@/); // 태그 없음
+  });
+
+  test("미제출(pending) + 조회 실패(unknown) 같은 스레드 → 리마인더는 나간다(pending만)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, status: "watching", judgeTaskUuid: "proc-1", workName: "진행작품", ownerUserId: "U_A" }),
+      row({ rowIndex: 6, status: "watching", judgeTaskUuid: "fail-1", workName: "조회실패작품" }), // unknown
+    ]);
+    const slack = makeSlack();
+    const apiFetch = makeApiFetch({ "proc-1": "PROCESSING" }); // fail-1 조회 실패
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, apiFetch });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    const t = slack.postCalls[0].text;
+    assert.match(t, /미제출 리테이크 알림/);
+    assert.match(t, /1건/);               // pending 1건만
+    assert.match(t, /진행작품/);
+    assert.doesNotMatch(t, /조회실패작품/); // unknown은 목록에서 제외
+  });
 });
 
 describe("retakeReminderPoller 헤더=소환자 (CFM cc·PM 없음)", () => {
@@ -313,5 +399,45 @@ describe("retakeReminderPoller 헤더=소환자 (CFM cc·PM 없음)", () => {
     assert.match(head, /<@U_A>/);
     assert.match(head, /<@U_B>/);
     assert.strictEqual((head.match(/<@U_A>/g) || []).length, 1); // 중복 제거
+  });
+});
+
+describe("retakeReminderPoller 작업자 수정요청 스레드 리마인드", () => {
+  test("workerChannel·workerThreadTs 있으면 그 스레드에 답글 추가 발송", async () => {
+    const store = makeStore([row({ workerChannel: "C_WORK", workerThreadTs: "1790888.000100" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    // 공지(납품) 스레드 답글 1 + 작업자 스레드 답글 1 = 2
+    assert.strictEqual(slack.postCalls.length, 2);
+    const worker = slack.postCalls.find(p => p.channel === "C_WORK");
+    assert.ok(worker, "작업자 채널 발송 있어야 함");
+    assert.strictEqual(worker.thread_ts, "1790888.000100");
+    assert.match(worker.text, /아직 제출되지 않은/);
+  });
+
+  test("workerThreadTs 없으면 작업자 리마인드 안 함(공지만)", async () => {
+    const store = makeStore([row({ workerChannel: "C_WORK", workerThreadTs: "" })]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    assert.strictEqual(slack.postCalls.length, 1);
+    assert.ok(!slack.postCalls.some(p => p.channel === "C_WORK"));
+  });
+
+  test("작업자 스레드별로 묶어 답글(같은 스레드 2건 → 1답글)", async () => {
+    const store = makeStore([
+      row({ rowIndex: 5, workName: "작품1", workerChannel: "C_W", workerThreadTs: "T1" }),
+      row({ rowIndex: 6, workName: "작품2", workerChannel: "C_W", workerThreadTs: "T1" }),
+      row({ rowIndex: 7, workName: "작품3", workerChannel: "C_W", workerThreadTs: "T2" }),
+    ]);
+    const slack = makeSlack();
+    const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH });
+    await poller.tick();
+    const workerPosts = slack.postCalls.filter(p => p.channel === "C_W");
+    assert.strictEqual(workerPosts.length, 2); // T1, T2 각 1건
+    const t1 = workerPosts.find(p => p.thread_ts === "T1");
+    assert.match(t1.text, /작품1/);
+    assert.match(t1.text, /작품2/);
   });
 });

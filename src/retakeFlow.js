@@ -220,6 +220,14 @@ JSON만 출력. 코드블록 금지.
     return createdUuids[0];
   }
 
+  // 작업자 채널 수정요청 메시지의 ts를 감시행에 기록(미제출 리마인더가 그 스레드에 답글로 달기 위함).
+  // 감시 비활성·judgeTaskUuid/ts 없음·해당 행 없음이면 조용히 skip. 전송 자체는 막지 않도록 비치명적.
+  function _recordWorkerThread(judgeTaskUuid, workerChannel, workerThreadTs) {
+    if (!retakeWatchStore?.setWorkerThread || !judgeTaskUuid || !workerThreadTs) return;
+    Promise.resolve(retakeWatchStore.setWorkerThread(judgeTaskUuid, { workerChannel, workerThreadTs }))
+      .catch(e => console.error("[retake-watch] 작업자 스레드 기록 실패(비치명적):", e.message));
+  }
+
   // ── 메인 핸들러: 수정&리테이크 문의 처리 ────────────────
   async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null, ownerUserId = null, langPair = null) {
     let parsed;
@@ -839,6 +847,8 @@ JSON만 출력. 코드블록 금지.
       if (retakeWatchStore && retakeWatchChannels && retakeWatchChannels.size && data.watchChannel && retakeWatchChannels.has(data.watchChannel) && createdUuids.length) {
         try {
           const judgeTaskUuid = await _resolveJudgeTaskUuid(createdUuids, data.operationCode);
+          // 이후 작업자 채널 전송 핸들러에서 이 감시행을 찾아 작업자 스레드ts를 기록하려면 judgeTaskUuid가 필요 → draft에 보존
+          draftStore.set(draftId, { ...(draftStore.get(draftId) || data), judgeTaskUuid });
           await retakeWatchStore.registerWatch({
             judgeTaskUuid,
             allTaskUuids:  createdUuids,
@@ -1164,7 +1174,7 @@ JSON만 출력. 코드블록 금지.
 
     try {
       try { await client.conversations.join({ channel: workerChannelId }); } catch (_) {}
-      await client.chat.postMessage({
+      const workerMsg = await client.chat.postMessage({
         channel: workerChannelId,
         text: `${mentionText} ${msgText}`.trim(),
         blocks: [
@@ -1174,6 +1184,8 @@ JSON만 출력. 코드블록 금지.
           { type: "context", elements: autoContextElements },
         ],
       });
+      // 작업자 수정요청 메시지 ts를 감시행에 기록 → 미제출 리마인더가 이 스레드에 답글로 달림 (non-fatal)
+      _recordWorkerThread(data.judgeTaskUuid, workerChannelId, workerMsg?.ts);
       await client.chat.postMessage({ channel: body.user.id,
         text: `✅ 작업자 채널에 메시지를 전송했어.\n\n${msgText}` });
     } catch (e) {
@@ -1318,6 +1330,8 @@ ${msgText}
           { type: "context", elements: contextElements },
         ],
       });
+      // 작업자 수정요청 메시지 ts를 감시행에 기록 → 미제출 리마인더가 이 스레드에 답글로 달림 (non-fatal)
+      _recordWorkerThread(data.judgeTaskUuid, workerChannelId, mainMsg?.ts);
 
       // 이미지 첨부 (URL이 있을 경우)
       if (imgUrls.length > 0) {
