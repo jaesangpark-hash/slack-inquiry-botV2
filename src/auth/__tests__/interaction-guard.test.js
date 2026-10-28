@@ -55,7 +55,7 @@ function createHarness({ records = [], permission } = {}) {
     draftStore: new Map(records),
     checkPermission,
     pmSlackId: "U_PM",
-    triggerEmoji: "inquiry",
+    triggerEmojis: new Map([["inquiry", null]]),
   });
   return { app, guarded, checkPermission };
 }
@@ -129,7 +129,7 @@ describe("interactive authorization", () => {
       draftStore: new Map(),
       checkPermission: async () => { order.push("permission"); return { allowed: true }; },
       pmSlackId: "U_PM",
-      triggerEmoji: "inquiry",
+      triggerEmojis: new Map([["inquiry", null]]),
     });
     guarded.action("direct_resupply_btn", async ({ ack }) => {
       order.push("handler");

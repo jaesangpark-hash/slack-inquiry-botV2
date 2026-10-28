@@ -18,8 +18,8 @@ module.exports = function (app, deps) {
     withTimeout,
     // reaction 어댑터 전용
     checkPermission,
-    isTriggerReaction,
-    triggerEmoji,
+    matchTriggerReaction,
+    triggerEmojis,
     fetchThreadContext,
     buildThreadContextText,
     markInquiryProcessed,
@@ -35,7 +35,10 @@ module.exports = function (app, deps) {
   app.event("reaction_added", async ({ event, client }) => {
     try {
       const emoji = event.reaction;
-      if (!isTriggerReaction(emoji, triggerEmoji)) return;
+      // 어느 이모지로 불렀는지가 곧 언어쌍이다. langPair 가 null 이면 종전 이모지(언어 미지정).
+      const trigger = matchTriggerReaction(emoji, triggerEmojis);
+      if (!trigger) return;
+      const langPair = trigger.langPair;
 
       const channelId = event.item.channel;
       const ts        = event.item.ts;
@@ -82,7 +85,7 @@ module.exports = function (app, deps) {
       const dmChannel = dmRes.channel.id;
       const permalink = `https://slack.com/archives/${channelId}/p${ts.replace(".", "")}`;
 
-      if (isTriggerReaction(emoji, triggerEmoji)) {
+      {
         const progressMsg = await client.chat.postMessage({ channel: dmChannel, text: buildProgressText(0, "요청을 받았어.") });
 
         await withTimeout(async () => {
@@ -105,6 +108,8 @@ module.exports = function (app, deps) {
 
           const ctx = {
             source:          "reaction",
+            // 중일/한일은 마스터 시트도 납품 탭도 다르다 — 어느 쪽인지는 이모지로만 알 수 있다.
+            langPair,
             client,
             dmChannel,
             progressMsg,

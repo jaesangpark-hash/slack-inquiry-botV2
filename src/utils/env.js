@@ -194,6 +194,11 @@ function assertKpiSheets(env = process.env) {
 function assertTriggerEmoji(env = process.env) {
   assertRequired(env, [
     "TRIGGER_EMOJI",
+    // 언어쌍별 소환 이모지. 중일/한일은 마스터 시트도 납품 탭도 달라 어느 쪽 문의인지 알아야 하는데
+    // 채널로는 못 가른다(문의 110건 중 86%가 공용 채널). APM이 찍는 이모지가 유일한 확실한 신호다.
+    // 기존 TRIGGER_EMOJI 는 "언어 미지정"으로 남겨 과도기에 예전 이모지를 찍어도 동작하게 한다.
+    "TRIGGER_EMOJI_ZH_JA",
+    "TRIGGER_EMOJI_KO_JA",
   ], "assertTriggerEmoji");
 }
 

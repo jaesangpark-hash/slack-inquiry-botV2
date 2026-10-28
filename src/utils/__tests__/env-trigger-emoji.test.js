@@ -18,12 +18,14 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const { assertTriggerEmoji } = require("../env");
-const { isTriggerReaction } = require("../trigger");
+const { isTriggerReaction, matchTriggerReaction, createTriggerEmojiMap } = require("../trigger");
 
 // ── 공통 fixtures ─────────────────────────────────────────────────────────────
 
 const PROD_EMOJI = "문의봇소환";
 const DEV_EMOJI  = "문의봇테스트";
+const ZH_EMOJI   = "중일문의봇소환";
+const KO_EMOJI   = "한일문의봇소환";
 
 // ── 테스트 그룹 1: assertTriggerEmoji guard ───────────────────────────────────
 
@@ -47,43 +49,67 @@ describe("assertTriggerEmoji guard", () => {
     assert.throws(() => assertTriggerEmoji(env));
   });
 
-  test("TRIGGER_EMOJI 설정 → throw 없음", () => {
-    const env = { TRIGGER_EMOJI: PROD_EMOJI };
-    assert.doesNotThrow(() => assertTriggerEmoji(env));
+  test("언어쌍 이모지가 빠지면 throw — 어느 쪽 문의인지 못 가린 채 뜨면 안 된다", () => {
+    for (const missing of ["TRIGGER_EMOJI_ZH_JA", "TRIGGER_EMOJI_KO_JA"]) {
+      const env = { TRIGGER_EMOJI: PROD_EMOJI, TRIGGER_EMOJI_ZH_JA: ZH_EMOJI, TRIGGER_EMOJI_KO_JA: KO_EMOJI };
+      delete env[missing];
+      assert.throws(() => assertTriggerEmoji(env), (err) => err.message.includes(missing), `${missing} 누락인데 안 막힘`);
+    }
   });
 
-  test("TRIGGER_EMOJI = dev 이모지 설정 → throw 없음", () => {
-    const env = { TRIGGER_EMOJI: DEV_EMOJI };
-    assert.doesNotThrow(() => assertTriggerEmoji(env));
+  test("세 이모지가 다 있으면 throw 없음", () => {
+    assert.doesNotThrow(() => assertTriggerEmoji(
+      { TRIGGER_EMOJI: PROD_EMOJI, TRIGGER_EMOJI_ZH_JA: ZH_EMOJI, TRIGGER_EMOJI_KO_JA: KO_EMOJI }));
+  });
+
+  test("dev 이모지 조합도 throw 없음", () => {
+    assert.doesNotThrow(() => assertTriggerEmoji(
+      { TRIGGER_EMOJI: DEV_EMOJI, TRIGGER_EMOJI_ZH_JA: ZH_EMOJI, TRIGGER_EMOJI_KO_JA: KO_EMOJI }));
   });
 });
 
-// ── 테스트 그룹 2: reaction 분기 대칭 검증 (prod 동작 무변경 포함) ────────────
+// ── 테스트 그룹 2: reaction 분기 + 언어쌍 해석 ────────────────────────────────
 
-describe("reaction 분기 대칭 (TRIGGER_EMOJI 환경변수 값 기반)", () => {
+describe("reaction 분기 (이모지 맵 기반)", () => {
   /**
-   * app.js의 핵심 분기 로직을 실 isTriggerReaction 함수로 검증:
-   *   if (!isTriggerReaction(emoji, triggerEmoji)) return;  ← 미통과
-   *   if (isTriggerReaction(emoji, triggerEmoji)) {         ← 통과
+   * app.js 핵심 분기를 실 함수로 검증:
+   *   const trigger = matchTriggerReaction(emoji, triggerEmojis);
+   *   if (!trigger) return;              ← 미통과
+   *   const langPair = trigger.langPair; ← 언어쌍
    */
+  const emojis = createTriggerEmojiMap({ unspecified: PROD_EMOJI, zhJa: ZH_EMOJI, koJa: KO_EMOJI });
 
-  test("prod 이모지 값 일치 → 핸들러 진입 (truthy)", () => {
-    const triggerEmoji = PROD_EMOJI;
-    assert.ok(isTriggerReaction(PROD_EMOJI, triggerEmoji));
+  test("중일 이모지 → zh-ja", () => {
+    assert.deepEqual(matchTriggerReaction(ZH_EMOJI, emojis), { langPair: "zh-ja" });
   });
 
-  test("dev 이모지 값 일치 → 핸들러 진입 (truthy)", () => {
-    const triggerEmoji = DEV_EMOJI;
-    assert.ok(isTriggerReaction(DEV_EMOJI, triggerEmoji));
+  test("한일 이모지 → ko-ja", () => {
+    assert.deepEqual(matchTriggerReaction(KO_EMOJI, emojis), { langPair: "ko-ja" });
   });
 
-  test("prod 이모지 설정 시 dev 이모지 반응 → 핸들러 미진입 (falsy)", () => {
-    const triggerEmoji = PROD_EMOJI;
-    assert.ok(!isTriggerReaction(DEV_EMOJI, triggerEmoji));
+  test("기존 이모지 → 트리거는 맞고 언어는 미지정 (과도기 안전)", () => {
+    assert.deepEqual(matchTriggerReaction(PROD_EMOJI, emojis), { langPair: null });
   });
 
-  test("dev 이모지 설정 시 prod 이모지 반응 → 핸들러 미진입 (falsy)", () => {
-    const triggerEmoji = DEV_EMOJI;
-    assert.ok(!isTriggerReaction(PROD_EMOJI, triggerEmoji));
+  test("등록 안 된 이모지 → 트리거 아님", () => {
+    assert.equal(matchTriggerReaction(DEV_EMOJI, emojis), false);
+    assert.ok(!isTriggerReaction(DEV_EMOJI, emojis));
+  });
+
+  test("dev 이모지만 등록하면 prod 이모지는 안 걸린다 — 환경 분리 유지", () => {
+    const devOnly = createTriggerEmojiMap({ unspecified: DEV_EMOJI, zhJa: ZH_EMOJI, koJa: KO_EMOJI });
+    assert.ok(isTriggerReaction(DEV_EMOJI, devOnly));
+    assert.ok(!isTriggerReaction(PROD_EMOJI, devOnly));
+  });
+
+  test("이모지 한 개 문자열로 불러도 동작한다 — 구 호출부 호환", () => {
+    assert.deepEqual(matchTriggerReaction(PROD_EMOJI, PROD_EMOJI), { langPair: null });
+    assert.equal(matchTriggerReaction(DEV_EMOJI, PROD_EMOJI), false);
+  });
+
+  test("설정 안 된 언어는 맵에 안 들어간다 — 빈 값이 '' 이모지로 둔갑하지 않게", () => {
+    const partial = createTriggerEmojiMap({ unspecified: PROD_EMOJI, zhJa: "", koJa: undefined });
+    assert.equal(partial.size, 1);
+    assert.equal(matchTriggerReaction("", partial), false);
   });
 });
