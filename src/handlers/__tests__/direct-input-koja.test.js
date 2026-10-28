@@ -106,21 +106,54 @@ describe("T1 초안 수정 경로 — draft.lang 으로 납품 탭을 고른다"
   });
 });
 
-describe("PIVO ID 모달이 확정한 작품은 lang 을 draft 에 싣는다", () => {
-  it("한일 행으로 풀리면 draft.lang = ko-ja", async () => {
-    const ctx = setup({
-      matchWorkTitleFromSheet: async () => ({ koreanProjectName: "한일작품", pivoId: "82357", lang: "ko-ja" }),
-    });
+describe("T6·T7 직접 입력 모달의 PIVO 칸 (문의 흐름)", () => {
+  const submit = async (ctx, values) => {
+    const errs = [];
     ctx.draftStore.set("p1", { isPending: true, ownerUserId: "U1", userId: "U1", dmChannelId: "DM", titleJa: "テスト" });
-    await ctx.app._registered.views.pivo_id_modal({
-      ack: async () => {},
+    await ctx.app._registered.views.manual_title_modal({
+      ack: async (a) => { if (a) errs.push(a); },
       body: { user: { id: "U1" } },
-      view: { private_metadata: JSON.stringify({ pendingId: "p1" }), state: { values: { pivo_id: { value: { value: "82357" } } } } },
+      view: { private_metadata: JSON.stringify({ pendingId: "p1" }), state: { values } },
       client: fakeClient(),
     });
     const created = [...ctx.draftStore.values()].find(d => d.draftId);
-    assert.ok(created, "초안이 생성돼야 한다");
+    return { errs, created };
+  };
+  const field = (v) => ({ value: { value: v } });
+
+  it("PIVO 로 풀리면 draft 에 lang 까지 실린다", async () => {
+    const ctx = setup({ matchWorkTitleFromSheet: async (q) =>
+      (q && q.pivoId === "82357") ? { koreanProjectName: "한일작품", pivoId: "82357", lang: "ko-ja" } : null });
+    const { created } = await submit(ctx, { manual_pivoid_block: field("82357") });
     assert.equal(created.lang, "ko-ja");
     assert.equal(created.pivoId, "82357");
+  });
+
+  it("T6 PIVO 가 틀려도 작품명이 맞으면 작품명으로 확정한다", async () => {
+    const ctx = setup({ matchWorkTitleFromSheet: async (a) => {
+      if (a && typeof a === "object" && a.pivoId) return null;            // 틀린 PIVO
+      return { koreanProjectName: "제목으로찾음", pivoId: "999", lang: "zh-ja" };
+    } });
+    const { errs, created } = await submit(ctx, {
+      manual_pivoid_block: field("00000"), manual_work_name_ja: field("テスト"),
+    });
+    assert.deepEqual(errs, [], "작품명으로 찾았으면 창을 막으면 안 된다");
+    assert.equal(created.workName, "제목으로찾음");
+  });
+
+  it("T7 둘 다 비면 창 안에서 막고 초안을 안 만든다", async () => {
+    const ctx = setup();
+    const { errs, created } = await submit(ctx, {});
+    assert.equal(errs.length, 1);
+    assert.ok(errs[0].errors.manual_work_name_ja);
+    assert.equal(created, undefined);
+  });
+
+  it("T7 PIVO 만 넣고 못 찾으면 창 안에서 막는다", async () => {
+    const ctx = setup({ matchWorkTitleFromSheet: async () => null });
+    const { errs, created } = await submit(ctx, { manual_pivoid_block: field("00000") });
+    assert.equal(errs.length, 1);
+    assert.match(errs[0].errors.manual_pivoid_block, /00000/);
+    assert.equal(created, undefined);
   });
 });
