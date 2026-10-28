@@ -13,6 +13,7 @@ const {
   runCheckpointStages,
 } = require("./slack/mutation-checkpoint");
 const { parseAiJson } = require("./utils/ai-json");
+const { buildCandidateBlocks } = require("./slack/work-picker-blocks");
 
 module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore }) {
 
@@ -375,14 +376,11 @@ JSON만 출력. 코드블록 금지.
         await client.chat.postMessage({
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
-          blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-            { type: "actions", elements: candResult.multiple.map((r, i) => ({
-              type: "button", action_id: `fileorder_cand_pick_${i}`,
-              text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-              value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-            }))},
-          ],
+          blocks: buildCandidateBlocks({
+            candidates: candResult.multiple, pendingId,
+            actionIdPrefix: "fileorder_cand_pick_",
+            manualActionId: "open_file_order_info_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+          }),
         });
         return;
       } else if (candResult?.tooMany || !candResult) {
@@ -492,6 +490,11 @@ JSON만 출력. 코드블록 금지.
             element: { type: "plain_text_input", action_id: "value",
               initial_value: pending.workName || "",
               placeholder: { type: "plain_text", text: "예: 祭品新娘拐恶龙 / ゾンビさん" } } },
+          { type: "input", block_id: "fo_pivoid_block",
+            label: { type: "plain_text", text: "PIVO ID (작품명 대신 입력 가능)" },
+            optional: true,
+            element: { type: "plain_text_input", action_id: "value",
+              placeholder: { type: "plain_text", text: "예: 82357" } } },
           { type: "input", block_id: "fo_episode_block",
             label: { type: "plain_text", text: "화수 (숫자만)" },
             element: { type: "plain_text_input", action_id: "value",
@@ -510,18 +513,21 @@ JSON만 출력. 코드블록 금지.
 
     const v        = view.state.values;
     const workName = v.fo_work_block?.value?.value?.trim() || "";
+    const pivoInput = v.fo_pivoid_block?.value?.value?.trim() || "";
     const episode  = v.fo_episode_block?.value?.value?.trim() || "";
 
-    if (!workName || !episode) {
-      await client.chat.postMessage({ channel: pending.dmChannelId, text: "작품명과 화수를 모두 입력해줘." });
+    if ((!workName && !pivoInput) || !episode) {
+      await client.chat.postMessage({ channel: pending.dmChannelId, text: "작품명이나 PIVO ID 중 하나와 화수를 입력해줘." });
       return;
     }
 
-    const candResult2     = matchWorkTitleWithCandidates ? await matchWorkTitleWithCandidates(workName, workName).catch(() => null) : null;
-    const matchedTitle       = candResult2?.single || (!candResult2?.multiple && !candResult2?.tooMany ? await matchWorkTitleFromSheet(workName, workName).catch(() => null) : null);
+    // PIVO ID 가 있으면 그걸로 확정한다 - ID 는 그 자체로 작품을 특정한다.
+    const byPivo = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
+    const candResult2     = byPivo ? null : (matchWorkTitleWithCandidates ? await matchWorkTitleWithCandidates(workName, workName).catch(() => null) : null);
+    const matchedTitle       = byPivo || candResult2?.single || (!candResult2?.multiple && !candResult2?.tooMany ? await matchWorkTitleFromSheet(workName, workName).catch(() => null) : null);
     const koreanProjectName = matchedTitle?.koreanProjectName || null;
-    const displayWorkName = koreanProjectName || workName;
-    const originalWorkTitle = workName;
+    const displayWorkName = koreanProjectName || workName || matchedTitle?.japaneseDisplayTitle || "";
+    const originalWorkTitle = workName || matchedTitle?.japaneseDisplayTitle || null;
     draftStore.delete(pendingId);
 
     // 정상 경로(후보 선택)와 동일하게 실제 파일 목록을 조회한다.

@@ -98,9 +98,14 @@ module.exports = function registerScheduleActions(app, deps) {
         blocks: [
           { type: "section", text: { type: "mrkdwn", text: `AI 추출값: \`${pending.parsed?.work_title_ja || pending.parsed?.work_title_ko || "없음"}\`` }},
           { type: "input", block_id: "title_ja_block", label: { type: "plain_text", text: "작품명 (원문 그대로)" },
+            optional: true,
             element: { type: "plain_text_input", action_id: "title_ja_input",
               initial_value: pending.parsed?.work_title_ja || pending.parsed?.work_title_ko || "",
               placeholder: { type: "plain_text", text: "예: 本当は転生したくない 또는 미러월드" } }},
+          { type: "input", block_id: "sched_pivoid_block", label: { type: "plain_text", text: "PIVO ID (작품명 대신 입력 가능)" },
+            optional: true,
+            element: { type: "plain_text_input", action_id: "value",
+              placeholder: { type: "plain_text", text: "예: 82357" } }},
         ],
       },
     });
@@ -112,9 +117,13 @@ module.exports = function registerScheduleActions(app, deps) {
     const pending = draftStore.get(pendingId);
     if (!pending) return;
     const titleInput   = view.state.values.title_ja_block?.title_ja_input?.value?.trim() || "";
-    const matchedTitle = await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
+    const pivoInput    = view.state.values.sched_pivoid_block?.value?.value?.trim() || "";
+    // PIVO ID 가 있으면 그걸로 확정한다 - ID 는 그 자체로 작품을 특정하고 언어로 거르지도 않는다.
+    const matchedTitle = pivoInput
+      ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null)
+      : await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
     const koreanProjectName = matchedTitle?.koreanProjectName || null;
-    const displayWorkName = koreanProjectName || titleInput;
+    const displayWorkName = koreanProjectName || titleInput || matchedTitle?.japaneseDisplayTitle || "";
     const originalWorkTitle = titleInput || pending.parsed?.work_title_ja || null;
     const delivery     = pending.parsed?.episode
       ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, koreanProjectName).catch(() => null)

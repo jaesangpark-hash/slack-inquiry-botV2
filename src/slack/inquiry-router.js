@@ -190,14 +190,11 @@ module.exports = function createInquiryRouter(deps) {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `작품명 *${parsed.work_title_ko || parsed.work_title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-              { type: "actions", elements: candResult.multiple.map((r, i) => ({
-                type: "button", action_id: `schedule_token_pick_${i}`,
-                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-                value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-              }))},
-            ],
+            blocks: buildCandidateBlocks({
+              candidates: candResult.multiple, pendingId,
+              actionIdPrefix: "schedule_token_pick_",
+              manualActionId: "open_schedule_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+            }),
           });
           return;
         } else if (candResult?.tooMany) {
@@ -206,10 +203,10 @@ module.exports = function createInquiryRouter(deps) {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `*${parsed.work_title_ko || parsed.work_title_ja || "-"}* 와 일치하는 작품이 너무 많아. 더 정확한 작품명을 입력해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `AI 추출 작품명: \`${parsed.work_title_ja || parsed.work_title_ko || "없음"}\`` }},
-              { type: "actions", elements: [{ type: "button", action_id: "open_schedule_title_modal", text: { type: "plain_text", text: "작품명 직접 입력" }, style: "primary", value: pendingId }]},
-            ],
+            blocks: buildManualEntryBlocks({
+              pendingId, manualActionId: "open_schedule_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+              titleHint: parsed.work_title_ja || parsed.work_title_ko,
+            }),
           });
           return;
         } else {
@@ -224,14 +221,11 @@ module.exports = function createInquiryRouter(deps) {
             await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
               text: `작품명 *${parsed.work_title_ko || parsed.work_title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
             await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${tokenResult.multiple.length}건* — 해당하는 작품을 선택해줘.` }},
-                { type: "actions", elements: tokenResult.multiple.slice(0, 5).map((r, i) => ({
-                  type: "button", action_id: `schedule_token_pick_${i}`,
-                  text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-                  value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-                }))},
-              ],
+              blocks: buildCandidateBlocks({
+                candidates: tokenResult.multiple, pendingId,
+                actionIdPrefix: "schedule_token_pick_",
+              manualActionId: "open_schedule_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+              }),
             });
             return;
           }
@@ -275,10 +269,10 @@ module.exports = function createInquiryRouter(deps) {
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
           text: !matchedTitle ? `작품명 *${parsed.work_title_ja || parsed.work_title_ko || "-"}* 을 시트에서 찾지 못했어.` : `납품 시트에서 찾지 못했어.` });
         await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
-          blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `AI 추출 작품명: \`${parsed.work_title_ja || parsed.work_title_ko || "없음"}\`` }},
-            { type: "actions", elements: [{ type: "button", action_id: "open_schedule_title_modal", text: { type: "plain_text", text: "작품명 직접 입력" }, style: "primary", value: pendingId }]},
-          ],
+          blocks: buildManualEntryBlocks({
+            pendingId, manualActionId: "open_schedule_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+            titleHint: parsed.work_title_ja || parsed.work_title_ko,
+          }),
         });
         return;
       }

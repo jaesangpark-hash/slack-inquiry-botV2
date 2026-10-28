@@ -6,6 +6,8 @@ const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
 
+const { buildCandidateBlocks } = require("./slack/work-picker-blocks");
+
 module.exports = function registerMultipleInquiryFlow(app, {
   ai, GEMINI_MODEL,
   matchWorkTitleFromSheet, matchWorkTitleByTokens,
@@ -414,14 +416,13 @@ ${text}`.trim();
       await client.chat.postMessage({
         channel: body.user.id,
         text: `[항목 ${itemIndex + 1}] 작품 후보가 여러 개야. 선택해줘.`,
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: `*[항목 ${itemIndex + 1}] ${typeLabel(item.type)}* — 작품 후보 ${candidates.length}건` }},
-          { type: "actions", elements: candidates.slice(0, 5).map((r, i) => ({
-            type: "button", action_id: `multi_token_pick_${i}`,
-            text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-            value: JSON.stringify({ multiPendingId, itemIndex, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-          }))},
-        ],
+        // TODO 복수문의는 항목 단위라 직접입력·PIVO 모달이 아직 없다. 후보가 안 맞으면
+        //      지금은 문의를 다시 올리는 수밖에 없다 - 별도 작업으로 뺀다.
+        blocks: buildCandidateBlocks({
+          candidates, actionIdPrefix: "multi_token_pick_",
+          headline: `*[항목 ${itemIndex + 1}] ${typeLabel(item.type)}* — 작품 후보 ${candidates.length}건`,
+          valueFor: (r) => ({ multiPendingId, itemIndex, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
+        }),
       });
       return;
     }
@@ -624,14 +625,11 @@ ${text}`.trim();
           await client.chat.postMessage({
             channel: dmChannel,
             text: `[항목 ${i + 1}] 작품 후보가 여러 개야. 선택해줘.`,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `${header}\n작품 후보가 여러 개야. 선택해줘.` }},
-              { type: "actions", elements: candidates.slice(0, 5).map((r, ci) => ({
-                type: "button", action_id: `multi_token_pick_${ci}`,
-                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${ci+1}` },
-                value: JSON.stringify({ multiPendingId, itemIndex: i, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-              }))},
-            ],
+            blocks: buildCandidateBlocks({
+              candidates, actionIdPrefix: "multi_token_pick_",
+              headline: `${header}\n작품 후보가 여러 개야. 선택해줘.`,
+              valueFor: (r) => ({ multiPendingId, itemIndex: i, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
+            }),
           });
           return;
         }

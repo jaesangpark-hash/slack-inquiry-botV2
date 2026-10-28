@@ -47,14 +47,26 @@ function buildPivoIdButton(pendingId, actionId) {
 
 /**
  * 후보 여러 건 → 고르는 화면.
- * @param {{ candidates: Array<object>, pendingId: string, actionIdPrefix: string,
- *            pivoActionId?: string, max?: number }} args
+ *
+ * 흐름마다 다른 건 세 가지뿐이라 그것만 인자로 받는다.
+ *   headline  머리말 (복수문의는 "[항목 2] 스케줄" 처럼 항목 번호를 단다)
+ *   valueFor  버튼 payload (복수문의는 pendingId 대신 multiPendingId+itemIndex 를 싣는다)
+ *   manual/pivo 뒤에 붙는 탈출 버튼 (리테이크는 후보 옆에 직접입력을 같이 둔다)
+ *
+ * @param {{ candidates: Array<object>, pendingId?: string, actionIdPrefix: string,
+ *            pivoActionId?: string, manualActionId?: string, manualLabel?: string,
+ *            headline?: string, valueFor?: function(object, number): object, max?: number }} args
  * @returns {Array<object>} Slack blocks
  */
-function buildCandidateBlocks({ candidates, pendingId, actionIdPrefix, pivoActionId, max = 5 }) {
+function buildCandidateBlocks({
+  candidates, pendingId, actionIdPrefix, pivoActionId,
+  // ★valueOf 라는 이름을 쓰면 안 된다 - 구조분해가 Object.prototype.valueOf 를 주워 온다.
+  manualActionId, manualLabel = "✏️ 직접 입력", headline, valueFor, max = 5,
+}) {
   const shown = (candidates || []).slice(0, max);
+  const payload = valueFor || ((row) => ({ pendingId, pivoId: row.pivoId, koreanProjectName: row.koreanProjectName }));
   return [
-    { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${shown.length}건* — 해당하는 작품을 선택해줘.` } },
+    { type: "section", text: { type: "mrkdwn", text: headline || `*작품 후보 ${shown.length}건* — 해당하는 작품을 선택해줘.` } },
     {
       type: "actions",
       elements: [
@@ -62,8 +74,9 @@ function buildCandidateBlocks({ candidates, pendingId, actionIdPrefix, pivoActio
           type: "button",
           action_id: `${actionIdPrefix}${i}`,
           text: { type: "plain_text", text: candidateLabel(row, i) },
-          value: JSON.stringify({ pendingId, pivoId: row.pivoId, koreanProjectName: row.koreanProjectName }),
+          value: JSON.stringify(payload(row, i)),
         })),
+        ...(manualActionId ? [{ type: "button", action_id: manualActionId, text: { type: "plain_text", text: manualLabel }, value: pendingId }] : []),
         ...(pivoActionId ? [buildPivoIdButton(pendingId, pivoActionId)] : []),
       ],
     },
