@@ -24,7 +24,6 @@ const { isTriggerReaction, matchTriggerReaction, createTriggerEmojiMap } = requi
 
 const PROD_EMOJI = "문의봇소환";
 const DEV_EMOJI  = "문의봇테스트";
-const ZH_EMOJI   = "중일문의봇소환";
 const KO_EMOJI   = "한일문의봇소환";
 
 // ── 테스트 그룹 1: assertTriggerEmoji guard ───────────────────────────────────
