@@ -183,7 +183,7 @@ module.exports = function registerScheduleExtFlow(app, {
   }
 
   // ── 여러 화수의 납품일 조회 (연속 범위면 한 번에) ─────────
-  async function _fetchDeliveryForEpisodes(primaryWorkTitle, koreanProjectName, episodes) {
+  async function _fetchDeliveryForEpisodes(primaryWorkTitle, koreanProjectName, episodes, lang = "zh-ja") {
     const sorted = [...episodes].map(e => parseInt(e, 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
     if (!sorted.length) return null;
     const isContiguous = sorted.every((ep, i) => i === 0 || ep === sorted[i - 1] + 1);
@@ -193,7 +193,7 @@ module.exports = function registerScheduleExtFlow(app, {
     return await fetchDeliveryDate(
       primaryWorkTitle,
       rangeStr,
-      "zh-ja",
+      lang,
       koreanProjectName
     ).catch(() => null);
   }
@@ -280,7 +280,7 @@ module.exports = function registerScheduleExtFlow(app, {
       if (it.delivery) return it.delivery;
       const workNameKo = it.matchedTitle?.koreanProjectName || it.parsed?.work_title_ko;
       if (!workNameKo || !it.episode) return null;
-      return await fetchDeliveryDate(workNameKo, String(it.episode), "zh-ja", it.matchedTitle?.koreanProjectName || null).catch(() => null);
+      return await fetchDeliveryDate(workNameKo, String(it.episode), it.matchedTitle?.lang || "zh-ja", it.matchedTitle?.koreanProjectName || null).catch(() => null);
     };
     const _runSingle = async (it) => {
       const delivery = await _fillDelivery(it);
@@ -323,7 +323,7 @@ module.exports = function registerScheduleExtFlow(app, {
       try {
         const workNameKo = it.matchedTitle?.koreanProjectName || it.parsed?.work_title_ko;
         const d = workNameKo
-          ? await fetchDeliveryDate(workNameKo, String(ep), "zh-ja", it.matchedTitle?.koreanProjectName || null)
+          ? await fetchDeliveryDate(workNameKo, String(ep), it.matchedTitle?.lang || "zh-ja", it.matchedTitle?.koreanProjectName || null)
           : null;
         deliveryByEp[ep] = d?.episodes?.[0]?.deliveryDate || d?.deliveryDate || null;
       } catch (e) { console.warn("[scheduleExt] 납품일 조회 실패:", ep, e.message); }
@@ -369,7 +369,7 @@ module.exports = function registerScheduleExtFlow(app, {
       const workNameKo = f.matchedTitle?.koreanProjectName || f.parsed.work_title_ko || workName;
 
       // 묶음 납품일 재조회 (연속 범위면 한 번에)
-      const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.koreanProjectName || null, episodes);
+      const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.koreanProjectName || null, episodes, f.matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */);
 
       await _proceedScheduleExt(client, dmChannel, {
         workName, pivoId,

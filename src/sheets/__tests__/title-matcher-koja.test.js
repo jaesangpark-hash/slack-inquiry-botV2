@@ -115,14 +115,15 @@ describe("한일 마스터 동시 적재", () => {
   });
 });
 
-describe("소환 이모지에 따른 언어 우선순위", () => {
+describe("소환 이모지로 언어를 자른다 (하드 필터)", () => {
   // 같은 한국어 제목이 양쪽 마스터에 있는 상황 (실측 교차 충돌과 같은 모양)
   const both = {
     zh: [zhRow({ ko: "아포칼립스", pivo: "201" })],
     ko: [koRow({ pivo: "301", wonje: "아포칼립스" })],
   };
+  const koOnly = { zh: [], ko: [koRow({ pivo: "301", wonje: "한일전용작품" })] };
 
-  test("이모지가 가리킨 쪽을 고른다", async () => {
+  test("이모지가 가리킨 쪽만 본다", async () => {
     const { matcher } = makeMatcher(both);
     const zh = await matcher.matchWorkTitleFromSheet({ titleKo: "아포칼립스", langPair: "zh-ja" });
     const ko = await matcher.matchWorkTitleFromSheet({ titleKo: "아포칼립스", langPair: "ko-ja" });
@@ -130,17 +131,35 @@ describe("소환 이모지에 따른 언어 우선순위", () => {
     assert.equal(ko.pivoId, "301");
   });
 
-  test("이모지를 반대로 찍어도 못 찾지는 않는다 — 조회 범위를 자르지 않는다", async () => {
-    const { matcher } = makeMatcher({ zh: [], ko: [koRow({ pivo: "301", wonje: "한일전용작품" })] });
+  test("반대 언어 작품은 집지 않는다 — 조용히 틀리느니 못 찾는다", async () => {
+    const { matcher } = makeMatcher(koOnly);
     const found = await matcher.matchWorkTitleFromSheet({ titleKo: "한일전용작품", langPair: "zh-ja" });
-    assert.ok(found, "중일 이모지로 찍은 한일 작품도 찾아야 한다");
-    assert.equal(found.lang, "ko-ja");
+    assert.equal(found, null);
   });
 
-  test("langPair 가 없으면 양쪽이 동점이라 되묻는다", async () => {
+  test("반대 언어에 있으면 wrongLang 으로 알려 준다 — 호출부가 안내할 수 있게", async () => {
+    const { matcher } = makeMatcher(koOnly);
+    const out = await matcher.matchWorkTitleWithCandidates(null, "한일전용작품", null, "zh-ja");
+    assert.ok(out.wrongLang, "반대 언어 후보를 돌려줘야 한다");
+    assert.equal(out.wrongLang[0].lang, "ko-ja");
+    assert.equal(out.wrongLang[0].pivoId, "301");
+    assert.ok(!out.single && !out.multiple && !out.tooMany,
+      "이 모양을 모르는 호출부는 자연히 '못 찾음'으로 떨어져야 한다");
+  });
+
+  test("★PIVO ID 조회는 언어로 거르지 않는다 — 복구 수단이 막히면 안 된다", async () => {
+    const { matcher } = makeMatcher(koOnly);
+    const byPivo = await matcher.matchWorkTitleFromSheet({ pivoId: "301", langPair: "zh-ja" });
+    assert.ok(byPivo, "중일 이모지 상태에서도 한일 PIVO ID 는 찾아야 한다");
+    assert.equal(byPivo.lang, "ko-ja");
+    const tok = await matcher.matchWorkTitleByTokens(null, null, "301", "zh-ja");
+    assert.equal(tok.single.pivoId, "301");
+  });
+
+  test("langPair 가 없으면(DM 링크 소환) 양쪽을 다 본다", async () => {
     const { matcher } = makeMatcher(both);
     const out = await matcher.matchWorkTitleWithCandidates(null, "아포칼립스");
-    assert.ok(out.multiple, "어느 쪽인지 모르면 고르게 해야 한다");
+    assert.ok(out.multiple, "신호가 없으면 고르게 해야 한다");
     assert.equal(out.multiple.length, 2);
   });
 
@@ -149,5 +168,12 @@ describe("소환 이모지에 따른 언어 우선순위", () => {
     const out = await matcher.matchWorkTitleWithCandidates(null, "아포칼립스", null, "ko-ja");
     assert.ok(out.single);
     assert.equal(out.single.pivoId, "301");
+  });
+
+  test("토큰 매칭도 지정 언어만 본다", async () => {
+    const { matcher } = makeMatcher(koOnly);
+    assert.equal(await matcher.matchWorkTitleByTokens("한일전용작품", null, null, "zh-ja"), null);
+    const ok = await matcher.matchWorkTitleByTokens("한일전용작품", null, null, "ko-ja");
+    assert.equal(ok.single.pivoId, "301");
   });
 });

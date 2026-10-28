@@ -85,6 +85,10 @@ module.exports = function createInquiryRouter(deps) {
       requesterUserId,
       requesterName,
       userId,
+      // 소환 이모지가 가리킨 언어쌍. 메시지(DM 링크) 경로엔 신호가 없어 null 이다.
+      // ★조회 범위를 자르는 값이 아니라 **동점을 가르는 우선순위**다 — 이모지를 잘못 찍어도
+      //   반대쪽 작품이 후보에 남아야 한다.
+      langPair = null,
     } = ctx;
 
     const { channelId, ts } = sourceMeta;
@@ -162,10 +166,10 @@ module.exports = function createInquiryRouter(deps) {
         return !/^파일\s*\d+\s*#?\d*\s*$/.test(stripped);
       });
       if (headerEpisodes.length >= 2 || itemLines.length >= 2) {
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId, sourceMeta.threadTs, langPair);
       } else {
         // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
-        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink, ...sourceMeta }, originalText, retakeRequesterName, requesterUserId || null, userId);
+        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink, ...sourceMeta }, originalText, retakeRequesterName, requesterUserId || null, userId, langPair);
       }
       return;
     }
@@ -177,7 +181,7 @@ module.exports = function createInquiryRouter(deps) {
         const msgDate = new Date(parseInt(ts.split(".")[0]) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
         parsed = await parseScheduleInquiry(originalText, msgDate);
 
-        const candResult = await matchWorkTitleWithCandidates(parsed.work_title_ja, parsed.work_title_ko).catch(() => null);
+        const candResult = await matchWorkTitleWithCandidates(parsed.work_title_ja, parsed.work_title_ko, null, langPair).catch(() => null);
         if (candResult?.single) {
           matchedTitle = candResult.single;
         } else if (candResult?.multiple) {
@@ -238,11 +242,11 @@ module.exports = function createInquiryRouter(deps) {
         // UD-6: reaction은 delivery null이어도 그대로 진행 / message는 !matchedTitle||!delivery 시 폴백
         if (source === "reaction") {
           delivery = parsed.episode
-            ? await fetchDeliveryDate(workNameKo, parsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
+            ? await fetchDeliveryDate(workNameKo, parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, matchedTitle?.koreanProjectName || null).catch(() => null)
             : null;
         } else {
           delivery = workNameKo && parsed.episode
-            ? await fetchDeliveryDate(workNameKo, parsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(e => { console.error("[DEBUG] fetchDelivery 오류:", e.message); return null; })
+            ? await fetchDeliveryDate(workNameKo, parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, matchedTitle?.koreanProjectName || null).catch(e => { console.error("[DEBUG] fetchDelivery 오류:", e.message); return null; })
             : null;
           console.log("[DEBUG] delivery:", JSON.stringify(delivery));
         }
@@ -303,17 +307,17 @@ module.exports = function createInquiryRouter(deps) {
           const ui = await client.users.info({ user: requesterUserId });
           reqName = ui.user?.profile?.display_name || ui.user?.real_name || reqName;
         } catch (_) {}
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId, sourceMeta.threadTs, langPair);
       } else {
         // UD-2: message는 requesterName="" 빈문자 그대로
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId, sourceMeta.threadTs, langPair);
       }
       return;
     }
 
     // ── ③ 기타 ───────────────────────────────────────────────────
     if (analysis.inquiry_type === "기타") {
-      const matchedForSummary = await matchWorkTitleFromSheet(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const matchedForSummary = await matchWorkTitleFromSheet({ titleJa: analysis.title_ja, titleKo: analysis.title_ko, langPair }).catch(() => null);
       const displayName = matchedForSummary?.koreanProjectName || analysis.title_ja || analysis.title_ko || "";
       const titleInfo   = { workName: displayName, episode: analysis.episode || "" };
       const btnValue    = JSON.stringify({ sourceLink, workName: displayName, episode: titleInfo.episode });
@@ -340,7 +344,7 @@ module.exports = function createInquiryRouter(deps) {
     // route_pick_relay 핸들러가 handleWorkerRelay를 재실행. PM은 route_pick_inquiry가 분석 결과로 draft 생성.
     if (analysis.route_ambiguous &&
         ["번역문 누락", "번역문 확인", "번역문 수정", "작업 관련 문의"].includes(analysis.inquiry_type)) {
-      const matchedForSummary = await matchWorkTitleFromSheet(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const matchedForSummary = await matchWorkTitleFromSheet({ titleJa: analysis.title_ja, titleKo: analysis.title_ko, langPair }).catch(() => null);
       const displayName = matchedForSummary?.koreanProjectName || analysis.title_ja || analysis.title_ko || "";
       const relayImageUrls = (files || [])
         .filter(f => f.mimetype?.startsWith("image/"))
@@ -388,7 +392,7 @@ module.exports = function createInquiryRouter(deps) {
         .filter(Boolean);
       // 스레드 맥락이 있으면 전체 텍스트, 없으면 단일 메시지
       const relayText = hasThreadContext ? threadContextText : originalText;
-      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls, userId || null);
+      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls, userId || null, langPair);
       return;
     }
 
@@ -403,7 +407,7 @@ module.exports = function createInquiryRouter(deps) {
           retakeName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || requesterUserId || "";
         } catch (_) {}
         // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
-        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta }, originalText, retakeName, requesterUserId || null, userId);
+        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta }, originalText, retakeName, requesterUserId || null, userId, langPair);
       }
       // UD-7: message 경로는 분기 부재 → ⑧ 기본처리로 자동 폴백 (여기서 return 안 함)
       if (source === "reaction") return;
@@ -413,14 +417,14 @@ module.exports = function createInquiryRouter(deps) {
     if (analysis.inquiry_type === "원본 파일 순서") {
       if (source === "reaction") {
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: "📁 파일 순서 문의 처리 중..." });
-        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, channelId, ts, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText);
+        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, channelId, ts, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText, langPair);
       } else {
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: "📁 파일 순서 문의 처리 중..." });
         // 결함 A 복원: base message ⑥은 { ...linkInfo, requesterUserId } (app-base:846) — linkInfo는 url/channelId/ts 3키
         // sourceLink = linkInfo.url (ctx 빌드 시 message 어댑터가 linkInfo.url을 sourceLink로 전달)
         // sourceMeta = { channelId: linkInfo.channelId, ts: linkInfo.ts }
         // → url을 명시 포함해야 fileOrderFlow.js(:301,332,360)의 linkInfo?.url이 sourceLink를 채울 수 있음
-        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText);
+        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText, langPair);
       }
       return;
     }
@@ -429,7 +433,7 @@ module.exports = function createInquiryRouter(deps) {
     if (analysis.inquiry_type === "원본 파일 확인") {
       let fileParsed;
       try { fileParsed = await parseFileInquiry(originalText); } catch (e) { fileParsed = {}; }
-      const matchedTitle = await matchWorkTitleFromSheet(fileParsed.work_title_ja || analysis.title_ja, fileParsed.work_title_ko || analysis.title_ko).catch(() => null);
+      const matchedTitle = await matchWorkTitleFromSheet({ titleJa: fileParsed.work_title_ja || analysis.title_ja, titleKo: fileParsed.work_title_ko || analysis.title_ko, langPair }).catch(() => null);
 
       // UD-8: reaction만 수동 입력 모달, message는 "-" draft 진행
       if (source === "reaction" && !matchedTitle) {
@@ -465,7 +469,7 @@ module.exports = function createInquiryRouter(deps) {
       // 납품일 + APM 조회 (모든 재수급 경로 일관 — 회차 형식 무관, fetchDeliveryDate 내부 parseEpisodeNumbers가 정규화)
       const fiDeliveryQueryName = matchedTitle?.koreanProjectName || fileParsed.work_title_ko || fileParsed.work_title_ja || null;
       const fiDeliveryRes = (fetchDeliveryDate && fiDeliveryQueryName && fileParsed.episode)
-        ? await fetchDeliveryDate(fiDeliveryQueryName, fileParsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
+        ? await fetchDeliveryDate(fiDeliveryQueryName, fileParsed.episode, matchedTitle?.lang || "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
         : null;
       const fiDeliveryDate = fiDeliveryRes
         ? (fiDeliveryRes.allSame ? fiDeliveryRes.deliveryDate : fiDeliveryRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", "))
@@ -482,6 +486,7 @@ module.exports = function createInquiryRouter(deps) {
         workName:    matchedTitle?.koreanProjectName || fileParsed.work_title_ko || analysis.title_ko || matchedTitle?.japaneseDisplayTitle || fileParsed.work_title_ja || analysis.title_ja || "-",
         japaneseFixedTitle: matchedTitle?.japaneseFixedTitle || "-",
         pivoId:      matchedTitle?.pivoId  || null,
+        lang:        matchedTitle?.lang    || null,
         episode:     fileParsed.episode    || "-",
         fileNumbers: fileParsed.file_numbers || [],
         reason:      buildFileInquiryReason(fileParsed, matchedTitle),
@@ -499,10 +504,10 @@ module.exports = function createInquiryRouter(deps) {
     // ── ⑧ 기본 처리 (매칭 → draft) ──────────────────────────────
     let matchedTitle = null;
     if (analysis.title_ja || analysis.title_ko) {
-      const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko, null, langPair).catch(() => null);
       if (candResult?.single) {
         matchedTitle = candResult.single;
-      } else if (candResult?.multiple || candResult?.tooMany) {
+      } else if (candResult?.multiple || candResult?.tooMany || candResult?.wrongLang) {
         const pendingId = `pending_${Date.now()}`;
         draftStore.set(pendingId, {
           isPending:      true,
@@ -524,7 +529,20 @@ module.exports = function createInquiryRouter(deps) {
           priority:       analysis.priority,
           sourceLang:     analysis.source_lang,
         });
-        if (candResult?.multiple) {
+        if (candResult?.wrongLang) {
+          // 이모지로 언어를 잘라서 못 찾았는데 반대 언어에는 있다. 그냥 "없음"으로 끝내면
+          // APM 이 왜 안 나오는지 모른다 - 어느 이모지로 다시 찍어야 하는지 짚어 준다.
+          const other = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일" : "중일";
+          const emoji = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일문의봇소환" : "문의봇소환";
+          await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
+            text: `*${analysis.title_ko || analysis.title_ja || "-"}* 은 ${other} 작품이야. :${emoji}: 로 다시 찍거나, 아래에서 골라줘.` });
+          await client.chat.postMessage({ channel: dmChannel, text: `${other} 작품이야. 맞으면 골라줘.`,
+            blocks: buildCandidateBlocks({
+              candidates: candResult.wrongLang, pendingId,
+              actionIdPrefix: "inquiry_cand_pick_", pivoActionId: "open_pivo_id_modal",
+            }),
+          });
+        } else if (candResult?.multiple) {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `작품명 *${analysis.title_ko || analysis.title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
@@ -593,9 +611,10 @@ module.exports = function createInquiryRouter(deps) {
       workName:      matchedTitle.koreanProjectName || analysis.title_ko || matchedTitle.japaneseDisplayTitle || analysis.title_ja || "",
       workNameKo:    matchedTitle.koreanProjectName || analysis.title_ko || "",
       pivoId:        matchedTitle.pivoId || null,
+      lang:          matchedTitle.lang   || null,
       episode:       analysis.episode || null,
       deliveryDate:  analysis.episode && matchedTitle.koreanProjectName
-        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, "zh-ja", matchedTitle.koreanProjectName)
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, matchedTitle.lang || "zh-ja", matchedTitle.koreanProjectName)
             .catch(() => null)
             .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
         : "-",

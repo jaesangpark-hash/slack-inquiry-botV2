@@ -355,7 +355,7 @@ JSON만 출력. 코드블록 금지.
   }
 
   // ── 메인 핸들러 (app.js 분기에서 호출) ───────────────────────
-  async function handleFileOrderInquiry(client, dmChannel, analysis, linkInfo, originalText) {
+  async function handleFileOrderInquiry(client, dmChannel, analysis, linkInfo, originalText, langPair = null) {
     let parsed;
     try { parsed = await parseFileOrderInquiry(originalText); } catch (e) { parsed = {}; }
 
@@ -365,7 +365,7 @@ JSON만 출력. 코드블록 금지.
 
     if (titleJa || titleKo) {
       const candResult = matchWorkTitleWithCandidates
-        ? await matchWorkTitleWithCandidates(titleJa, titleKo).catch(() => null)
+        ? await matchWorkTitleWithCandidates(titleJa, titleKo, null, langPair).catch(() => null)
         : null;
       if (candResult?.single) {
         matchedTitle = candResult.single;
@@ -386,7 +386,7 @@ JSON만 출력. 코드블록 금지.
         });
         return;
       } else if (candResult?.tooMany || !candResult) {
-        matchedTitle = await matchWorkTitleFromSheet(titleJa, titleKo).catch(() => null);
+        matchedTitle = await matchWorkTitleFromSheet({ titleJa, titleKo, langPair }).catch(() => null);
       }
     }
 

@@ -259,7 +259,7 @@ JSON만 출력. 코드블록 금지.
   // ══════════════════════════════════════════════════════════
   // 메인 핸들러
   // ══════════════════════════════════════════════════════════
-  async function handleWorkerRelay(client, dmChannel, analysis, sourceInfo, originalText, requesterUserId, imageUrls = [], apmUserId = null) {
+  async function handleWorkerRelay(client, dmChannel, analysis, sourceInfo, originalText, requesterUserId, imageUrls = [], apmUserId = null, langPair = null) {
 
     // 1. Gemini로 상세 파싱
     let parsed = {};
@@ -297,7 +297,7 @@ JSON만 출력. 코드블록 금지.
     console.log(`[workerRelay] handleWorkerRelay 시작 — titleJa: ${titleJa} | titleKo: ${titleKo} | episode: ${episode} | relayType: ${relayType} | requesterEmail(Slack): ${requesterEmail} | requesterTotusEmail: ${requesterTotusEmail}`);
 
     // 3. 작품 매칭
-    const matchedTitle = await matchWorkTitleFromSheet(titleJa, titleKo).catch(() => null);
+    const matchedTitle = await matchWorkTitleFromSheet({ titleJa, titleKo, langPair }).catch(() => null);
     console.log(`[workerRelay] matchedTitle: ${JSON.stringify(matchedTitle)}`);
 
     // 작품명 또는 화수 미확보 → pending 저장 + 수동 입력 유도
