@@ -86,8 +86,9 @@ module.exports = function createInquiryRouter(deps) {
       requesterName,
       userId,
       // 소환 이모지가 가리킨 언어쌍. 메시지(DM 링크) 경로엔 신호가 없어 null 이다.
-      // ★조회 범위를 자르는 값이 아니라 **동점을 가르는 우선순위**다 — 이모지를 잘못 찍어도
-      //   반대쪽 작품이 후보에 남아야 한다.
+      // ★이 값이 있으면 제목 매칭은 **그 언어만** 본다(하드 필터). 반대 언어 작품을 조용히
+      //   집지 않는다. 못 찾으면 매처가 wrongLang 으로 알려 주고 아래에서 안내한다.
+      //   PIVO ID 조회는 거르지 않는다 — ID 는 그 자체로 작품을 특정한다.
       langPair = null,
     } = ctx;
 
@@ -210,8 +211,10 @@ module.exports = function createInquiryRouter(deps) {
           });
           return;
         } else {
-          // null → 토큰 매칭 시도
-          const tokenResult = await matchWorkTitleByTokens(parsed.work_title_ko, parsed.work_title_ja).catch(() => null);
+          // null(또는 wrongLang) → 토큰 매칭 시도.
+          // ★langPair 를 꼭 넘긴다. 안 넘기면 양쪽 마스터를 다 뒤져서 반대 언어 작품을
+          //   조용히 채택한다 — 하드 필터를 둔 이유가 바로 그걸 막으려는 것이다.
+          const tokenResult = await matchWorkTitleByTokens(parsed.work_title_ko, parsed.work_title_ja, null, langPair).catch(() => null);
           if (tokenResult?.single) {
             matchedTitle = tokenResult.single;
             console.log("[match-token] 단건 자동 선택:", matchedTitle.koreanProjectName);
@@ -533,7 +536,7 @@ module.exports = function createInquiryRouter(deps) {
           await client.chat.postMessage({ channel: dmChannel, text: `${other} 작품이야. 맞으면 골라줘.`,
             blocks: buildCandidateBlocks({
               candidates: candResult.wrongLang, pendingId,
-              actionIdPrefix: "inquiry_cand_pick_", pivoActionId: "open_pivo_id_modal",
+              actionIdPrefix: "inquiry_cand_pick_", manualActionId: "open_manual_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
             }),
           });
         } else if (candResult?.multiple) {
@@ -542,7 +545,7 @@ module.exports = function createInquiryRouter(deps) {
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
             blocks: buildCandidateBlocks({
               candidates: candResult.multiple, pendingId,
-              actionIdPrefix: "inquiry_cand_pick_", pivoActionId: "open_pivo_id_modal",
+              actionIdPrefix: "inquiry_cand_pick_", manualActionId: "open_manual_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
             }),
           });
         } else {
@@ -550,7 +553,7 @@ module.exports = function createInquiryRouter(deps) {
             text: `*${analysis.title_ko || analysis.title_ja || "-"}* 와 일치하는 작품이 너무 많아. 더 정확한 작품명을 입력해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
             blocks: buildManualEntryBlocks({
-              pendingId, manualActionId: "open_manual_title_modal", pivoActionId: "open_pivo_id_modal",
+              pendingId, manualActionId: "open_manual_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
               titleHint: analysis.title_ja || analysis.title_ko,
             }),
           });
@@ -584,7 +587,7 @@ module.exports = function createInquiryRouter(deps) {
       await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: `시트에서 *${analysis.title_ja || analysis.title_ko || "작품명"}* 을 찾지 못했어.` });
       await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
         blocks: buildManualEntryBlocks({
-          pendingId, manualActionId: "open_manual_title_modal", pivoActionId: "open_pivo_id_modal",
+          pendingId, manualActionId: "open_manual_title_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
           titleHint: analysis.title_ja || analysis.title_ko,
         }),
       });

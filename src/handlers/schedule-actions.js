@@ -112,16 +112,35 @@ module.exports = function registerScheduleActions(app, deps) {
   });
 
   app.view("schedule_title_modal", async ({ ack, body, view, client }) => {
-    await ack();
     const { pendingId } = JSON.parse(view.private_metadata || "{}");
     const pending = draftStore.get(pendingId);
-    if (!pending) return;
     const titleInput   = view.state.values.title_ja_block?.title_ja_input?.value?.trim() || "";
     const pivoInput    = view.state.values.sched_pivoid_block?.value?.value?.trim() || "";
-    // PIVO ID 가 있으면 그걸로 확정한다 - ID 는 그 자체로 작품을 특정하고 언어로 거르지도 않는다.
-    const matchedTitle = pivoInput
-      ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null)
-      : await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
+
+    // 둘 다 비면 창 안에서 막는다. 종전엔 빈 값으로 제출돼 작품 없는 초안이 만들어졌다.
+    if (!titleInput && !pivoInput) {
+      await ack({ response_action: "errors", errors: { title_ja_block: "작품명이나 PIVO ID 중 하나는 입력해줘." } });
+      return;
+    }
+    // PIVO 를 먼저 보되 **틀렸다고 제목을 버리지 않는다**. 종전엔 PIVO 가 틀리면 제목을 적어도
+    // 무시돼서 작품을 못 찾았다(2026-10-28 AIA 리뷰).
+    let matchedTitle = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
+    if (!matchedTitle && titleInput) {
+      matchedTitle = await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
+    }
+    // ★PIVO 를 적었는데 못 찾은 경우만 창 안에서 막는다. 닫고 나서 "못 찾았어"라고 하면
+    //   처음부터 다시 열어야 한다.
+    //   제목만 적고 못 찾은 건 막지 않는다 — 마스터에 없는 작품도 원문 이름으로 스케줄
+    //   요청을 넣을 수 있어야 한다(title-meaning-r3 에 고정된 기존 동작).
+    if (!matchedTitle && pivoInput) {
+      const msg = titleInput
+        ? `PIVO ID ${pivoInput} 도, 작품명 「${titleInput}」 도 못 찾았어.`
+        : `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어. 작품명으로도 넣어볼 수 있어.`;
+      await ack({ response_action: "errors", errors: { sched_pivoid_block: msg } });
+      return;
+    }
+    await ack();
+    if (!pending) return;
     const koreanProjectName = matchedTitle?.koreanProjectName || null;
     const displayWorkName = koreanProjectName || titleInput || matchedTitle?.japaneseDisplayTitle || "";
     const originalWorkTitle = titleInput || pending.parsed?.work_title_ja || null;

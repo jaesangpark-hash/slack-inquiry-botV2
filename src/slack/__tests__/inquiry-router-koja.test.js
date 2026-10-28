@@ -162,7 +162,8 @@ describe("하드 필터 - 반대 언어에 있으면 짚어 준다", () => {
     const withButtons = posted.find(m => Array.isArray(m.blocks) && m.blocks.some(b => b.type === "actions"));
     assert.ok(withButtons, "후보 버튼을 올려야 한다");
     const ids = withButtons.blocks.find(b => b.type === "actions").elements.map(e => e.action_id);
-    assert.ok(ids.includes("open_pivo_id_modal"), "PIVO 입력 구멍은 항상 있어야 한다");
+    assert.ok(ids.includes("open_manual_title_modal"),
+      "PIVO 입력 구멍은 항상 있어야 한다 — 이제 직접입력 모달 안의 칸으로 통일됐다");
   });
 
   it("흐름 모듈에도 langPair 가 넘어간다 - 하드 필터라 안 넘기면 라우터와 갈린다", async () => {
@@ -173,5 +174,51 @@ describe("하드 필터 - 반대 언어에 있으면 짚어 준다", () => {
     }));
     const args = deps.flows.handleFileOrderInquiry.lastArgs();
     assert.equal(args[args.length - 1], "ko-ja", "마지막 인자로 langPair 가 가야 한다");
+  });
+});
+
+describe("T5 스케줄 경로 토큰 매칭도 언어를 거른다", () => {
+  it("제목 매칭이 비면 토큰 매칭으로 넘어가는데, 거기에도 langPair 가 간다", async () => {
+    // 한일 이모지인데 한일 마스터엔 없고 중일에만 토큰이 걸리는 상황.
+    // 토큰 매칭에 langPair 를 안 넘기면 양쪽 전체를 뒤져 중일 작품을 조용히 집는다.
+    const deps = makeDeps(ZH_ROW, {
+      matchWorkTitleWithCandidates: spy(null),      // 제목 매칭 실패
+      matchWorkTitleByTokens: spy(null),
+    });
+    await createInquiryRouter(deps).routeInquiry(makeCtx({
+      langPair: "ko-ja",
+      analysis: { inquiry_type: "스케줄 문의", title_ja: "テスト", title_ko: "테스트", episode: "1" },
+    }));
+    const args = deps.matchWorkTitleByTokens.lastArgs();
+    assert.ok(args, "토큰 매칭까지 왔어야 한다");
+    assert.equal(args[3], "ko-ja", "4번째 인자로 langPair 가 가야 한다");
+  });
+
+  it("토큰 매칭이 중일 작품을 돌려줘도 langPair 를 받았으면 매처가 거른다", async () => {
+    // 매처 계약 확인 — 라우터는 넘기고, 거르는 책임은 title-matcher 에 있다
+    const deps = makeDeps(ZH_ROW, { matchWorkTitleWithCandidates: spy(null), matchWorkTitleByTokens: spy(null) });
+    await createInquiryRouter(deps).routeInquiry(makeCtx({
+      langPair: "zh-ja",
+      analysis: { inquiry_type: "스케줄 문의", title_ja: "テスト", title_ko: "테스트", episode: "1" },
+    }));
+    assert.equal(deps.matchWorkTitleByTokens.lastArgs()[3], "zh-ja");
+  });
+});
+
+describe("T8 문의 흐름에 별도 PIVO 버튼이 없다", () => {
+  it("후보 화면 버튼은 후보들 + 직접입력 하나뿐", async () => {
+    const posted = [];
+    const deps = makeDeps(null, { matchWorkTitleWithCandidates: spy({ multiple: [ZH_ROW, KO_ROW] }) });
+    const ctx = makeCtx({ langPair: "zh-ja" });
+    ctx.client.chat.postMessage = async (a) => { posted.push(a); return {}; };
+    await createInquiryRouter(deps).routeInquiry(ctx);
+
+    const withButtons = posted.find(m => Array.isArray(m.blocks) && m.blocks.some(b => b.type === "actions"));
+    const els = withButtons.blocks.find(b => b.type === "actions").elements;
+    const ids = els.map(e => e.action_id);
+    assert.ok(!ids.includes("open_pivo_id_modal"), "별도 PIVO 버튼은 없어졌다");
+    assert.ok(ids.includes("open_manual_title_modal"), "탈출 수단은 직접입력 하나로 통일");
+    const manual = els.find(e => e.action_id === "open_manual_title_modal");
+    assert.match(manual.text.text, /PIVO ID/, "라벨에 PIVO 가 드러나야 발견 가능하다");
   });
 });

@@ -496,84 +496,45 @@ module.exports = function registerDirectInputActions(app, deps) {
     if (!pending) return;
     await client.views.open({ trigger_id: body.trigger_id, view: {
       type: "modal", callback_id: "manual_title_modal", private_metadata: JSON.stringify({ pendingId: body.actions[0].value }),
-      title: { type: "plain_text", text: "작품명 직접 입력" }, submit: { type: "plain_text", text: "이 이름으로 초안 생성" }, close: { type: "plain_text", text: "취소" },
+      title: { type: "plain_text", text: "작품 직접 입력" }, submit: { type: "plain_text", text: "이 작품으로 초안 생성" }, close: { type: "plain_text", text: "취소" },
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: `*AI 추출 작품명:* \`${pending.titleJa||"없음"}\`` }},
-        { type: "input", block_id: "manual_work_name_ja", label: { type: "plain_text", text: "작품명 (일본어)" }, element: { type: "plain_text_input", action_id: "value", initial_value: pending.titleJa||"", placeholder: { type: "plain_text", text: "예: 鬼滅の刃" } }},
+        { type: "input", block_id: "manual_work_name_ja", label: { type: "plain_text", text: "작품명 (일본어)" }, optional: true, element: { type: "plain_text_input", action_id: "value", initial_value: pending.titleJa||"", placeholder: { type: "plain_text", text: "예: 鬼滅の刃" } }},
         { type: "input", block_id: "manual_work_name_ko", label: { type: "plain_text", text: "작품명 (한국어, 없으면 공백)" }, optional: true, element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 귀멸의 칼날" } }},
+        { type: "input", block_id: "manual_pivoid_block", label: { type: "plain_text", text: "PIVO ID (작품명 대신 입력 가능)" }, optional: true, element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 82357" } }},
       ],
     }});
   });
 
   app.view("manual_title_modal", async ({ ack, body, view, client }) => {
-    await ack();
     const { pendingId } = JSON.parse(view.private_metadata || "{}");
     const pending = draftStore.get(pendingId);
-    if (!pending) return;
     const vals = view.state.values;
-    const workNameJa = vals.manual_work_name_ja?.value?.value?.trim() || pending.titleJa || "";
+    // ★pending.titleJa 로 폴백하지 않는다. 칸이 이미 그 값으로 채워져 열리므로 폴백은 중복이고,
+    //   사용자가 일부러 비우고 PIVO 를 넣었는데 AI 가 뽑은 제목을 되살리면 이 모달의 취지와 반대다.
+    const workNameJa = vals.manual_work_name_ja?.value?.value?.trim() || "";
     const workNameKo = vals.manual_work_name_ko?.value?.value?.trim() || "";
-    const matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
+    const pivoInput  = vals.manual_pivoid_block?.value?.value?.trim() || "";
+
+    if (!workNameJa && !workNameKo && !pivoInput) {
+      await ack({ response_action: "errors", errors: { manual_work_name_ja: "작품명이나 PIVO ID 중 하나는 입력해줘." } });
+      return;
+    }
+    // PIVO 를 먼저 보되 틀렸다고 작품명을 버리지 않는다.
+    let matchedManual = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
+    if (!matchedManual && (workNameJa || workNameKo)) {
+      matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
+    }
+    if (!matchedManual && pivoInput && !workNameJa && !workNameKo) {
+      await ack({ response_action: "errors", errors: { manual_pivoid_block: `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어.` } });
+      return;
+    }
+    await ack();
+    if (!pending) return;
     const draftId = generateDraftId();
     const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
-    await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
-  });
-
-  // ── PIVO ID 직접 입력 ────────────────────────────────────
-  // 제목 매칭이 1순위지만(완전일치 → 부분일치) 끝내 못 고르는 경우가 남는다. 그때 사람이
-  // ID 를 바로 때려넣을 구멍을 항상 열어 둔다 — manual_title_modal 과 같은 모양이고
-  // 조회 키만 제목 대신 PIVO ID 다.
-  app.action("open_pivo_id_modal", async ({ ack, body, client }) => {
-    await ack();
-    const pendingId = body.actions?.[0]?.value;
-    const pending = draftStore.get(pendingId);
-    if (!pending) return;
-    await client.views.open({ trigger_id: body.trigger_id, view: {
-      type: "modal", callback_id: "pivo_id_modal", private_metadata: JSON.stringify({ pendingId }),
-      title: { type: "plain_text", text: "PIVO ID 직접 입력" }, submit: { type: "plain_text", text: "이 ID 로 초안 생성" }, close: { type: "plain_text", text: "취소" },
-      blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `*AI 추출 작품명:* \`${pending.titleJa || "없음"}\`` }},
-        { type: "input", block_id: "pivo_id", label: { type: "plain_text", text: "PIVO ID (숫자)" },
-          element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 82357" } }},
-      ],
-    }});
-  });
-
-  app.view("pivo_id_modal", async ({ ack, body, view, client }) => {
-    const { pendingId } = JSON.parse(view.private_metadata || "{}");
-    const pending = draftStore.get(pendingId);
-    const raw = view.state.values?.pivo_id?.value?.value?.trim() || "";
-    // 숫자가 아니면 모달 안에서 되돌린다 — 닫고 나서 "못 찾았어"라고 하면 다시 열어야 한다.
-    if (!/^\d+$/.test(raw)) {
-      await ack({ response_action: "errors", errors: { pivo_id: "숫자만 입력해줘. (예: 82357)" } });
-      return;
-    }
-    const matched = await matchWorkTitleFromSheet({ pivoId: raw }).catch(() => null);
-    if (!matched) {
-      await ack({ response_action: "errors", errors: { pivo_id: `PIVO ID ${raw} 에 해당하는 작품을 마스터에서 못 찾았어.` } });
-      return;
-    }
-    await ack();
-    if (!pending) return;
-    const draftId = generateDraftId();
-    const draft = {
-      draftId, ownerUserId: pending.ownerUserId, userId: pending.userId,
-      dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs,
-      sourceLink: pending.sourceLink, originalText: pending.originalText,
-      originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null,
-      workName: matched.koreanProjectName || matched.japaneseDisplayTitle || "",
-      workNameKo: matched.koreanProjectName || "",
-      pivoId: matched.pivoId || raw,
-      lang: matched.lang || null,
-      inquiryType: pending.inquiryType || "기타", inquiryContent: pending.inquiryContent || "",
-      summary: pending.summary || "", actionRequired: pending.actionRequired || "",
-      sourceLang: pending.sourceLang || "ja",
-    };
-    draftStore.set(draftId, draft);
-    draftStore.delete(pendingId);
-    console.log(`[pivo-modal] PIVO ${raw} → ${matched.lang || "?"} ${draft.workName}`);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
   });
 

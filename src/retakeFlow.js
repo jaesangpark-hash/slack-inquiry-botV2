@@ -1081,9 +1081,19 @@ JSON만 출력. 코드블록 금지.
 
     let displayWorkName, koreanProjectName, resolvedPivoId;
 
-    if (pivoId) {
-      ({ displayWorkName, koreanProjectName, resolvedPivoId } = await _resolveByPivoId(pivoId));
+    // ★PIVO 를 먼저 보되 틀렸다고 작품명을 버리지 않는다. 종전엔 pivoId 가 있으면 무조건
+    //   그쪽만 봐서, ID 를 잘못 적으면 작품명을 같이 넣어도 "(pivoId: …)" 로 끝났다
+    //   (2026-10-28 AIA 리뷰에서 스케줄 쪽 같은 결함을 지적받아 같이 고친다).
+    const byPivo = pivoId ? await _resolveByPivoId(pivoId) : null;
+    const pivoFound = !!byPivo?.koreanProjectName || !!byPivo?.resolvedPivoId;
+    if (pivoFound) {
+      ({ displayWorkName, koreanProjectName, resolvedPivoId } = byPivo);
     } else {
+      if (pivoId && !workName) {
+        await client.chat.postMessage({ channel: pending.dmChannelId,
+          text: `PIVO ID ${pivoId} 에 해당하는 작품을 못 찾았어. 작품명으로 다시 넣어줘.` });
+        return;
+      }
       const matchedTitle = await matchWorkTitleFromSheet(workName, workName).catch(() => null);
       koreanProjectName = matchedTitle?.koreanProjectName || null;
       displayWorkName = koreanProjectName || workName;
