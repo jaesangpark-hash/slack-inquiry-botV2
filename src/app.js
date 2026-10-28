@@ -45,11 +45,10 @@ const { INQUIRY_HISTORY_GRID_SHEET_ID, RESUPPLY_GRID_SHEET_ID, RETAKE_WATCH_SHEE
 const { APM_SLACK_ID_MAP } = require("./config/apm-directory");
 
 // ── 트리거 이모지 (guard 통과 후 requireEnv — 코드 리터럴 fallback 금지) ──
-// 이모지 하나당 언어쌍 하나. 기존 TRIGGER_EMOJI 는 "언어 미지정"으로 남는다(과도기 안전).
+// 이모지 하나당 언어쌍 하나. 기존 TRIGGER_EMOJI 가 중일이고 한일만 새로 추가한다.
 const triggerEmojis = createTriggerEmojiMap({
-  unspecified: requireEnv("TRIGGER_EMOJI"),
-  zhJa:        requireEnv("TRIGGER_EMOJI_ZH_JA"),
-  koJa:        requireEnv("TRIGGER_EMOJI_KO_JA"),
+  zhJa: requireEnv("TRIGGER_EMOJI"),
+  koJa: requireEnv("TRIGGER_EMOJI_KO_JA"),
 });
 
 const app = new App({
