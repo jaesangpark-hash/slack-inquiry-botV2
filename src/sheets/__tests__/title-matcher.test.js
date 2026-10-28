@@ -40,7 +40,7 @@ const createTitleMatcher = require("../title-matcher");
 //   row[0]=A(APM), row[1]=B(중국어 원제), row[2]=C(한국어 프로젝트명), row[3]=D(일본어 표시명),
 //   row[4]=E(일본어 FIX 타이틀), row[5]=F(미정), row[6]=G(출판사), row[7]=H(드라이브 링크), row[8]=I(PIVO ID)
 function makeRow({
-  pivoId = "p1",
+  pivoId = "101",
   japaneseFixedTitle = "",
   japaneseDisplayTitle = "",
   chineseOriginalTitle = "",
@@ -71,13 +71,13 @@ const fakeAlertOnError = async (_label, fn) => fn();
 // ── 테스트용 시트 데이터 ──────────────────────────────────────────────────────
 // 실 데이터 형태를 반영한 fixture (byte-거울 금지: needle과 다른 문자열로 구성)
 const FIXTURE_ROWS = [
-  makeRow({ pivoId: "p1", japaneseDisplayTitle: "タイトルA（仮）", chineseOriginalTitle: "중국어제목A", koreanProjectName: "작품A" }),
-  makeRow({ pivoId: "p2", japaneseDisplayTitle: "タイトルB", chineseOriginalTitle: "중국어제목B", koreanProjectName: "작품B 시즌1" }),
-  makeRow({ pivoId: "p3", japaneseDisplayTitle: "別のタイトル", chineseOriginalTitle: "다른제목", koreanProjectName: "별도작품" }),
-  makeRow({ pivoId: "p4", japaneseDisplayTitle: "부분 포함 작품", koreanProjectName: "포함된작품이름" }),
-  makeRow({ pivoId: "p5", japaneseDisplayTitle: "テスト作品X", chineseOriginalTitle: "테스트X", koreanProjectName: "테스트작품X" }),
-  makeRow({ pivoId: "p6", japaneseDisplayTitle: "あいう", chineseOriginalTitle: "나타1", koreanProjectName: "나타1작품" }),
-  makeRow({ pivoId: "p7", chineseOriginalTitle: "나타2", koreanProjectName: "나타2작품" }),
+  makeRow({ pivoId: "101", japaneseDisplayTitle: "タイトルA（仮）", chineseOriginalTitle: "중국어제목A", koreanProjectName: "작품A" }),
+  makeRow({ pivoId: "102", japaneseDisplayTitle: "タイトルB", chineseOriginalTitle: "중국어제목B", koreanProjectName: "작품B 시즌1" }),
+  makeRow({ pivoId: "103", japaneseDisplayTitle: "別のタイトル", chineseOriginalTitle: "다른제목", koreanProjectName: "별도작품" }),
+  makeRow({ pivoId: "104", japaneseDisplayTitle: "부분 포함 작품", koreanProjectName: "포함된작품이름" }),
+  makeRow({ pivoId: "105", japaneseDisplayTitle: "テスト作品X", chineseOriginalTitle: "테스트X", koreanProjectName: "테스트작품X" }),
+  makeRow({ pivoId: "106", japaneseDisplayTitle: "あいう", chineseOriginalTitle: "나타1", koreanProjectName: "나타1작품" }),
+  makeRow({ pivoId: "107", chineseOriginalTitle: "나타2", koreanProjectName: "나타2작품" }),
 ];
 
 // CANDIDATE_MAX(5) 초과를 위한 추가 행 (부분 일치 tooMany 검증)
@@ -103,7 +103,7 @@ describe("matchWorkTitleFromSheet", () => {
     // needle: "작품A" → projectName 정확히 일치
     const result = await matcher.matchWorkTitleFromSheet(null, "작품A");
     assert.ok(result, "매칭 결과가 있어야 함");
-    assert.strictEqual(result.pivoId, "p1");
+    assert.strictEqual(result.pivoId, "101");
     assert.strictEqual(result.koreanProjectName, "작품A");
   });
 
@@ -111,21 +111,21 @@ describe("matchWorkTitleFromSheet", () => {
     // "시즌1"은 "작품B 시즌1"의 부분 — 완전일치 실패 후 부분일치 진입
     const result = await matcher.matchWorkTitleFromSheet(null, "시즌1");
     assert.ok(result, "부분 일치 결과가 있어야 함");
-    assert.strictEqual(result.pivoId, "p2");
+    assert.strictEqual(result.pivoId, "102");
   });
 
   test("3순위: 일본어 표시명 완전 일치 (仮 제거 + normalizeTitle 적용)", async () => {
     // "タイトルA（仮）"의 仮가 제거된 후 normalizeTitle 일치
     const result = await matcher.matchWorkTitleFromSheet("タイトルA（仮）", null);
     assert.ok(result, "일본어 완전일치 결과가 있어야 함");
-    assert.strictEqual(result.pivoId, "p1");
+    assert.strictEqual(result.pivoId, "101");
   });
 
   test("4순위: 일본어 표시명 부분 일치 (needle이 jaNorm의 부분 문자열)", async () => {
     // "別の"는 "別のタイトル" normalizeTitle 결과의 부분 — 부분 일치
     const result = await matcher.matchWorkTitleFromSheet("別の", null);
     assert.ok(result, "일본어 부분일치 결과가 있어야 함");
-    assert.strictEqual(result.pivoId, "p3");
+    assert.strictEqual(result.pivoId, "103");
   });
 
   test("매칭 실패 → null", async () => {
@@ -139,18 +139,18 @@ describe("matchWorkTitleFromSheet", () => {
   });
 
   test("객체 계약: PIVO ID만으로 정확한 행을 찾는다", async () => {
-    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "p4" });
+    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "104" });
     assert.ok(result);
     assert.strictEqual(result.koreanProjectName, "포함된작품이름");
   });
 
   test("PIVO ID와 제목이 충돌하면 PIVO ID 정확 일치를 우선한다", async () => {
     const result = await matcher.matchWorkTitleFromSheet({
-      pivoId: "p2",
+      pivoId: "102",
       titleKo: "작품A",
     });
     assert.ok(result);
-    assert.strictEqual(result.pivoId, "p2");
+    assert.strictEqual(result.pivoId, "102");
   });
 
   test("PIVO ID가 없으면 함께 전달한 제목으로 계속 찾는다", async () => {
@@ -159,13 +159,13 @@ describe("matchWorkTitleFromSheet", () => {
       titleJa: "別のタイトル",
     });
     assert.ok(result);
-    assert.strictEqual(result.pivoId, "p3");
+    assert.strictEqual(result.pivoId, "103");
   });
 
   test("레거시 세 번째 인자의 PIVO ID 계약도 호환한다", async () => {
-    const result = await matcher.matchWorkTitleFromSheet(null, null, "p5");
+    const result = await matcher.matchWorkTitleFromSheet(null, null, "105");
     assert.ok(result);
-    assert.strictEqual(result.pivoId, "p5");
+    assert.strictEqual(result.pivoId, "105");
   });
 
   test("PIVO ID와 한국어 프로젝트명만 있는 sparse 행도 보존한다", async () => {
@@ -173,16 +173,16 @@ describe("matchWorkTitleFromSheet", () => {
       masterSheetId: "fake-sheet-id",
       alertOnError: fakeAlertOnError,
       sheetsClient: makeFakeSheetsClient([
-        makeRow({ pivoId: "sparse-1", koreanProjectName: "희소 작품" }),
+        makeRow({ pivoId: "901", koreanProjectName: "희소 작품" }),
       ]),
     });
-    const result = await sparseMatcher.matchWorkTitleFromSheet({ pivoId: "sparse-1" });
+    const result = await sparseMatcher.matchWorkTitleFromSheet({ pivoId: "901" });
     assert.ok(result);
     assert.strictEqual(result.koreanProjectName, "희소 작품");
   });
 
   test("반환 행은 실제 언어 의미가 드러나는 필드만 제공한다", async () => {
-    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "p1" });
+    const result = await matcher.matchWorkTitleFromSheet({ pivoId: "101" });
     assert.deepEqual(
       {
         chineseOriginalTitle: result.chineseOriginalTitle,
@@ -217,7 +217,7 @@ describe("matchWorkTitleByTokens", () => {
     const result = await matcher.matchWorkTitleByTokens("나타1");
     assert.ok(result, "결과가 있어야 함");
     assert.ok(result.single, "single 필드가 있어야 함");
-    assert.strictEqual(result.single.pivoId, "p6");
+    assert.strictEqual(result.single.pivoId, "106");
   });
 
   test("한국어 토큰 복수 매칭 → { multiple }", async () => {
@@ -240,7 +240,7 @@ describe("matchWorkTitleByTokens", () => {
     const result = await matcher.matchWorkTitleByTokens(null, "テスト作品X");
     assert.ok(result, "결과가 있어야 함");
     assert.ok(result.single, "single 필드가 있어야 함");
-    assert.strictEqual(result.single.pivoId, "p5");
+    assert.strictEqual(result.single.pivoId, "105");
   });
 
   test("titleKo·titleJa 모두 null → null (조기 반환)", async () => {
@@ -269,7 +269,7 @@ describe("matchWorkTitleWithCandidates", () => {
     const result = await matcher.matchWorkTitleWithCandidates(null, "별도작품");
     assert.ok(result);
     assert.ok(result.single);
-    assert.strictEqual(result.single.pivoId, "p3");
+    assert.strictEqual(result.single.pivoId, "103");
   });
 
   test("2순위: 한국어 부분일치 단건 → { single }", async () => {
@@ -277,7 +277,7 @@ describe("matchWorkTitleWithCandidates", () => {
     const result = await matcher.matchWorkTitleWithCandidates(null, "이름");
     assert.ok(result);
     assert.ok(result.single);
-    assert.strictEqual(result.single.pivoId, "p4");
+    assert.strictEqual(result.single.pivoId, "104");
   });
 
   test("2순위: 한국어 부분일치 복수(≤5) → { multiple }", async () => {
@@ -300,7 +300,7 @@ describe("matchWorkTitleWithCandidates", () => {
     const result = await matcher.matchWorkTitleWithCandidates("タイトルB", null);
     assert.ok(result);
     assert.ok(result.single);
-    assert.strictEqual(result.single.pivoId, "p2");
+    assert.strictEqual(result.single.pivoId, "102");
   });
 
   test("4순위: 일본어 부분일치 → { single }", async () => {
@@ -308,7 +308,7 @@ describe("matchWorkTitleWithCandidates", () => {
     const result = await matcher.matchWorkTitleWithCandidates("別の", null);
     assert.ok(result);
     assert.ok(result.single);
-    assert.strictEqual(result.single.pivoId, "p3");
+    assert.strictEqual(result.single.pivoId, "103");
   });
 
   test("매칭 실패 → null", async () => {

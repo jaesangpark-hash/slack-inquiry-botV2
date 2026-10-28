@@ -48,12 +48,16 @@ function scoreTitle(needle, hay, minRatio = PARTIAL_MIN_RATIO) {
  * 앞 필드가 이기고, 그것도 같으면 길이비가 높은 쪽이 이긴다. 한 행이 여러 필드에 걸리면
  * 가장 좋은 점수 하나만 남긴다 — 같은 작품이 후보 목록에 두 번 뜨면 안 된다.
  *
+ * prefer 는 **동점을 가르는 용도일 뿐** 다른 쪽을 떨어뜨리지 않는다. 소환 이모지가 가리킨
+ * 언어를 앞에 둘 뿐, 반대쪽 언어도 후보 목록에는 그대로 남는다 — 이모지를 잘못 찍어도
+ * 작품을 못 찾는 일이 없어야 한다.
+ *
  * @param {Array<object>} rows
  * @param {Array<{ name: string, needles: Array<string|null>, get: function(object): string }>} fields
- * @param {{ minRatio?: number }} [options]
+ * @param {{ minRatio?: number, prefer?: function(object): boolean }} [options]
  * @returns {Array<{ row: object, tier: number, ratio: number, fieldIndex: number, field: string, needle: string }>}
  */
-function rankRows(rows, fields, { minRatio = PARTIAL_MIN_RATIO } = {}) {
+function rankRows(rows, fields, { minRatio = PARTIAL_MIN_RATIO, prefer = null } = {}) {
   const best = new Map();   // row → 점수 기록
   fields.forEach((field, fieldIndex) => {
     const needles = (field.needles || []).filter(Boolean);
@@ -64,7 +68,7 @@ function rankRows(rows, fields, { minRatio = PARTIAL_MIN_RATIO } = {}) {
       for (const needle of needles) {
         const { tier, ratio } = scoreTitle(needle, hay, minRatio);
         if (tier === TIER.NONE) continue;
-        const hit = { row, tier, ratio, fieldIndex, field: field.name, needle };
+        const hit = { row, tier, ratio, fieldIndex, field: field.name, needle, preferred: prefer ? !!prefer(row) : false };
         const prev = best.get(row);
         if (!prev || compareHits(hit, prev) < 0) best.set(row, hit);
       }
@@ -78,6 +82,7 @@ function rankRows(rows, fields, { minRatio = PARTIAL_MIN_RATIO } = {}) {
 function compareHits(a, b) {
   if (a.tier !== b.tier) return b.tier - a.tier;
   if (a.fieldIndex !== b.fieldIndex) return a.fieldIndex - b.fieldIndex;
+  if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
   return b.ratio - a.ratio;
 }
 

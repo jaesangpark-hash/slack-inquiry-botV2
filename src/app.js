@@ -69,6 +69,7 @@ const titleMatcher = createTitleMatcher({
   google,
   getGoogleAuth,
   masterSheetId: process.env.MASTER_SHEET_ID,
+  masterSheetKoJaId: process.env.MASTER_SHEET_KOJA_ID,
   alertOnError,
   sheetsClient,
 });

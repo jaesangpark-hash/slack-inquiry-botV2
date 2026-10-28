@@ -138,6 +138,9 @@ function assertSecretsBase(env = process.env) {
 function assertGoogleSheets(env = process.env) {
   assertRequired(env, [
     "MASTER_SHEET_ID",
+    // 한일 마스터 — 「픽코마 작품관리 rawdata」의 한일_master 탭.
+    // 중일과 다른 스프레드시트라 ID 가 따로 필요하다.
+    "MASTER_SHEET_KOJA_ID",
     "DELIVERY_SHEET_ID",
     "DELIVERY_SHEET_KO_JA",
     "DELIVERY_SHEET_ZH_JA",
