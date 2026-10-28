@@ -10,6 +10,7 @@ const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
 const { extractPivoIdGuess } = require("./utils/pivo-id");
+const { buildCandidateBlocks } = require("./slack/work-picker-blocks");
 // ── 벤더사 고정 멘션 ────────────────────────────────────────────
 // GWC는 공용 계정으로 작업해 작업자 이메일이 개인 Slack 계정에 매핑되지 않는다.
 // 그래서 이메일로 찾은 ID 대신 담당자를 고정으로 멘션한다(중일 리테이크 n8n WF와 같은 규칙).
@@ -247,19 +248,12 @@ JSON만 출력. 코드블록 금지.
         await client.chat.postMessage({
           channel: dmChannel,
           text: "작품 후보가 여러 개야. 선택해줘.",
-          blocks: [
-            { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.` }},
-            { type: "actions", elements: [
-              ...candResult.multiple.slice(0, 4).map((r, i) => ({
-                type: "button", action_id: `retake_token_pick_${i}`,
-                text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-                value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-              })),
-              { type: "button", action_id: "open_retake_info_modal",
-                text: { type: "plain_text", text: "✏️ 직접 입력" },
-                value: pendingId },
-            ]},
-          ],
+          blocks: buildCandidateBlocks({
+            candidates: candResult.multiple, pendingId, max: 4,
+            headline: `*작품 후보 ${candResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.`,
+            actionIdPrefix: "retake_token_pick_",
+            manualActionId: "open_retake_info_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+          }),
         });
         return;
       } else if (candResult?.tooMany) {
@@ -274,19 +268,12 @@ JSON만 출력. 코드블록 금지.
             await client.chat.postMessage({
               channel: dmChannel,
               text: "작품 후보가 여러 개야. 선택해줘.",
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `*작품 후보 ${tokenResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.` }},
-                { type: "actions", elements: [
-                  ...tokenResult.multiple.slice(0, 4).map((r, i) => ({
-                    type: "button", action_id: `retake_token_pick_${i}`,
-                    text: { type: "plain_text", text: r.koreanProjectName || r.japaneseDisplayTitle || `후보 ${i+1}` },
-                    value: JSON.stringify({ pendingId, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
-                  })),
-                  { type: "button", action_id: "open_retake_info_modal",
-                    text: { type: "plain_text", text: "✏️ 직접 입력" },
-                    value: pendingId },
-                ]},
-              ],
+              blocks: buildCandidateBlocks({
+                candidates: tokenResult.multiple, pendingId, max: 4,
+                headline: `*작품 후보 ${tokenResult.multiple.length}건* — 해당하는 작품을 선택해줘. 목록에 없으면 직접 입력해줘.`,
+                actionIdPrefix: "retake_token_pick_",
+                manualActionId: "open_retake_info_modal", manualLabel: "✏️ 직접 입력 (작품명·PIVO ID)",
+              }),
             });
             return;
           }
