@@ -130,10 +130,12 @@ ${text}`.trim();
   }
 
   // ── 항목별 작품명 매칭 ────────────────────────────────────
-  async function resolveTitle(item) {
-    let matched = await matchWorkTitleFromSheet(item.work_title_ja, item.work_title_ko).catch(() => null);
+  // langPair 는 소환 그 순간에만 넘어온다. 후속 핸들러(사람이 직접 고른 뒤)는 null 로 둬서
+  // 언어로 막지 않는다 - 명시적으로 지목한 작품을 거르면 복구 수단만 줄어든다.
+  async function resolveTitle(item, langPair = null) {
+    let matched = await matchWorkTitleFromSheet({ titleJa: item.work_title_ja, titleKo: item.work_title_ko, langPair }).catch(() => null);
     if (!matched) {
-      const tokenResult = await matchWorkTitleByTokens(item.work_title_ko, item.work_title_ja).catch(() => null);
+      const tokenResult = await matchWorkTitleByTokens(item.work_title_ko, item.work_title_ja, null, langPair).catch(() => null);
       if (tokenResult?.single) matched = tokenResult.single;
       else if (tokenResult?.multiple) return { matched: null, candidates: tokenResult.multiple };
     }
@@ -405,7 +407,7 @@ ${text}`.trim();
     // pivoId 직접 입력(리테이크 전용) → 시트/토큰 매칭 우회하고 Totus API 선 조회
     const { matched, candidates } = pivoInput && item.type === "리테이크"
       ? { matched: await _resolvePivoIdForRetake(pivoInput), candidates: null }
-      : await resolveTitle(item);
+      : await resolveTitle(item, langPair);
 
     if (candidates) {
       // 복수 후보 → 선택 버튼
@@ -452,7 +454,7 @@ ${text}`.trim();
   });
 
   // ── 메인 핸들러 ──────────────────────────────────────────
-  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null, ownerUserId = null, threadTs = null) {
+  async function handleMultipleInquiry(client, dmChannel, originalText, sourceLink, originalChannelId, originalTs, requesterName, preItems = null, forceType = null, requesterUserId = null, ownerUserId = null, threadTs = null, langPair = null) {
     // 1. AI로 항목 분리 파싱 (외부에서 이미 파싱된 경우 재사용)
     let items;
     if (preItems && preItems.length) {

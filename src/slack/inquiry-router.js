@@ -166,10 +166,10 @@ module.exports = function createInquiryRouter(deps) {
         return !/^파일\s*\d+\s*#?\d*\s*$/.test(stripped);
       });
       if (headerEpisodes.length >= 2 || itemLines.length >= 2) {
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, retakeRequesterName, null, "리테이크", requesterUserId || null, userId, sourceMeta.threadTs, langPair);
       } else {
         // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
-        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink, ...sourceMeta }, originalText, retakeRequesterName, requesterUserId || null, userId);
+        await handleRetakeInquiry(client, dmChannel, retakeAnalysis, { url: sourceLink, ...sourceMeta }, originalText, retakeRequesterName, requesterUserId || null, userId, langPair);
       }
       return;
     }
@@ -307,10 +307,10 @@ module.exports = function createInquiryRouter(deps) {
           const ui = await client.users.info({ user: requesterUserId });
           reqName = ui.user?.profile?.display_name || ui.user?.real_name || reqName;
         } catch (_) {}
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, reqName, analysis.multi_items || null, null, requesterUserId || null, userId, sourceMeta.threadTs, langPair);
       } else {
         // UD-2: message는 requesterName="" 빈문자 그대로
-        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId, sourceMeta.threadTs);
+        await handleMultipleInquiry(client, dmChannel, originalText, sourceLink, channelId, ts, requesterName, analysis.multi_items || null, null, null, userId, sourceMeta.threadTs, langPair);
       }
       return;
     }
@@ -392,7 +392,7 @@ module.exports = function createInquiryRouter(deps) {
         .filter(Boolean);
       // 스레드 맥락이 있으면 전체 텍스트, 없으면 단일 메시지
       const relayText = hasThreadContext ? threadContextText : originalText;
-      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls, userId || null);
+      await handleWorkerRelay(client, dmChannel, analysis, { url: sourceLink, channelId, ts }, relayText, requesterUserId || null, relayImageUrls, userId || null, langPair);
       return;
     }
 
@@ -407,7 +407,7 @@ module.exports = function createInquiryRouter(deps) {
           retakeName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || requesterUserId || "";
         } catch (_) {}
         // sourceMeta 관통(fileOrder와 동일): 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 함
-        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta }, originalText, retakeName, requesterUserId || null, userId);
+        await handleRetakeInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta }, originalText, retakeName, requesterUserId || null, userId, langPair);
       }
       // UD-7: message 경로는 분기 부재 → ⑧ 기본처리로 자동 폴백 (여기서 return 안 함)
       if (source === "reaction") return;
@@ -417,14 +417,14 @@ module.exports = function createInquiryRouter(deps) {
     if (analysis.inquiry_type === "원본 파일 순서") {
       if (source === "reaction") {
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: "📁 파일 순서 문의 처리 중..." });
-        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, channelId, ts, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText);
+        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, channelId, ts, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText, langPair);
       } else {
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: "📁 파일 순서 문의 처리 중..." });
         // 결함 A 복원: base message ⑥은 { ...linkInfo, requesterUserId } (app-base:846) — linkInfo는 url/channelId/ts 3키
         // sourceLink = linkInfo.url (ctx 빌드 시 message 어댑터가 linkInfo.url을 sourceLink로 전달)
         // sourceMeta = { channelId: linkInfo.channelId, ts: linkInfo.ts }
         // → url을 명시 포함해야 fileOrderFlow.js(:301,332,360)의 linkInfo?.url이 sourceLink를 채울 수 있음
-        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText);
+        await handleFileOrderInquiry(client, dmChannel, analysis, { url: sourceLink, ...sourceMeta, requesterUserId: requesterUserId || null, ownerUserId: userId }, originalText, langPair);
       }
       return;
     }
@@ -507,7 +507,7 @@ module.exports = function createInquiryRouter(deps) {
       const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko, null, langPair).catch(() => null);
       if (candResult?.single) {
         matchedTitle = candResult.single;
-      } else if (candResult?.multiple || candResult?.tooMany) {
+      } else if (candResult?.multiple || candResult?.tooMany || candResult?.wrongLang) {
         const pendingId = `pending_${Date.now()}`;
         draftStore.set(pendingId, {
           isPending:      true,
@@ -529,7 +529,20 @@ module.exports = function createInquiryRouter(deps) {
           priority:       analysis.priority,
           sourceLang:     analysis.source_lang,
         });
-        if (candResult?.multiple) {
+        if (candResult?.wrongLang) {
+          // 이모지로 언어를 잘라서 못 찾았는데 반대 언어에는 있다. 그냥 "없음"으로 끝내면
+          // APM 이 왜 안 나오는지 모른다 - 어느 이모지로 다시 찍어야 하는지 짚어 준다.
+          const other = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일" : "중일";
+          const emoji = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일문의봇소환" : "문의봇소환";
+          await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
+            text: `*${analysis.title_ko || analysis.title_ja || "-"}* 은 ${other} 작품이야. :${emoji}: 로 다시 찍거나, 아래에서 골라줘.` });
+          await client.chat.postMessage({ channel: dmChannel, text: `${other} 작품이야. 맞으면 골라줘.`,
+            blocks: buildCandidateBlocks({
+              candidates: candResult.wrongLang, pendingId,
+              actionIdPrefix: "inquiry_cand_pick_", pivoActionId: "open_pivo_id_modal",
+            }),
+          });
+        } else if (candResult?.multiple) {
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `작품명 *${analysis.title_ko || analysis.title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",

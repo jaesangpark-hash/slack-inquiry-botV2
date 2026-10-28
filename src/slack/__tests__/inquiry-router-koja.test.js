@@ -129,15 +129,49 @@ describe("T1 납품 탭은 확정된 작품의 lang 으로 고른다", () => {
     assert.equal(langOf(deps), "zh-ja");
   });
 
-  it("이모지가 중일이어도 작품이 한일이면 한일 탭 — 이모지는 우선순위일 뿐", async () => {
+  it("탭은 이모지가 아니라 확정된 행이 고른다 — PIVO 로 푼 반대 언어 작품도 맞게 나온다", async () => {
+    // 하드 필터는 제목 매칭에만 걸리고 PIVO 조회는 거르지 않는다. 중일 이모지 상태에서
+    // 한일 작품이 확정되는 경로가 실제로 있으므로, 탭은 행의 lang 을 따라야 한다.
     const deps = makeDeps(KO_ROW);
     await createInquiryRouter(deps).routeInquiry(makeCtx({ langPair: "zh-ja" }));
-    assert.equal(langOf(deps), "ko-ja", "이모지를 잘못 찍어도 납품일은 맞아야 한다");
+    assert.equal(langOf(deps), "ko-ja");
   });
 
   it("lang 이 없는 행(수동 입력 등)은 zh-ja 로 떨어진다", async () => {
     const deps = makeDeps({ koreanProjectName: "이름만", pivoId: "301" });
     await createInquiryRouter(deps).routeInquiry(makeCtx({ langPair: "ko-ja" }));
     assert.equal(langOf(deps), "zh-ja");
+  });
+});
+
+describe("하드 필터 - 반대 언어에 있으면 짚어 준다", () => {
+  const KO_HIT = { koreanProjectName: "한일작품", pivoId: "201", lang: "ko-ja" };
+
+  it("wrongLang 이면 후보로 올리고 어느 이모지인지 알려 준다", async () => {
+    const posted = [];
+    const deps = makeDeps(null, { matchWorkTitleWithCandidates: spy({ wrongLang: [KO_HIT] }) });
+    const ctx = makeCtx({ langPair: "zh-ja" });
+    ctx.client.chat.postMessage = async (a) => { posted.push(a); return {}; };
+    const updates = [];
+    ctx.client.chat.update = async (a) => { updates.push(a); return {}; };
+
+    await createInquiryRouter(deps).routeInquiry(ctx);
+
+    assert.ok(updates.some(u => /한일 작품/.test(u.text)), "어느 언어 작품인지 말해야 한다");
+    assert.ok(updates.some(u => /한일문의봇소환/.test(u.text)), "다시 찍을 이모지를 알려야 한다");
+    const withButtons = posted.find(m => Array.isArray(m.blocks) && m.blocks.some(b => b.type === "actions"));
+    assert.ok(withButtons, "후보 버튼을 올려야 한다");
+    const ids = withButtons.blocks.find(b => b.type === "actions").elements.map(e => e.action_id);
+    assert.ok(ids.includes("open_pivo_id_modal"), "PIVO 입력 구멍은 항상 있어야 한다");
+  });
+
+  it("흐름 모듈에도 langPair 가 넘어간다 - 하드 필터라 안 넘기면 라우터와 갈린다", async () => {
+    const deps = makeDeps(ZH_ROW);
+    await createInquiryRouter(deps).routeInquiry(makeCtx({
+      langPair: "ko-ja",
+      analysis: { inquiry_type: "원본 파일 순서", title_ja: "テスト", title_ko: "테스트", episode: "1" },
+    }));
+    const args = deps.flows.handleFileOrderInquiry.lastArgs();
+    assert.equal(args[args.length - 1], "ko-ja", "마지막 인자로 langPair 가 가야 한다");
   });
 });

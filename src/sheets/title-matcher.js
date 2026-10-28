@@ -116,22 +116,37 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     return titleCache.rows;
   }
 
+  // ★소환 이모지가 언어를 정했으면 **그 언어만** 본다(2026-10-28 재상 님 지정).
+  //   종전엔 양쪽을 다 보고 동점일 때만 우선순위로 썼는데, 그러면 이모지를 잘못 찍었을 때
+  //   조용히 반대 언어 작품을 집는다. 못 찾고 PIVO 입력을 권하는 쪽이 낫다 — 복구가 한 번이다.
+  //   단 PIVO 조회(각 진입점 앞단)와 DM 링크 소환(langPair=null)은 거르지 않는다.
+  function poolFor(rows, langPair) {
+    return langPair ? rows.filter(row => row.lang === langPair) : rows;
+  }
+
   // 세 진입점이 공유하는 점수표. 배열 **순서가 곧 신뢰도 순서**다(한국어 → 원어 원제 → 일본어 표시명).
   // titleJa 는 AI 프롬프트상 "일본어 또는 중국어" 겸용 입력이라 원제 칸에도 같이 넣는다.
   function rankByTitle(rows, { titleJa, titleKo, langPair = null }) {
     const ko = normalizeTitleKo(titleKo || "");
     const ja = normalizeTitle(titleJa || "");
     const jaAsOriginal = normalizeTitleKo(titleJa || "");
-    return rankRows(rows, [
+    return rankRows(poolFor(rows, langPair), [
       { name: "한국어 프로젝트명", needles: [ko],               get: row => row.normalizedKoreanProjectName },
       { name: "원어 원제",         needles: [ko, jaAsOriginal], get: row => row.normalizedChineseOriginalTitle },
       { name: "일본어 표시명",     needles: [ja],               get: row => row.normalizedJapaneseDisplayTitle },
       // ★FIX 타이틀도 본다. 한일 마스터는 D JP_title 이 정식 제목이고 E 가제가 임시라,
       //   표시명만 보면 「神と共にレベルアップ」같은 정식 제목으로 못 찾는다(실측).
       { name: "일본어 FIX 타이틀", needles: [ja],               get: row => row.normalizedJapaneseFixedTitle },
-    // 소환 이모지가 가리킨 언어는 **동점일 때만** 먼저 둔다. 조회 범위를 자르지는 않는다 —
-    // 이모지를 잘못 찍어도 반대쪽 작품이 후보에는 남아야 한다.
-    ], { prefer: langPair ? row => row.lang === langPair : null });
+    ]);
+  }
+
+  // 지정한 언어에서 못 찾았을 때 **반대 언어**를 한 번 더 본다. 양쪽 조회는 공짜라(실측
+  // 마스터 둘 동시 로드 636ms) 「한일 쪽에 있다」고 짚어 줄 수 있다 — 이모지를 잘못 찍은 걸
+  // 사용자가 바로 알아챈다. 자동으로 채택하지는 않는다.
+  function rankOtherLangs(rows, query) {
+    if (!query.langPair) return [];
+    const others = rows.filter(row => row.lang && row.lang !== query.langPair);
+    return rankByTitle(others, { ...query, langPair: null });
   }
 
   /**
@@ -181,7 +196,10 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     //   ② find(첫 일치 조용히 채택) 대신 전체를 모아 가장 높은 점수를 고른다
     const ranked = rankByTitle(rows, { titleJa, titleKo, langPair });
     if (!ranked.length) {
-      console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo, "pivoId:", pivoId);
+      const other = rankOtherLangs(rows, { titleJa, titleKo, langPair });
+      console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo, "pivoId:", pivoId,
+        "| langPair:", langPair || "미지정",
+        other.length ? `| ★반대 언어(${other[0].row.lang})에 있다: ${other[0].row.koreanProjectName}` : "");
       return null;
     }
     const top = ranked[0];
@@ -197,13 +215,15 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
 
   // ── 토큰 매칭 전용 (1~4순위 실패 후 호출) ────────────────
   // 반환: { single: row } | { multiple: [row, ...] } | null
-  async function matchWorkTitleByTokens(titleKo, titleJa = null, pivoId = null) {
+  async function matchWorkTitleByTokens(titleKo, titleJa = null, pivoId = null, langPair = null) {
     if (!titleKo && !titleJa && !pivoId) return null;
-    const rows = await loadTitleRowsFromSheet();
+    const allRows = await loadTitleRowsFromSheet();
+    // PIVO 조회는 전체에서, 토큰 매칭은 지정 언어에서 (아래 rows 가 토큰용 풀)
+    const rows = poolFor(allRows, langPair);
 
     // 0순위: PIVO ID 완전일치 — 있으면 텍스트 토큰 매칭보다 우선 신뢰
     if (pivoId) {
-      const exactPivo = rows.find(row => row.pivoId === String(pivoId).trim());
+      const exactPivo = allRows.find(row => row.pivoId === String(pivoId).trim());
       if (exactPivo) {
         console.log("[match-token] PIVO ID 완전일치:", exactPivo.pivoId);
         return { single: exactPivo };
@@ -273,7 +293,16 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     // 조용히 하나를 집어 틀린 작품을 내놓는 쪽이 되묻는 것보다 나쁘다.
     const ranked = rankByTitle(rows, { titleJa, titleKo, langPair });
     const result = decide(ranked, { candidateMax: CANDIDATE_MAX });
-    if (!result) return null;
+    if (!result) {
+      // 반대 언어에 있으면 그 사실을 돌려준다. 이 모양을 모르는 호출부는 자연히
+      // 「못 찾음」 분기로 떨어지므로(single/multiple/tooMany 가 전부 undefined) 안전하다.
+      const other = rankOtherLangs(rows, { titleJa, titleKo, langPair });
+      if (other.length) {
+        console.log(`[match-candidates] ${langPair} 에는 없고 ${other[0].row.lang} 에 있다:`, other[0].row.koreanProjectName);
+        return { wrongLang: other.slice(0, CANDIDATE_MAX).map(hit => hit.row) };
+      }
+      return null;
+    }
     if (result.multiple) {
       console.log(`[match-candidates] 동점 ${result.multiple.length}건 — 되묻는다:`,
         result.multiple.map(row => row.koreanProjectName || row.chineseOriginalTitle).join(" / "));

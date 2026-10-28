@@ -220,7 +220,7 @@ JSON만 출력. 코드블록 금지.
   }
 
   // ── 메인 핸들러: 수정&리테이크 문의 처리 ────────────────
-  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null, ownerUserId = null) {
+  async function handleRetakeInquiry(client, dmChannel, analysis, linkInfo, originalText, requesterName = "", requesterUserId = null, ownerUserId = null, langPair = null) {
     let parsed;
     try { parsed = await parseRetakeInquiry(originalText); } catch (e) { parsed = {}; }
 
@@ -238,7 +238,7 @@ JSON만 출력. 코드블록 금지.
 
     // 후보 감지 매칭 (부분일치 복수 체크 포함, pivoId 있으면 최우선 확정)
     if (matchWorkTitleWithCandidates && (titleJa || titleKo || pivoIdHint)) {
-      const candResult = await matchWorkTitleWithCandidates(titleJa, titleKo, pivoIdHint).catch(() => null);
+      const candResult = await matchWorkTitleWithCandidates(titleJa, titleKo, pivoIdHint, langPair).catch(() => null);
       if (candResult?.single) {
         matchedTitle = candResult.single;
       } else if (candResult?.multiple) {
@@ -265,7 +265,7 @@ JSON만 출력. 코드블록 금지.
       } else if (candResult?.tooMany) {
         // 후보 너무 많음 → 토큰 매칭 시도
         if (matchWorkTitleByTokens) {
-          const tokenResult = await matchWorkTitleByTokens(titleKo, titleJa, pivoIdHint).catch(() => null);
+          const tokenResult = await matchWorkTitleByTokens(titleKo, titleJa, pivoIdHint, langPair).catch(() => null);
           if (tokenResult?.single) {
             matchedTitle = tokenResult.single;
           } else if (tokenResult?.multiple) {
@@ -300,7 +300,7 @@ JSON만 출력. 코드블록 금지.
     if (!matchedTitle && matchWorkTitleWithCandidates &&
         (analysis.title_ja || analysis.title_ko) &&
         (analysis.title_ja !== titleJa || analysis.title_ko !== titleKo)) {
-      const fallbackResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const fallbackResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko, null, langPair).catch(() => null);
       if (fallbackResult?.single) {
         matchedTitle = fallbackResult.single;
         console.log(`[retake] analysis 원본 타이틀 폴백 매칭 성공: ${matchedTitle.koreanProjectName}`);
