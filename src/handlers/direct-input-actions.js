@@ -519,6 +519,61 @@ module.exports = function registerDirectInputActions(app, deps) {
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
   });
 
+  // ── PIVO ID 직접 입력 ────────────────────────────────────
+  // 제목 매칭이 1순위지만(완전일치 → 부분일치) 끝내 못 고르는 경우가 남는다. 그때 사람이
+  // ID 를 바로 때려넣을 구멍을 항상 열어 둔다 — manual_title_modal 과 같은 모양이고
+  // 조회 키만 제목 대신 PIVO ID 다.
+  app.action("open_pivo_id_modal", async ({ ack, body, client }) => {
+    await ack();
+    const pendingId = body.actions?.[0]?.value;
+    const pending = draftStore.get(pendingId);
+    if (!pending) return;
+    await client.views.open({ trigger_id: body.trigger_id, view: {
+      type: "modal", callback_id: "pivo_id_modal", private_metadata: JSON.stringify({ pendingId }),
+      title: { type: "plain_text", text: "PIVO ID 직접 입력" }, submit: { type: "plain_text", text: "이 ID 로 초안 생성" }, close: { type: "plain_text", text: "취소" },
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `*AI 추출 작품명:* \`${pending.titleJa || "없음"}\`` }},
+        { type: "input", block_id: "pivo_id", label: { type: "plain_text", text: "PIVO ID (숫자)" },
+          element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: "예: 82357" } }},
+      ],
+    }});
+  });
+
+  app.view("pivo_id_modal", async ({ ack, body, view, client }) => {
+    const { pendingId } = JSON.parse(view.private_metadata || "{}");
+    const pending = draftStore.get(pendingId);
+    const raw = view.state.values?.pivo_id?.value?.value?.trim() || "";
+    // 숫자가 아니면 모달 안에서 되돌린다 — 닫고 나서 "못 찾았어"라고 하면 다시 열어야 한다.
+    if (!/^\d+$/.test(raw)) {
+      await ack({ response_action: "errors", errors: { pivo_id: "숫자만 입력해줘. (예: 82357)" } });
+      return;
+    }
+    const matched = await matchWorkTitleFromSheet({ pivoId: raw }).catch(() => null);
+    if (!matched) {
+      await ack({ response_action: "errors", errors: { pivo_id: `PIVO ID ${raw} 에 해당하는 작품을 마스터에서 못 찾았어.` } });
+      return;
+    }
+    await ack();
+    if (!pending) return;
+    const draftId = generateDraftId();
+    const draft = {
+      draftId, ownerUserId: pending.ownerUserId, userId: pending.userId,
+      dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs,
+      sourceLink: pending.sourceLink, originalText: pending.originalText,
+      originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null,
+      workName: matched.koreanProjectName || matched.japaneseDisplayTitle || "",
+      workNameKo: matched.koreanProjectName || "",
+      pivoId: matched.pivoId || raw,
+      inquiryType: pending.inquiryType || "기타", inquiryContent: pending.inquiryContent || "",
+      summary: pending.summary || "", actionRequired: pending.actionRequired || "",
+      sourceLang: pending.sourceLang || "ja",
+    };
+    draftStore.set(draftId, draft);
+    draftStore.delete(pendingId);
+    console.log(`[pivo-modal] PIVO ${raw} → ${matched.lang || "?"} ${draft.workName}`);
+    await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
+  });
+
   // ── 문의봇 후보 작품 선택 버튼 ───────────────────────────
   app.action(/^inquiry_cand_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
