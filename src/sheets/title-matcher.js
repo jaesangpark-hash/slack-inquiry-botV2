@@ -2,6 +2,7 @@
 "use strict";
 
 const { normalizeTitle, normalizeTitleKo, stripKariSuffix } = require("./normalize");
+const { rankRows, decide, compareHits } = require("./title-score");
 
 // 반환 행은 시트의 실제 언어·업무 의미를 필드명으로 드러낸다.
 // { chineseOriginalTitle, koreanProjectName, japaneseDisplayTitle,
@@ -47,6 +48,7 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
         koreanProjectName,
         japaneseDisplayTitle,
         japaneseFixedTitle,
+        normalizedKoreanProjectName: normalizeTitleKo(koreanProjectName),
         normalizedChineseOriginalTitle: normalizeTitleKo(chineseOriginalTitle),
         normalizedJapaneseDisplayTitle: normalizeTitle(japaneseDisplayTitle),
         pivoId,
@@ -71,6 +73,19 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
       console.warn("[title-matcher] 시트 재로드 실패 — 기존 캐시 유지:", titleCache.rows.length, "건");
     }
     return titleCache.rows;
+  }
+
+  // 세 진입점이 공유하는 점수표. 배열 **순서가 곧 신뢰도 순서**다(한국어 → 원어 원제 → 일본어 표시명).
+  // titleJa 는 AI 프롬프트상 "일본어 또는 중국어" 겸용 입력이라 원제 칸에도 같이 넣는다.
+  function rankByTitle(rows, { titleJa, titleKo }) {
+    const ko = normalizeTitleKo(titleKo || "");
+    const ja = normalizeTitle(titleJa || "");
+    const jaAsOriginal = normalizeTitleKo(titleJa || "");
+    return rankRows(rows, [
+      { name: "한국어 프로젝트명", needles: [ko],               get: row => row.normalizedKoreanProjectName },
+      { name: "원어 원제",         needles: [ko, jaAsOriginal], get: row => row.normalizedChineseOriginalTitle },
+      { name: "일본어 표시명",     needles: [ja],               get: row => row.normalizedJapaneseDisplayTitle },
+    ]);
   }
 
   /**
@@ -112,57 +127,24 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
       }
     }
 
-    // 1순위: 한국어 프로젝트명 완전 일치
-    if (titleKo) {
-      const needle = normalizeTitleKo(titleKo);
-      const exact  = rows.find(row => row.koreanProjectName && normalizeTitleKo(row.koreanProjectName) === needle);
-      if (exact) { console.log("[match] 한국어 프로젝트명 완전일치:", exact.koreanProjectName); return exact; }
+    // 종전 1~6순위(필드 × 완전/부분)를 점수표 한 번으로 대체한다. 순위가 바뀐 게 아니라
+    // 같은 순서를 등급·필드·길이비로 다시 쓴 것 — 달라지는 건 두 가지다.
+    //   ① 길이비 가드로 「무쌍」이 「뇌법무쌍」을 집어삼키던 부분일치가 떨어진다
+    //   ② find(첫 일치 조용히 채택) 대신 전체를 모아 가장 높은 점수를 고른다
+    const ranked = rankByTitle(rows, { titleJa, titleKo });
+    if (!ranked.length) {
+      console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo, "pivoId:", pivoId);
+      return null;
     }
-    // 2순위: 한국어 프로젝트명 부분 일치
-    if (titleKo) {
-      const needle = normalizeTitleKo(titleKo);
-      const partial = rows.find(row => row.koreanProjectName && (
-        normalizeTitleKo(row.koreanProjectName).includes(needle) ||
-        needle.includes(normalizeTitleKo(row.koreanProjectName))
-      ));
-      if (partial) { console.log("[match] 한국어 프로젝트명 부분일치:", partial.koreanProjectName); return partial; }
+    const top = ranked[0];
+    const tied = ranked.filter(hit => compareHits(hit, top) === 0);
+    if (tied.length > 1) {
+      // 여기서는 하나를 돌려줘야 하는 계약이라 1등을 채택하되, 모호했다는 사실은 남긴다.
+      // 되묻기가 필요한 경로는 matchWorkTitleWithCandidates 를 쓴다.
+      console.log(`[match] 동점 ${tied.length}건 — 1등 채택:`, tied.map(h => h.row.koreanProjectName || h.row.chineseOriginalTitle).join(" / "));
     }
-    // 3순위: 중국어 원제 완전 일치 — titleJa 필드는 "일본어 또는 중국어" 겸용 입력(AI 프롬프트 기준)이라
-    // 원제를 그대로 붙여넣는 입력(수동 모달 포함)이 한국어/일본어 어느 쪽과도 매칭되지 않던 문제 보완
-    for (const candidate of [titleKo, titleJa]) {
-      if (!candidate) continue;
-      const needle = normalizeTitleKo(candidate);
-      const exact  = rows.find(row => row.normalizedChineseOriginalTitle && row.normalizedChineseOriginalTitle === needle);
-      if (exact) { console.log("[match] 중국어 원제 완전일치:", exact.chineseOriginalTitle, "| 한국어 프로젝트명:", exact.koreanProjectName); return exact; }
-    }
-    // 4순위: 중국어 원제 부분 일치
-    for (const candidate of [titleKo, titleJa]) {
-      if (!candidate) continue;
-      const needle = normalizeTitleKo(candidate);
-      const partial = rows.find(row => row.normalizedChineseOriginalTitle && (
-        row.normalizedChineseOriginalTitle.includes(needle) ||
-        needle.includes(row.normalizedChineseOriginalTitle)
-      ));
-      if (partial) { console.log("[match] 중국어 원제 부분일치:", partial.chineseOriginalTitle, "| 한국어 프로젝트명:", partial.koreanProjectName); return partial; }
-    }
-    // 5순위: 일본어 표시명 완전 일치 (仮 제거 후)
-    if (titleJa) {
-      const needle = normalizeTitle(titleJa);
-      const exact  = rows.find(row => row.normalizedJapaneseDisplayTitle === needle);
-      if (exact) { console.log("[match] 일본어 표시명 완전일치:", exact.japaneseDisplayTitle, "| pivoId:", exact.pivoId, "| 한국어 프로젝트명:", exact.koreanProjectName); return exact; }
-    }
-    // 6순위: 일본어 표시명 부분 일치 (仮 제거 후)
-    if (titleJa) {
-      const needle = normalizeTitle(titleJa);
-      const partial = rows.find(row => row.normalizedJapaneseDisplayTitle && (
-        row.normalizedJapaneseDisplayTitle.includes(needle) ||
-        needle.includes(row.normalizedJapaneseDisplayTitle)
-      ));
-      if (partial) { console.log("[match] 일본어 표시명 부분일치:", partial.japaneseDisplayTitle); return partial; }
-    }
-
-    console.log("[match] 매칭 실패 — ja:", titleJa, "ko:", titleKo, "pivoId:", pivoId);
-    return null;
+    console.log(`[match] ${top.field} 일치(길이비 ${top.ratio.toFixed(2)}):`, top.row.koreanProjectName || top.row.chineseOriginalTitle, "| pivoId:", top.row.pivoId);
+    return top.row;
   }
 
   // ── 토큰 매칭 전용 (1~4순위 실패 후 호출) ────────────────
@@ -239,62 +221,19 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
       }
     }
 
-    // 1순위: 한국어 완전일치 → 단건 확정
-    if (titleKo) {
-      const needle = normalizeTitleKo(titleKo);
-      const exact  = rows.find(row => row.koreanProjectName && normalizeTitleKo(row.koreanProjectName) === needle);
-      if (exact) return { single: exact };
+    // 점수표로 전체를 모은 뒤 1등이 **유일할 때만** 자동 채택한다. 동점이면 고르게 한다 —
+    // 조용히 하나를 집어 틀린 작품을 내놓는 쪽이 되묻는 것보다 나쁘다.
+    const ranked = rankByTitle(rows, { titleJa, titleKo });
+    const result = decide(ranked, { candidateMax: CANDIDATE_MAX });
+    if (!result) return null;
+    if (result.multiple) {
+      console.log(`[match-candidates] 동점 ${result.multiple.length}건 — 되묻는다:`,
+        result.multiple.map(row => row.koreanProjectName || row.chineseOriginalTitle).join(" / "));
+    } else if (result.single) {
+      const top = ranked[0];
+      console.log(`[match-candidates] ${top.field} 일치(길이비 ${top.ratio.toFixed(2)}):`, top.row.koreanProjectName || top.row.chineseOriginalTitle);
     }
-    // 2순위: 한국어 부분일치 → 복수 체크
-    if (titleKo) {
-      const needle  = normalizeTitleKo(titleKo);
-      const matched = rows.filter(row => row.koreanProjectName && (
-        normalizeTitleKo(row.koreanProjectName).includes(needle) ||
-        needle.includes(normalizeTitleKo(row.koreanProjectName))
-      ));
-      if (matched.length === 1) return { single: matched[0] };
-      if (matched.length > 1 && matched.length <= CANDIDATE_MAX) return { multiple: matched };
-      if (matched.length > CANDIDATE_MAX) return { tooMany: true };
-    }
-    // 3순위: 중국어 원제 완전일치 → 단건 확정 — titleJa 필드는 일본어/중국어 겸용 입력이라 원제 그대로
-    // 붙여넣는 경우(한국어·일본어 어느 쪽과도 매칭 안 되던 케이스) 대비
-    for (const candidate of [titleKo, titleJa]) {
-      if (!candidate) continue;
-      const needle = normalizeTitleKo(candidate);
-      const exact  = rows.find(row => row.normalizedChineseOriginalTitle && row.normalizedChineseOriginalTitle === needle);
-      if (exact) return { single: exact };
-    }
-    // 3.5순위: 중국어 원제 부분일치 → 복수 체크
-    for (const candidate of [titleKo, titleJa]) {
-      if (!candidate) continue;
-      const needle  = normalizeTitleKo(candidate);
-      const matched = rows.filter(row => row.normalizedChineseOriginalTitle && (
-        row.normalizedChineseOriginalTitle.includes(needle) ||
-        needle.includes(row.normalizedChineseOriginalTitle)
-      ));
-      if (matched.length === 1) return { single: matched[0] };
-      if (matched.length > 1 && matched.length <= CANDIDATE_MAX) return { multiple: matched };
-      if (matched.length > CANDIDATE_MAX) return { tooMany: true };
-    }
-    // 4순위: 일본어 완전일치 → 단건 확정
-    if (titleJa) {
-      const needle = normalizeTitle(titleJa);
-      const exact  = rows.find(row => row.normalizedJapaneseDisplayTitle === needle);
-      if (exact) return { single: exact };
-    }
-    // 5순위: 일본어 부분일치 → 복수 체크
-    if (titleJa) {
-      const needle  = normalizeTitle(titleJa);
-      const matched = rows.filter(row => row.normalizedJapaneseDisplayTitle && (
-        row.normalizedJapaneseDisplayTitle.includes(needle) ||
-        needle.includes(row.normalizedJapaneseDisplayTitle)
-      ));
-      if (matched.length === 1) return { single: matched[0] };
-      if (matched.length > 1 && matched.length <= CANDIDATE_MAX) return { multiple: matched };
-      if (matched.length > CANDIDATE_MAX) return { tooMany: true };
-    }
-
-    return null;
+    return result;
   }
 
   return { matchWorkTitleFromSheet, matchWorkTitleByTokens, matchWorkTitleWithCandidates, loadTitleRowsFromSheet };
