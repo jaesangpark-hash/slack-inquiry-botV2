@@ -85,6 +85,10 @@ module.exports = function createInquiryRouter(deps) {
       requesterUserId,
       requesterName,
       userId,
+      // 소환 이모지가 가리킨 언어쌍. 메시지(DM 링크) 경로엔 신호가 없어 null 이다.
+      // ★조회 범위를 자르는 값이 아니라 **동점을 가르는 우선순위**다 — 이모지를 잘못 찍어도
+      //   반대쪽 작품이 후보에 남아야 한다.
+      langPair = null,
     } = ctx;
 
     const { channelId, ts } = sourceMeta;
@@ -177,7 +181,7 @@ module.exports = function createInquiryRouter(deps) {
         const msgDate = new Date(parseInt(ts.split(".")[0]) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
         parsed = await parseScheduleInquiry(originalText, msgDate);
 
-        const candResult = await matchWorkTitleWithCandidates(parsed.work_title_ja, parsed.work_title_ko).catch(() => null);
+        const candResult = await matchWorkTitleWithCandidates(parsed.work_title_ja, parsed.work_title_ko, null, langPair).catch(() => null);
         if (candResult?.single) {
           matchedTitle = candResult.single;
         } else if (candResult?.multiple) {
@@ -238,11 +242,11 @@ module.exports = function createInquiryRouter(deps) {
         // UD-6: reaction은 delivery null이어도 그대로 진행 / message는 !matchedTitle||!delivery 시 폴백
         if (source === "reaction") {
           delivery = parsed.episode
-            ? await fetchDeliveryDate(workNameKo, parsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
+            ? await fetchDeliveryDate(workNameKo, parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, matchedTitle?.koreanProjectName || null).catch(() => null)
             : null;
         } else {
           delivery = workNameKo && parsed.episode
-            ? await fetchDeliveryDate(workNameKo, parsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(e => { console.error("[DEBUG] fetchDelivery 오류:", e.message); return null; })
+            ? await fetchDeliveryDate(workNameKo, parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, matchedTitle?.koreanProjectName || null).catch(e => { console.error("[DEBUG] fetchDelivery 오류:", e.message); return null; })
             : null;
           console.log("[DEBUG] delivery:", JSON.stringify(delivery));
         }
@@ -313,7 +317,7 @@ module.exports = function createInquiryRouter(deps) {
 
     // ── ③ 기타 ───────────────────────────────────────────────────
     if (analysis.inquiry_type === "기타") {
-      const matchedForSummary = await matchWorkTitleFromSheet(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const matchedForSummary = await matchWorkTitleFromSheet({ titleJa: analysis.title_ja, titleKo: analysis.title_ko, langPair }).catch(() => null);
       const displayName = matchedForSummary?.koreanProjectName || analysis.title_ja || analysis.title_ko || "";
       const titleInfo   = { workName: displayName, episode: analysis.episode || "" };
       const btnValue    = JSON.stringify({ sourceLink, workName: displayName, episode: titleInfo.episode });
@@ -340,7 +344,7 @@ module.exports = function createInquiryRouter(deps) {
     // route_pick_relay 핸들러가 handleWorkerRelay를 재실행. PM은 route_pick_inquiry가 분석 결과로 draft 생성.
     if (analysis.route_ambiguous &&
         ["번역문 누락", "번역문 확인", "번역문 수정", "작업 관련 문의"].includes(analysis.inquiry_type)) {
-      const matchedForSummary = await matchWorkTitleFromSheet(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const matchedForSummary = await matchWorkTitleFromSheet({ titleJa: analysis.title_ja, titleKo: analysis.title_ko, langPair }).catch(() => null);
       const displayName = matchedForSummary?.koreanProjectName || analysis.title_ja || analysis.title_ko || "";
       const relayImageUrls = (files || [])
         .filter(f => f.mimetype?.startsWith("image/"))
@@ -429,7 +433,7 @@ module.exports = function createInquiryRouter(deps) {
     if (analysis.inquiry_type === "원본 파일 확인") {
       let fileParsed;
       try { fileParsed = await parseFileInquiry(originalText); } catch (e) { fileParsed = {}; }
-      const matchedTitle = await matchWorkTitleFromSheet(fileParsed.work_title_ja || analysis.title_ja, fileParsed.work_title_ko || analysis.title_ko).catch(() => null);
+      const matchedTitle = await matchWorkTitleFromSheet({ titleJa: fileParsed.work_title_ja || analysis.title_ja, titleKo: fileParsed.work_title_ko || analysis.title_ko, langPair }).catch(() => null);
 
       // UD-8: reaction만 수동 입력 모달, message는 "-" draft 진행
       if (source === "reaction" && !matchedTitle) {
@@ -465,7 +469,7 @@ module.exports = function createInquiryRouter(deps) {
       // 납품일 + APM 조회 (모든 재수급 경로 일관 — 회차 형식 무관, fetchDeliveryDate 내부 parseEpisodeNumbers가 정규화)
       const fiDeliveryQueryName = matchedTitle?.koreanProjectName || fileParsed.work_title_ko || fileParsed.work_title_ja || null;
       const fiDeliveryRes = (fetchDeliveryDate && fiDeliveryQueryName && fileParsed.episode)
-        ? await fetchDeliveryDate(fiDeliveryQueryName, fileParsed.episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
+        ? await fetchDeliveryDate(fiDeliveryQueryName, fileParsed.episode, matchedTitle?.lang || "zh-ja", matchedTitle?.koreanProjectName || null).catch(() => null)
         : null;
       const fiDeliveryDate = fiDeliveryRes
         ? (fiDeliveryRes.allSame ? fiDeliveryRes.deliveryDate : fiDeliveryRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", "))
@@ -482,6 +486,7 @@ module.exports = function createInquiryRouter(deps) {
         workName:    matchedTitle?.koreanProjectName || fileParsed.work_title_ko || analysis.title_ko || matchedTitle?.japaneseDisplayTitle || fileParsed.work_title_ja || analysis.title_ja || "-",
         japaneseFixedTitle: matchedTitle?.japaneseFixedTitle || "-",
         pivoId:      matchedTitle?.pivoId  || null,
+        lang:        matchedTitle?.lang    || null,
         episode:     fileParsed.episode    || "-",
         fileNumbers: fileParsed.file_numbers || [],
         reason:      buildFileInquiryReason(fileParsed, matchedTitle),
@@ -499,7 +504,7 @@ module.exports = function createInquiryRouter(deps) {
     // ── ⑧ 기본 처리 (매칭 → draft) ──────────────────────────────
     let matchedTitle = null;
     if (analysis.title_ja || analysis.title_ko) {
-      const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko).catch(() => null);
+      const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko, null, langPair).catch(() => null);
       if (candResult?.single) {
         matchedTitle = candResult.single;
       } else if (candResult?.multiple || candResult?.tooMany) {
@@ -593,9 +598,10 @@ module.exports = function createInquiryRouter(deps) {
       workName:      matchedTitle.koreanProjectName || analysis.title_ko || matchedTitle.japaneseDisplayTitle || analysis.title_ja || "",
       workNameKo:    matchedTitle.koreanProjectName || analysis.title_ko || "",
       pivoId:        matchedTitle.pivoId || null,
+      lang:          matchedTitle.lang   || null,
       episode:       analysis.episode || null,
       deliveryDate:  analysis.episode && matchedTitle.koreanProjectName
-        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, "zh-ja", matchedTitle.koreanProjectName)
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, matchedTitle.lang || "zh-ja", matchedTitle.koreanProjectName)
             .catch(() => null)
             .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
         : "-",

@@ -1,7 +1,7 @@
 // 단일 책임: 납품 시트 조회 및 회차 파싱 (parseEpisodeNumbers + fetchDeliveryDate)
 "use strict";
 
-const { normalizeTitleKo } = require("./normalize");
+const { normalizeTitleKo, stripClientPrefix } = require("./normalize");
 
 // 매칭 실패 진단 로그의 출력 한도 (진단 전용 — 매칭 판정에는 관여하지 않는다)
 const FAIL_SHEET_SAMPLE_LIMIT   = 3;   // "시트 앞 샘플" 표시 행 수
@@ -46,8 +46,13 @@ module.exports = function createDeliveryDateService({ google, getGoogleAuth, del
       : null;
     console.log(`[fetchDelivery] primaryWorkTitle: "${primaryWorkTitle}" | needle: "${needle}" | koreanProjectName: "${koreanProjectName}" | episode: ${episode} | lang: ${lang} | rows: ${rows.length}`);
     // 제목 매칭과 화수 매칭을 분리한다 — 실패 시 원인(제목 불일치 / 화수 미존재) 판별에 재사용.
+    // 한일 납품 탭 B열은 "[카카오픽코마] 신과 함께 레벨업" 꼴인데 문의도 마스터 원제도 접두가 없다.
+    // 괄호만 떼는 normalizeTitleKo 로는 "카카오픽코마신과함께레벨업" 이 돼서 짧은 쪽이 긴 쪽에
+    // 포함되는 부분일치로만 걸린다 - 접두를 먼저 떼야 완전일치가 된다.
+    const isKoJa = lang === "ko-ja";
+    const rowTitle = (row) => normalizeTitleKo(isKoJa ? stripClientPrefix(row[1] || "") : (row[1] || ""));
     const titleMatchesRow = (row) => {
-      const bVal = normalizeTitleKo(row[1] || "");
+      const bVal = rowTitle(row);
       if (!bVal) return false;
       const matchMain = bVal === needle || bVal.includes(needle) || needle.includes(bVal);
       const matchAlt = alternateKoreanNeedle && (
@@ -76,10 +81,10 @@ module.exports = function createDeliveryDateService({ google, getGoogleAuth, del
           console.log(`[fetchDelivery] 보유 화수(${eps.length}건):`, eps.length ? `[${eps.slice(0, FAIL_EPISODE_SAMPLE_LIMIT).join(", ")}${more}]` : "숫자 화수 0건");
         } else {
           // 제목 자체가 시트에서 안 잡힌다 — needle prefix 로 근접 후보를 뽑아 표기 차이를 드러낸다.
-          const sample = rows.filter(r => r[1]).slice(0, FAIL_SHEET_SAMPLE_LIMIT).map(r => normalizeTitleKo(r[1]));
+          const sample = rows.filter(r => r[1]).slice(0, FAIL_SHEET_SAMPLE_LIMIT).map(rowTitle);
           const probe  = needle.slice(0, FAIL_FUZZY_PROBE_LEN);
           const fuzzy  = probe
-            ? rows.filter(r => normalizeTitleKo(r[1] || "").includes(probe))
+            ? rows.filter(r => rowTitle(r).includes(probe))
                   .slice(0, FAIL_FUZZY_SAMPLE_LIMIT)
                   .map(r => `"${r[1]}"(E열:${r[4]})`)
             : [];

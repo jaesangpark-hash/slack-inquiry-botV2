@@ -255,7 +255,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       koreanProjectName: matchedTitle?.koreanProjectName,
     }), "| episode:", episode);
     const deliveryRes   = deliveryQueryName && episode && episode !== "-"
-      ? await fetchDeliveryDate(deliveryQueryName, episode, "zh-ja", matchedTitle?.koreanProjectName || null).catch((e) => { console.error("[resupply-manual] fetchDelivery 오류:", e.message); return null; })
+      ? await fetchDeliveryDate(deliveryQueryName, episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, matchedTitle?.koreanProjectName || null).catch((e) => { console.error("[resupply-manual] fetchDelivery 오류:", e.message); return null; })
       : null;
     console.log("[resupply-manual] deliveryRes:", JSON.stringify(deliveryRes));
     const deliveryDateRes = deliveryRes
@@ -277,6 +277,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     apmName: deliveryRes?.apm || null,
     apmUserId: resolveApmUserId(deliveryRes?.apm || null),
     pivoId: matchedTitle?.pivoId || null,
+    lang: matchedTitle?.lang || null,
   };
 
     draftStore.set(draftId, draft);
@@ -323,7 +324,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const displayWorkName = koreanProjectName || workName;
     const originalWorkTitle = workName || null;
     const delivery     = episode
-      ? await fetchDeliveryDate(displayWorkName, episode, "zh-ja", koreanProjectName).catch(() => null)
+      ? await fetchDeliveryDate(displayWorkName, episode, matchedTitle?.lang || "zh-ja", koreanProjectName).catch(() => null)
       : null;
 
     if (delivery) {
@@ -417,13 +418,14 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:      displayWorkName,
       workNameKo:    koreanProjectName,
       pivoId:        matchedTitle?.pivoId || null,
+      lang:          matchedTitle?.lang   || null,
       workNameJaFixed:   matchedTitle?.japaneseFixedTitle || "",
       workNameJaDisplay: matchedTitle?.japaneseDisplayTitle || "",
       workNameZh:        matchedTitle?.chineseOriginalTitle || "",
       episode:       episode || null,
       inquiryType, inquiryContent, summary, actionRequired, sourceLang: "unknown",
       deliveryDate:  episode && matchedTitle?.koreanProjectName
-        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, episode, "zh-ja", matchedTitle.koreanProjectName).catch(() => null).then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, episode, matchedTitle.lang || "zh-ja", matchedTitle.koreanProjectName).catch(() => null).then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
         : "-",
     };
     draftStore.set(draftId, draft);
@@ -513,7 +515,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     const workNameKo = vals.manual_work_name_ko?.value?.value?.trim() || "";
     const matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
     const draftId = generateDraftId();
-    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
+    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
@@ -564,6 +566,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName: matched.koreanProjectName || matched.japaneseDisplayTitle || "",
       workNameKo: matched.koreanProjectName || "",
       pivoId: matched.pivoId || raw,
+      lang: matched.lang || null,
       inquiryType: pending.inquiryType || "기타", inquiryContent: pending.inquiryContent || "",
       summary: pending.summary || "", actionRequired: pending.actionRequired || "",
       sourceLang: pending.sourceLang || "ja",
@@ -663,12 +666,13 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:      matchedTitle?.koreanProjectName || a.title_ko || matchedTitle?.japaneseDisplayTitle || a.title_ja || "",
       workNameKo:    matchedTitle?.koreanProjectName || a.title_ko || "",
       pivoId:        matchedTitle?.pivoId || null,
+      lang:          matchedTitle?.lang   || null,
       workNameJaFixed:   matchedTitle?.japaneseFixedTitle || "",
       workNameJaDisplay: matchedTitle?.japaneseDisplayTitle || a.title_ja || "",
       workNameZh:        matchedTitle?.chineseOriginalTitle || "",
       episode:       a.episode || null,
       deliveryDate:  a.episode && matchedTitle?.koreanProjectName
-        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, a.episode, "zh-ja", matchedTitle.koreanProjectName)
+        ? await fetchDeliveryDate(matchedTitle.koreanProjectName, a.episode, matchedTitle.lang || "zh-ja", matchedTitle.koreanProjectName)
             .catch(() => null)
             .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
         : "-",
@@ -788,7 +792,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       episode: updatedEpisode,
       deliveryDate: deliveryChanged
         ? (updatedEpisode && deliveryQueryName
-            ? await fetchDeliveryDate(deliveryQueryName, updatedEpisode, "zh-ja", updatedWorkNameKo || null)
+            ? await fetchDeliveryDate(deliveryQueryName, updatedEpisode, draft.lang || "zh-ja", updatedWorkNameKo || null)
                 .catch(() => null)
                 .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
             : "-")

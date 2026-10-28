@@ -180,7 +180,7 @@ ${text}`.trim();
     switch (item.type) {
       case "스케줄": {
         const delivery = primaryWorkTitle && episode
-          ? await fetchDeliveryDate(primaryWorkTitle, episode, "zh-ja", koreanProjectName).catch(() => null)
+          ? await fetchDeliveryDate(primaryWorkTitle, episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, koreanProjectName).catch(() => null)
           : null;
         const parsed = {
           work_title_ko: koreanProjectName,
@@ -200,7 +200,7 @@ ${text}`.trim();
 
       case "재수급": {
         const delivery = primaryWorkTitle && episode
-          ? await fetchDeliveryDate(primaryWorkTitle, episode, "zh-ja", koreanProjectName).catch(() => null)
+          ? await fetchDeliveryDate(primaryWorkTitle, episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, koreanProjectName).catch(() => null)
           : null;
         const draftId = generateDraftId();
         draftStore.set(draftId, {
@@ -210,6 +210,7 @@ ${text}`.trim();
           workName: displayWorkName,
           workNameKo: koreanProjectName,
           pivoId: matchedTitle?.pivoId || null,
+          lang: matchedTitle?.lang || null,
           episode: episode || "",
           fileNumbers: item.file_numbers || [],
           reason: item.reason || "",

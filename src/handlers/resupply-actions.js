@@ -224,7 +224,7 @@ module.exports = function registerResupplyActions(app, deps) {
       const mt    = await matchWorkTitleFromSheet(updatedDraft.workName, updatedDraft.workName).catch(() => null);
       const qName = mt?.koreanProjectName || updatedDraft.workName;
       const dRes  = qName
-        ? await fetchDeliveryDate(qName, updatedDraft.episode, "zh-ja", mt?.koreanProjectName || null).catch(() => null)
+        ? await fetchDeliveryDate(qName, updatedDraft.episode, mt?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, mt?.koreanProjectName || null).catch(() => null)
         : null;
       if (dRes) {
         updatedDraft.deliveryDate = dRes.allSame ? dRes.deliveryDate : dRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ");
