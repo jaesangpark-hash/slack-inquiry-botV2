@@ -407,9 +407,10 @@ ${text}`.trim();
     draftStore.set(multiPendingId, multiPending);
 
     // pivoId 직접 입력(리테이크 전용) → 시트/토큰 매칭 우회하고 Totus API 선 조회
+    // ★langPair 는 소환 때 pending 에 넣어 둔 값을 꺼내 쓴다. 이 핸들러 스코프엔 없다.
     const { matched, candidates } = pivoInput && item.type === "리테이크"
       ? { matched: await _resolvePivoIdForRetake(pivoInput), candidates: null }
-      : await resolveTitle(item, langPair);
+      : await resolveTitle(item, multiPending.langPair || null);
 
     if (candidates) {
       // 복수 후보 → 선택 버튼
@@ -421,7 +422,7 @@ ${text}`.trim();
         blocks: buildCandidateBlocks({
           candidates, actionIdPrefix: "multi_token_pick_",
           headline: `*[항목 ${itemIndex + 1}] ${typeLabel(item.type)}* — 작품 후보 ${candidates.length}건`,
-          valueFor: (r) => ({ multiPendingId, itemIndex, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
+          valueFor: (r) => ({ multiPendingId, itemIndex, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName, lang: r.lang || null }),
         }),
       });
       return;
@@ -438,12 +439,14 @@ ${text}`.trim();
   app.action(/^multi_token_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
     const selection = JSON.parse(body.actions[0].value || "{}");
-    const { multiPendingId, itemIndex, pivoId } = selection;
+    const { multiPendingId, itemIndex, pivoId, lang: pickedLang } = selection;
     const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const multiPending = draftStore.get(multiPendingId);
     if (!multiPending) return;
 
-    const matchedTitle = { koreanProjectName, pivoId };
+    // ★lang 을 빠뜨리면 processItem 안의 fetchDeliveryDate 가 zh-ja 로 떨어져
+    //   한일 작품을 중일 납품 탭에서 찾는다. 버튼이 실어 온 값을 그대로 넘긴다.
+    const matchedTitle = { koreanProjectName, pivoId, lang: pickedLang || multiPending.langPair || null };
     const item         = multiPending.items[itemIndex];
 
     await processItem(
@@ -499,7 +502,9 @@ ${text}`.trim();
     const multiPendingId = `multi_${Date.now()}`;
     const resolvedItems = await Promise.all(items.map(async (item, i) => {
       let missing = getMissingFields(item);
-      const { matched, candidates } = await resolveTitle(item);
+      // ★소환 이모지로 정해진 언어를 여기서 넘겨야 하드 필터가 걸린다.
+      //   빠뜨리면 복수 문의만 양쪽 마스터를 다 뒤져 반대 언어 작품을 집어 올 수 있다.
+      const { matched, candidates } = await resolveTitle(item, langPair);
       if (!matched && !candidates && !missing.includes("work_title")) {
         missing = ["work_title", ...missing];
       }
@@ -509,6 +514,9 @@ ${text}`.trim();
     draftStore.set(multiPendingId, {
       ownerUserId,
       items,
+      // ★langPair 를 저장해 둔다 — 「누락 정보 채우기」 제출은 소환 한참 뒤에 오는 별개
+      //   이벤트라 이모지가 남아 있지 않다. 여기 없으면 그 경로가 언어를 되찾을 수 없다.
+      langPair: langPair || null,
       originalChannelId, originalTs, threadTs, sourceLink, requesterName, requesterUserId,
       missingByIndex: Object.fromEntries(resolvedItems.map(({ missing }, i) => [i, missing])),
     });
@@ -628,7 +636,7 @@ ${text}`.trim();
             blocks: buildCandidateBlocks({
               candidates, actionIdPrefix: "multi_token_pick_",
               headline: `${header}\n작품 후보가 여러 개야. 선택해줘.`,
-              valueFor: (r) => ({ multiPendingId, itemIndex: i, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName }),
+              valueFor: (r) => ({ multiPendingId, itemIndex: i, pivoId: r.pivoId, koreanProjectName: r.koreanProjectName, lang: r.lang || null }),
             }),
           });
           return;

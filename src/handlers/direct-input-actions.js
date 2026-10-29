@@ -9,6 +9,7 @@ const {
   finalizeCompletion,
 } = require("../slack/completion-coordinator");
 const { requirePositiveSheetRowIndex } = require("../sheets/sheet-row-index");
+const { withinAckBudget } = require("../utils/ack-budget");
 const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("../slack/title-selection-payload");
@@ -521,15 +522,33 @@ module.exports = function registerDirectInputActions(app, deps) {
       return;
     }
     // PIVO 를 먼저 보되 틀렸다고 작품명을 버리지 않는다.
-    let matchedManual = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
-    if (!matchedManual && (workNameJa || workNameKo)) {
-      matchedManual = await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null);
+    const lookupManual = (async () => {
+      const byPivo = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
+      if (byPivo) return byPivo;
+      return (workNameJa || workNameKo)
+        ? await matchWorkTitleFromSheet(workNameJa, workNameKo).catch(() => null)
+        : null;
+    })();
+    // ★3초 안에 ack 하지 못하면 Slack 이 제 오류창을 띄우고 입력도 날아간다(ack-budget 참고).
+    const { timedOut, value } = await withinAckBudget(lookupManual);
+    let matchedManual = value;
+    const pivoOnlyMiss = () => pivoInput && !workNameJa && !workNameKo;
+
+    if (!timedOut) {
+      if (!matchedManual && pivoOnlyMiss()) {
+        await ack({ response_action: "errors", errors: { manual_pivoid_block: `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어.` } });
+        return;
+      }
+      await ack();
+    } else {
+      await ack();
+      matchedManual = await lookupManual;   // 창은 닫았으니 조회는 뒤에서 마저 기다린다
+      if (!matchedManual && pivoOnlyMiss()) {
+        await client.chat.postMessage({ channel: body.user.id,
+          text: `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어.` })
+          .catch(e => console.error("[manual_title_modal] PIVO 미발견 DM 실패:", e?.message ?? e));
+      }
     }
-    if (!matchedManual && pivoInput && !workNameJa && !workNameKo) {
-      await ack({ response_action: "errors", errors: { manual_pivoid_block: `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어.` } });
-      return;
-    }
-    await ack();
     if (!pending) return;
     const draftId = generateDraftId();
     const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
@@ -542,7 +561,7 @@ module.exports = function registerDirectInputActions(app, deps) {
   app.action(/^inquiry_cand_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
     const selection = JSON.parse(body.actions[0].value || "{}");
-    const { pendingId, pivoId } = selection;
+    const { pendingId, pivoId, lang: pickedLang } = selection;
     const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const pending = draftStore.get(pendingId);
     if (!pending) return;
@@ -564,6 +583,9 @@ module.exports = function registerDirectInputActions(app, deps) {
       workName:           koreanProjectName,
       workNameKo:         koreanProjectName,
       pivoId:             pivoId || null,
+      // ★draft.lang 은 뒤의 회차 수정 경로가 납품 탭을 고르는 데 쓴다. 버튼이 실어 온 값이
+      //   1순위이고, 없으면 다시 조회한 행의 lang 으로 메운다. 둘 다 없을 때만 zh-ja 폴백.
+      lang:               pickedLang || selected?.lang || null,
       workNameJaFixed:   selected?.japaneseFixedTitle   || "",
       workNameJaDisplay: selected?.japaneseDisplayTitle || "",
       workNameZh:        selected?.chineseOriginalTitle || "",

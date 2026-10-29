@@ -2,6 +2,9 @@
 "use strict";
 
 const { normalizeTitleKo, stripClientPrefix } = require("./normalize");
+// 마스터 매칭과 같은 채점기를 쓴다 — 두 곳이 어긋나면 작품은 맞게 고르고 납품일만
+// 다른 작품 걸 가져온다.
+const { scoreTitle, TIER } = require("./title-score");
 
 // 매칭 실패 진단 로그의 출력 한도 (진단 전용 — 매칭 판정에는 관여하지 않는다)
 const FAIL_SHEET_SAMPLE_LIMIT   = 3;   // "시트 앞 샘플" 표시 행 수
@@ -51,26 +54,39 @@ module.exports = function createDeliveryDateService({ google, getGoogleAuth, del
     // 포함되는 부분일치로만 걸린다 - 접두를 먼저 떼야 완전일치가 된다.
     const isKoJa = lang === "ko-ja";
     const rowTitle = (row) => normalizeTitleKo(isKoJa ? stripClientPrefix(row[1] || "") : (row[1] || ""));
-    const titleMatchesRow = (row) => {
+    // ★가드 없는 양방향 부분일치 + find(첫 일치)는 「유혹」이 「지독한 유혹 WEB」에 걸리는
+    //   식으로 엉뚱한 작품을 집는다. 마스터는 이미 점수제(title-score)라 여기만 뚫려 있으면
+    //   작품은 맞게 고르고 납품일만 다른 작품 걸 가져온다.
+    //
+    //   다만 길이비로 **잘라내면** 안 된다. 납품 시트 B열에는 「유제 (PSD파일 Dropbox에
+    //   업로드 필요)」처럼 운영 메모가 붙은 행이 있어서, 가드로 치면 멀쩡한 11건이 통째로
+    //   "납품일 없음"이 된다(2026-10-29 전수 실측). 그래서 **거르지 않고 점수로 줄을 세워
+    //   가장 가까운 행을 고른다** — 못 찾는 건 늘리지 않으면서 오답만 걷어낸다.
+    const titleScoreOfRow = (row) => {
       const bVal = rowTitle(row);
-      if (!bVal) return false;
-      const matchMain = bVal === needle || bVal.includes(needle) || needle.includes(bVal);
-      const matchAlt = alternateKoreanNeedle && (
-        bVal === alternateKoreanNeedle ||
-        bVal.includes(alternateKoreanNeedle) ||
-        alternateKoreanNeedle.includes(bVal)
-      );
-      return Boolean(matchMain || matchAlt);
+      if (!bVal) return null;
+      const hits = [needle, alternateKoreanNeedle]
+        .filter(Boolean)
+        .map(n => scoreTitle(n, bVal, 0))   // minRatio 0 — 여기선 거르지 않고 점수만 본다
+        .filter(h => h.tier !== TIER.NONE);
+      if (!hits.length) return null;
+      return hits.sort((a, b) => b.tier - a.tier || b.ratio - a.ratio)[0];
     };
+    const titleMatchesRow = (row) => titleScoreOfRow(row) !== null;
     const episodeOfRow = (row) => parseInt(row[4]);
 
     const results = [];
     for (const epNum of episodeNums) {
-      const matched = rows.find(row => {
-        if (!titleMatchesRow(row)) return false;
+      // 화수가 맞는 행을 전부 모아 제목 점수로 정렬 — 완전일치 > 접두 > 부분(길이비 큰 순).
+      const epRows = [];
+      for (const row of rows) {
         const rowEp = episodeOfRow(row);
-        return !isNaN(rowEp) && rowEp === epNum;
-      });
+        if (isNaN(rowEp) || rowEp !== epNum) continue;
+        const score = titleScoreOfRow(row);
+        if (score) epRows.push({ row, score });
+      }
+      epRows.sort((a, b) => b.score.tier - a.score.tier || b.score.ratio - a.score.ratio);
+      const matched = epRows[0]?.row;
       if (!matched) {
         const titleHits = rows.filter(titleMatchesRow);
         if (titleHits.length > 0) {

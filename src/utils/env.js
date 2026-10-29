@@ -202,6 +202,15 @@ function assertTriggerEmoji(env = process.env) {
     // APM이 찍는 이모지가 유일하게 확실한 신호다.
     "TRIGGER_EMOJI_KO_JA",
   ], "assertTriggerEmoji");
+
+  // ★둘이 같은 값이면 이모지→언어쌍 표가 덮여 모든 소환이 한일로 처리된다. 복붙 한 번이면
+  //   생기는 사고인데, 증상은 "중일 작품을 못 찾는다"로만 보여 원인을 짚기 어렵다.
+  if (env.TRIGGER_EMOJI === env.TRIGGER_EMOJI_KO_JA) {
+    throw new Error(
+      `[assertTriggerEmoji] TRIGGER_EMOJI 와 TRIGGER_EMOJI_KO_JA 가 같다(:${env.TRIGGER_EMOJI}:). `
+      + "서로 다른 이모지를 줘야 중일·한일을 가를 수 있다.",
+    );
+  }
 }
 
 module.exports = {

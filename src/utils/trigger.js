@@ -26,6 +26,12 @@
  * @returns {Map<string, string>}
  */
 function createTriggerEmojiMap({ zhJa, koJa } = {}) {
+  // ★둘이 같은 값이면 Map 이 덮여 **모든 소환이 ko-ja** 가 된다. 이모지는 env 로 주는 값이라
+  //   복붙 한 번이면 생기는 사고인데, 증상은 "중일 작품을 못 찾는다"로만 보여 원인을 짚기
+  //   어렵다. 조용히 틀리느니 부팅에서 멈춘다.
+  if (zhJa && koJa && zhJa === koJa) {
+    throw new Error(`[trigger] 중일·한일 소환 이모지가 같다(:${zhJa}:). 서로 다른 값을 줘야 언어를 가를 수 있다.`);
+  }
   const map = new Map();
   if (zhJa) map.set(zhJa, "zh-ja");
   if (koJa) map.set(koJa, "ko-ja");
@@ -65,4 +71,20 @@ function isTriggerReaction(reaction, trigger) {
   return matchTriggerReaction(reaction, trigger) !== false;
 }
 
-module.exports = { createTriggerEmojiMap, matchTriggerReaction, isTriggerReaction };
+/**
+ * 언어쌍 → 이모지 이름 역조회. 「그 작품은 한일이야, :…: 로 다시 찍어줘」 안내에 쓴다.
+ *
+ * 안내문에 이모지 이름을 직접 적으면 env 를 바꾼 순간 틀린 안내가 나간다 — 그런데 안내문은
+ * 아무도 테스트하지 않아서 틀린 채로 오래 남는다. 실제로 쓰는 맵에서 되찾아 쓴다.
+ *
+ * @param {Map<string, string>} trigger
+ * @param {string} langPair
+ * @returns {string|null} 이모지 이름(콜론 없음). 맵에 없으면 null
+ */
+function emojiForLangPair(trigger, langPair) {
+  if (!trigger || typeof trigger.entries !== "function" || !langPair) return null;
+  for (const [emoji, lang] of trigger.entries()) if (lang === langPair) return emoji;
+  return null;
+}
+
+module.exports = { createTriggerEmojiMap, matchTriggerReaction, isTriggerReaction, emojiForLangPair };
