@@ -262,6 +262,7 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     await _proceedScheduleExt(client, dmChannel, {
+      langPair,
       workName, pivoId,
       episodes: [parseInt(episode, 10)],
       extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
@@ -378,6 +379,7 @@ module.exports = function registerScheduleExtFlow(app, {
       const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.koreanProjectName || null, episodes, f.matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */);
 
       await _proceedScheduleExt(client, dmChannel, {
+        langPair: f.parsed?.langPair || f.langPair || null,
         workName, pivoId,
         episodes,
         extDays: f.parsed.extend_days ? parseInt(f.parsed.extend_days, 10) : null,
@@ -469,6 +471,9 @@ module.exports = function registerScheduleExtFlow(app, {
     const { workName, pivoId, delivery, sourceLink,
             originalChannelId, originalTs, requesterUserId,
             requestedDate, isDirectCall, ownerUserId } = info;
+    // ★info 로 받는다(AIA D1 회귀). 아래 pending/draft 저장 4곳이 이 이름을 쓰는데
+    //   구조분해에 없으면 strict mode 에서 ReferenceError 로 연장 전체가 멈춘다.
+    const langPair = info.langPair || null;
     let extDays = info.extDays || null;
 
     // 화수 배열 정규화
