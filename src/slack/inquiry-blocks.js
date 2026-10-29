@@ -229,7 +229,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
         { type: "section", fields: [
           // PM이 고객사·작업자와 소통할 때 매번 찾아야 했던 FIX 타이틀(일본어 확정명)과 원제(중국어)를
           // 같이 뿌린다. 둘 다 '출판사 드라이브 링크' 시트(E·B열)에서 이미 매칭 단계에 읽고 있던 값이다.
-          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}${titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName })}` },
+          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}${titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName, langPair })}` },
           { type: "mrkdwn", text: `*회차*\n${episode ? episode+"화" : "-"}` },
           { type: "mrkdwn", text: `*납품일*\n${deliveryDate||"-"}` },
           { type: "mrkdwn", text: `*문의 유형*\n${inquiryType||"-"}` },
@@ -248,18 +248,41 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     };
   }
 
-  // 작품명 아래에 붙일 일본어 타이틀·원제 줄.
-  // 일본어는 FIX 타이틀(시트 E열)이 있으면 그걸, 없으면 가제(D열)를 그대로 쓴다 — 시트 233행 중
-  // FIX가 채워진 건 211행이라 22행은 가제로 내려간다. 어느 쪽인지 라벨로 구분해 준다.
+  // 작품명 아래에 붙일 보조 줄 — **타이틀이 맡는 역할이 언어쌍마다 달라** 한 벌로 못 쓴다(R7).
+  //
+  //   중일 — 작품명은 한국어 프로젝트명, 原題는 중국어, 일본어는 FIX(E열) 없으면 가제(D열).
+  //          시트 233행 중 FIX가 채워진 건 211행이라 22행은 가제로 내려간다.
+  //   한일 — 작품명이 곧 **원제(한국어)** 이고, 그게 작업자가 부르는 이름이다(재상 님 2026-10-29).
+  //          고객사와 쓰는 건 일본어 쪽 — FIX(D열) 먼저, 없으면 가제(E열).
+  //          실측 1,300행: FIX 1,219 · 가제 1,193 · FIX 없이 가제만 43 · 둘 다 없음 38.
+  //          원제 칸(F열)이 작품명과 같은 값이라 「原題」 줄은 따로 내지 않는다.
+  //
   // 값이 없거나 작품명과 같으면 생략해서 줄만 늘리지 않는다.
-  function titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName }) {
-    const lines = [];
-    const fixed = String(workNameJaFixed || "").trim();
-    const kari  = String(workNameJaDisplay || "").trim();
-    const zh    = String(workNameZh || "").trim();
-    const ja    = fixed || kari;
-    if (ja && ja !== workName) lines.push(`${fixed ? "FIX" : "仮"}: ${ja}`);
-    if (zh && zh !== workName) lines.push(`原題: ${zh}`);
+  const TITLE_EXTRA = Object.freeze({
+    "zh-ja": ({ fixed, kari, zh, workName }) => {
+      const lines = [];
+      const ja = fixed || kari;
+      if (ja && ja !== workName) lines.push(`${fixed ? "FIX" : "仮"}: ${ja}`);
+      if (zh && zh !== workName) lines.push(`原題: ${zh}`);
+      return lines;
+    },
+    "ko-ja": ({ fixed, kari, workName }) => {
+      const ja = fixed || kari;
+      if (!ja || ja === workName) return [];
+      // 어느 쪽이 고객사에 쓰는 이름인지 라벨로 박는다 — APM 이 매번 되묻지 않게.
+      return [`고객사용: ${ja} (${fixed ? "FIX" : "仮"})`];
+    },
+  });
+
+  function titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName, langPair }) {
+    // 언어를 모르면 종전(중일) 표기. 작품을 못 찾아 직접 입력한 건이 여기로 온다.
+    const render = TITLE_EXTRA[langPair] || TITLE_EXTRA["zh-ja"];
+    const lines = render({
+      fixed: String(workNameJaFixed || "").trim(),
+      kari:  String(workNameJaDisplay || "").trim(),
+      zh:    String(workNameZh || "").trim(),
+      workName,
+    });
     return lines.length ? `\n${lines.join("\n")}` : "";
   }
 
