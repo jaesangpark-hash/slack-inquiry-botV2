@@ -87,7 +87,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     // 재수급 요청을 받는 PM 도 언어쌍마다 다르다. draft.lang 은 매칭된 작품이 정한 값이라
     // 이모지 신호가 없는 DM 소환에서도 맞는다. 모르면(null) 공통 PM 으로 간다.
     const msgText = [
-      `<@${pmSlackIdFor(draft.lang || null)}>`,
+      `<@${pmSlackIdFor(draft.lang || draft.langPair || null)}>`,
       `안녕하세요.`,
       `아래 작품 원본 파일 재수급을 요청 드립니다.`,
       `- 담당자 : <@${submitterId}>`,
@@ -157,7 +157,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     const main = buildFinalMainMessage({
       ...draft,
       submitterId: draft.ownerUserId || draft.userId || "",
-      langPair:    draft.lang || null,
+      langPair:    draft.lang || draft.langPair || null,
       hasThreadContext: draft.hasThreadContext === true,
     });
     // 최종 블록에서 완료 버튼만 뺀다. 멘션 줄은 남긴다 — 누구에게 가는지 보고 전송하는 게 맞다

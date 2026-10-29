@@ -25,7 +25,8 @@ function createInquiryPublisher({
     }
     // ★목적지는 작품의 언어가 정한다. 한일은 실사용 검증 전이라 운영 채널에 섞이면 안 된다
     //   (재상 님 지시 2026-10-28). KOJA_TARGET_CHANNEL_ID 미설정이면 종전대로 공통 채널.
-    const langPair = draft.lang || null;
+    // 작품을 못 찾아 lang 이 없으면 소환 이모지가 가리킨 언어로 떨어진다(AIA C3).
+    const langPair = draft.lang || draft.langPair || null;
     const targetChannelId = langRouting.channelFor("target", langPair);
     const publicationKey = `inquiry_publication:${draft.draftId}`;
     try {

@@ -59,7 +59,7 @@ module.exports = function registerDirectInputActions(app, deps) {
   } = deps;
 
   // 「어디에 보냈다」 안내는 실제로 간 채널을 가리켜야 한다 — 한일은 목적지가 다를 수 있다.
-  const sentChannelOf = (draft) => langRouting.channelFor("target", draft?.lang || null);
+  const sentChannelOf = (draft) => langRouting.channelFor("target", draft?.lang || draft?.langPair || null);
 
   // ── 문의봇 완료 버튼 ─────────────────────────────────────
   app.action("inquiry_done", async ({ ack, body, client }) => {
@@ -550,11 +550,14 @@ module.exports = function registerDirectInputActions(app, deps) {
         await client.chat.postMessage({ channel: body.user.id,
           text: `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어.` })
           .catch(e => console.error("[manual_title_modal] PIVO 미발견 DM 실패:", e?.message ?? e));
+        // ★예산 안 분기와 같게 멈춘다. 안 멈추면 빈 작품명으로 초안이 만들어지고
+        //   draftStore.delete(pendingId) 로 재입력 경로도 사라진다(AIA C1).
+        return;
       }
     }
     if (!pending) return;
     const draftId = generateDraftId();
-    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
+    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, langPair: pending.langPair || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
@@ -589,6 +592,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       // ★draft.lang 은 뒤의 회차 수정 경로가 납품 탭을 고르는 데 쓴다. 버튼이 실어 온 값이
       //   1순위이고, 없으면 다시 조회한 행의 lang 으로 메운다. 둘 다 없을 때만 zh-ja 폴백.
       lang:               pickedLang || selected?.lang || null,
+      langPair:           pending.langPair || null,
       workNameJaFixed:   selected?.japaneseFixedTitle   || "",
       workNameJaDisplay: selected?.japaneseDisplayTitle || "",
       workNameZh:        selected?.chineseOriginalTitle || "",
@@ -778,7 +782,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       episode: updatedEpisode,
       deliveryDate: deliveryChanged
         ? (updatedEpisode && deliveryQueryName
-            ? await fetchDeliveryDate(deliveryQueryName, updatedEpisode, draft.lang || "zh-ja", updatedWorkNameKo || null)
+            ? await fetchDeliveryDate(deliveryQueryName, updatedEpisode, draft.lang || draft.langPair || "zh-ja", updatedWorkNameKo || null)
                 .catch(() => null)
                 .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
             : "-")

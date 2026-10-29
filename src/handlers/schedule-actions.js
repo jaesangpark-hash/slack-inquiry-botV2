@@ -30,7 +30,8 @@ module.exports = function registerScheduleActions(app, deps) {
 
   // 납품일 변경 요청의 목적지·수신 PM 은 작품의 언어가 정한다.
   // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다(fetchDeliveryDate 가 실어 보낸다).
-  const langOf = (data) => data?.delivery?.lang || data?.lang || null;
+  // 납품일을 못 찾아도 소환 이모지가 가리킨 언어로 떨어진다(AIA C3).
+  const langOf = (data) => data?.delivery?.lang || data?.lang || data?.langPair || null;
 
   app.action("schedule_ask_pm", async ({ ack, body, client }) => {
     await ack();
@@ -159,6 +160,9 @@ module.exports = function registerScheduleActions(app, deps) {
         // 창이 이미 닫혀 인라인 오류를 못 쓴다 — 같은 내용을 DM 으로 알린다.
         await client.chat.postMessage({ channel: body.user.id, text: notFoundMsg() })
           .catch(e => console.error("[schedule_title_modal] PIVO 미발견 DM 실패:", e?.message ?? e));
+        // ★예산 안 분기와 같게 여기서 멈춘다. 안 멈추면 빈 작품명으로 납품일 조회·초안 생성까지
+        //   진행하고, 아래에서 pending 을 지워 「직접 입력」 재시도 경로까지 사라진다(AIA C1).
+        return;
       }
     }
     if (!pending) return;

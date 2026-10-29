@@ -182,7 +182,8 @@ const interactionApp = createInteractionGuard({
   app,
   draftStore,
   checkPermission,
-  pmSlackId: PM_SLACK_ID,
+  // 언어쌍별 PM 을 전부 인정한다 — 한일 PM 이 자기 앞으로 온 버튼을 눌러야 한다(AIA C2).
+  pmSlackIds: langRouting.allPmSlackIds(),
   triggerEmojis,
 });
 

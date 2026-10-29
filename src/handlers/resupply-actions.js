@@ -54,7 +54,7 @@ module.exports = function registerResupplyActions(app, deps) {
 
   async function publishResupplyRequest({ draft, draftId, submitterId, client }) {
     // 목적지는 작품의 언어가 정한다 — 한일 검증 전이라 운영 PM 채널에 섞이면 안 된다.
-    const PM_REQUEST_CHANNEL_ID = langRouting.channelFor("pmRequest", draft.lang || null);
+    const PM_REQUEST_CHANNEL_ID = langRouting.channelFor("pmRequest", draft.lang || draft.langPair || null);
     const publicationKey = `resupply_publication:${draftId}`;
     try {
       const publication = await publishFromCheckpoint({
@@ -228,6 +228,9 @@ module.exports = function registerResupplyActions(app, deps) {
       const dRes  = qName
         ? await fetchDeliveryDate(qName, updatedDraft.episode, mt?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, mt?.koreanProjectName || null).catch(() => null)
         : null;
+      // ★작품을 다시 매칭했으면 언어도 갱신한다 — 안 그러면 목적지·수신 PM 이
+      //   처음 작품 기준으로 남는다(AIA C4).
+      if (mt?.lang) updatedDraft.lang = mt.lang;
       if (dRes) {
         updatedDraft.deliveryDate = dRes.allSame ? dRes.deliveryDate : dRes.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ");
         updatedDraft.apmName   = dRes.apm || updatedDraft.apmName || null;

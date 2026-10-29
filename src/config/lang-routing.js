@@ -73,6 +73,13 @@ function createLangRouting({ base, overrides = {} }) {
     pmSlackIdFor(langPair) {
       return rowFor(langPair)?.pmSlackId || base.pmSlackId;
     },
+    /** 이 표가 아는 PM 전부(공통 + 언어쌍별). 권한 게이트가 "PM 인가"를 판정할 때 쓴다.
+     *  한 명만 비교하면 한일 PM 이 자기 앞으로 온 버튼을 못 누른다(AIA C2). */
+    allPmSlackIds() {
+      const out = new Set([base.pmSlackId]);
+      for (const row of table.values()) if (row.pmSlackId) out.add(row.pmSlackId);
+      return [...out];
+    },
     /** 그 언어쌍이 공통값과 갈라져 있나 — 안내문에 「테스트 채널로 보냈다」를 붙일지 판단용 */
     isOverridden(langPair, kind = null) {
       const row = rowFor(langPair);

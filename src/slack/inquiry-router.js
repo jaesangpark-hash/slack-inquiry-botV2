@@ -190,7 +190,7 @@ module.exports = function createInquiryRouter(deps) {
           matchedTitle = candResult.single;
         } else if (candResult?.multiple) {
           const pendingId = `sched_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText });
+          draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText, langPair });
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `작품명 *${parsed.work_title_ko || parsed.work_title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
@@ -203,7 +203,7 @@ module.exports = function createInquiryRouter(deps) {
           return;
         } else if (candResult?.tooMany) {
           const pendingId = `sched_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText });
+          draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText, langPair });
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
             text: `*${parsed.work_title_ko || parsed.work_title_ja || "-"}* 와 일치하는 작품이 너무 많아. 더 정확한 작품명을 입력해줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
@@ -223,7 +223,7 @@ module.exports = function createInquiryRouter(deps) {
             console.log("[match-token] 단건 자동 선택:", matchedTitle.koreanProjectName);
           } else if (tokenResult?.multiple) {
             const pendingId = `sched_pending_${Date.now()}`;
-            draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText });
+            draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText, langPair });
             await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
               text: `작품명 *${parsed.work_title_ko || parsed.work_title_ja || "-"}* 후보가 여러 개야. 선택해줘.` });
             await client.chat.postMessage({ channel: dmChannel, text: "작품을 선택해줘.",
@@ -271,7 +271,7 @@ module.exports = function createInquiryRouter(deps) {
       // UD-6 폴백 처리: message만 !matchedTitle||!delivery 시 직접입력 유도
       if (source === "message" && (!matchedTitle || !delivery)) {
         const pendingId = `sched_pending_${Date.now()}`;
-        draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText });
+        draftStore.set(pendingId, { type: "schedule_pending", ownerUserId: userId, parsed, sourceLink, originalText, langPair });
         await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
           text: !matchedTitle ? `작품명 *${parsed.work_title_ja || parsed.work_title_ko || "-"}* 을 시트에서 찾지 못했어.` : `납품 시트에서 찾지 못했어.` });
         await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
@@ -353,6 +353,7 @@ module.exports = function createInquiryRouter(deps) {
       const pendingId = `route_pending_${Date.now()}`;
       draftStore.set(pendingId, {
         type:            "route_pending",
+        langPair,   // ★소환 이모지가 가리킨 언어. 작품을 못 찾아도 목적지·수신자를 고를 수 있게 남긴다(AIA C3).
         ownerUserId:     userId,
         analysis,
         sourceLink,
@@ -440,6 +441,7 @@ module.exports = function createInquiryRouter(deps) {
         const pendingId = `fi_pending_${Date.now()}`;
         draftStore.set(pendingId, {
           type:        "file_inquiry_pending",
+          langPair,   // ★소환 이모지가 가리킨 언어. 작품을 못 찾아도 목적지·수신자를 고를 수 있게 남긴다(AIA C3).
           ownerUserId: userId,
           workName:    fileParsed.work_title_ko || fileParsed.work_title_ja || "",
           episode:     fileParsed.episode || "",
@@ -487,6 +489,7 @@ module.exports = function createInquiryRouter(deps) {
         japaneseFixedTitle: matchedTitle?.japaneseFixedTitle || "-",
         pivoId:      matchedTitle?.pivoId  || null,
         lang:        matchedTitle?.lang    || null,
+        langPair,   // 작품을 못 찾았을 때의 폴백(AIA C3)
         episode:     fileParsed.episode    || "-",
         fileNumbers: fileParsed.file_numbers || [],
         reason:      buildFileInquiryReason(fileParsed, matchedTitle),
@@ -511,6 +514,8 @@ module.exports = function createInquiryRouter(deps) {
         const pendingId = `pending_${Date.now()}`;
         draftStore.set(pendingId, {
           isPending:      true,
+        langPair,
+          langPair,
           ownerUserId:    userId,
           userId,
           dmChannelId:    dmChannel,
@@ -574,6 +579,7 @@ module.exports = function createInquiryRouter(deps) {
       const pendingId = `pending_${Date.now()}`;
       draftStore.set(pendingId, {
         isPending:      true,
+        langPair,
         ownerUserId:    userId,
         userId,
         dmChannelId:    dmChannel,
@@ -621,6 +627,7 @@ module.exports = function createInquiryRouter(deps) {
       workNameZh:        matchedTitle.chineseOriginalTitle || "",
       pivoId:        matchedTitle.pivoId || null,
       lang:          matchedTitle.lang   || null,
+      langPair,   // 작품을 못 찾았을 때의 폴백(AIA C3)
       episode:       analysis.episode || null,
       deliveryDate:  analysis.episode && matchedTitle.koreanProjectName
         ? await fetchDeliveryDate(matchedTitle.koreanProjectName, analysis.episode, matchedTitle.lang || "zh-ja", matchedTitle.koreanProjectName)
