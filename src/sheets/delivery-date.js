@@ -116,6 +116,9 @@ module.exports = function createDeliveryDateService({ google, getGoogleAuth, del
     const allSame = dates.every(d => d === dates[0]);
     const first   = results[0];
     return {
+      // 어느 언어 탭에서 찾았는지 같이 돌려준다 — 아래쪽 플로우(납품일 변경 요청 등)가
+      // 언어를 다시 추측하지 않고 출력 목적지·수신자를 고를 수 있어야 한다.
+      lang,
       workName: first.workName, pm: first.pm, apm: first.apm, allSame,
       deliveryDate: allSame ? dates[0] : null,
       episodes: results,

@@ -4,11 +4,13 @@ require("dotenv").config();
 
 // fail-fast guard 호출: Bolt App init 직전에 필수 env를 검증 → 누락 시 startup throw
 // (잘못된 기본값이 조용히 채워지는 것을 방지)
-const { assertSecretsBase, assertGoogleSheets, assertChannels, assertTriggerEmoji, requireEnv } = require("./utils/env");
+const { assertSecretsBase, assertGoogleSheets, assertChannels, assertTriggerEmoji, assertLangRouting, readLangRoutingOverrides, requireEnv } = require("./utils/env");
+const { createLangRouting } = require("./config/lang-routing");
 assertSecretsBase();
 assertGoogleSheets();
 assertChannels();
 assertTriggerEmoji();
+assertLangRouting();
 
 const { App } = require("@slack/bolt");
 const { GoogleGenAI } = require("@google/genai");
@@ -100,6 +102,20 @@ const PM_SLACK_ID            = process.env.PM_SLACK_ID;
 const PM_REQUEST_CHANNEL_ID  = process.env.PM_REQUEST_CHANNEL_ID;  // 재수급 전용
 const SCHEDULE_CHANNEL_ID    = process.env.SCHEDULE_CHANNEL_ID;  // 납품일 변경 요청
 const FIXED_MENTION_USER_IDS = (process.env.FORWARD_MENTION_USER_ID || "").split(",").filter(Boolean);
+
+// ── 언어쌍별 출력 분리 (지시 2026-10-28: ①한일은 테스트 채널로 ②수신자도 언어별로) ──
+// 표는 config/lang-routing.js 한 곳. KOJA_* env 가 없으면 전 언어 공통값 = 종전 동작 그대로다.
+const langRouting = createLangRouting({
+  base: {
+    target:    TARGET_CHANNEL_ID,
+    pmRequest: PM_REQUEST_CHANNEL_ID,
+    schedule:  SCHEDULE_CHANNEL_ID,
+    mentionUserIds: FIXED_MENTION_USER_IDS,
+    pmSlackId:      PM_SLACK_ID,
+  },
+  overrides: readLangRoutingOverrides(),
+});
+console.log("[lang-routing]", langRouting.describe());
 const RESUPPLY_SHEET_ID    = process.env.RESUPPLY_SHEET_ID;
 const RESUPPLY_SHEET_RANGE = process.env.RESUPPLY_SHEET_RANGE;
 const RETAKE_CHANNELS      = new Set(
@@ -204,7 +220,7 @@ const { handleRetakeInquiry, _apiFetch: retakeApiFetch } = require("./retakeFlow
 
 const { handleScheduleExt, handleScheduleExtGrouped } = require("./scheduleExtFlow")(interactionApp, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
-  fetchDeliveryDate, sheetsClient,
+  fetchDeliveryDate, sheetsClient, langRouting,
 });
 
 const { handleMultipleInquiry } = require("./multipleInquiryFlow")(interactionApp, {
@@ -264,7 +280,7 @@ const { PROCESSED_REACTION, fetchSingleLinkedMessage, markInquiryProcessed, fetc
 // buildFileInquiryReason / buildFileInquiryBlocks / buildFileInquiryMessage
 // buildDraftPreviewBlocks / buildDraftPreviewText / buildFinalMainMessage / buildThreadMessage
 // buildInquirySummaryMessage / buildMultipleInquirySummary / buildOtherInquirySummary
-// PRIORITY_EMOJI → src/slack/inquiry-blocks.js (PM_SLACK_ID / FIXED_MENTION_USER_IDS 주입 — R3)
+// PRIORITY_EMOJI → src/slack/inquiry-blocks.js (언어쌍별 수신자 조회 함수 주입 — R3)
 const createInquiryBlocks = require("./slack/inquiry-blocks");
 const {
   PRIORITY_EMOJI,
@@ -278,7 +294,10 @@ const {
   buildInquirySummaryMessage,
   buildMultipleInquirySummary,
   buildOtherInquirySummary,
-} = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: FIXED_MENTION_USER_IDS });
+} = createInquiryBlocks({
+  pmSlackIdFor:      langPair => langRouting.pmSlackIdFor(langPair),
+  mentionUserIdsFor: langPair => langRouting.mentionUserIdsFor(langPair),
+});
 
 const postInquiryToTargetChannel = createInquiryPublisher({
   appendInquiryHistory,
@@ -287,7 +306,7 @@ const postInquiryToTargetChannel = createInquiryPublisher({
   draftStore,
   buildFinalMainMessage,
   buildThreadMessage,
-  targetChannelId: TARGET_CHANNEL_ID,
+  langRouting,
   logEvent,
 });
 
@@ -317,7 +336,7 @@ require("./handlers/resupply-actions")(interactionApp, {
   updateResupplySourceLink,
   updateResupplyPivoId,
   checkResupplyDone,
-  PM_REQUEST_CHANNEL_ID,
+  langRouting,
   matchWorkTitleFromSheet,
   fetchDeliveryDate,
   resolveApmUserId,
@@ -329,8 +348,7 @@ require("./handlers/schedule-actions")(interactionApp, {
   matchWorkTitleFromSheet,
   fetchDeliveryDate,
   handleScheduleExt,
-  PM_SLACK_ID,
-  SCHEDULE_CHANNEL_ID,
+  langRouting,
 });
 
 require("./handlers/direct-input-actions")(interactionApp, {
@@ -345,7 +363,7 @@ require("./handlers/direct-input-actions")(interactionApp, {
   generateDraftId,
   resolveApmUserId,
   postInquiryToTargetChannel,
-  TARGET_CHANNEL_ID,
+  langRouting,
   handleWorkerRelay,
   checkInquiryDone,
 });

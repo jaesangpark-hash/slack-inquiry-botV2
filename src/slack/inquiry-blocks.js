@@ -5,9 +5,13 @@
 const PRIORITY_EMOJI = { 높음: "🔴", 보통: "🟡", 낮음: "🟢" };
 
 /**
- * @param {{ pmSlackId: string, fixedMentionUserIds: string[] }} deps
+ * 수신자는 언어쌍마다 다르다(중일/한일 담당 APM 이 다름). 그래서 고정값이 아니라
+ * **언어쌍을 받아 되돌려 주는 함수**를 주입받는다 — 표는 config/lang-routing.js 한 곳에 있다.
+ *
+ * @param {{ pmSlackIdFor: (langPair: string|null) => string,
+ *            mentionUserIdsFor: (langPair: string|null) => string[] }} deps
  */
-module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }) {
+module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor }) {
 
   // ── 재수급 reason 조립 ────────────────────────────────────
   // matchedTitle: 시트 매칭 결과 { koreanProjectName, japaneseDisplayTitle } | null
@@ -80,8 +84,10 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
       resupplyRowIndex: draft.resupplyRowIndex || null,
     });
 
+    // 재수급 요청을 받는 PM 도 언어쌍마다 다르다. draft.lang 은 매칭된 작품이 정한 값이라
+    // 이모지 신호가 없는 DM 소환에서도 맞는다. 모르면(null) 공통 PM 으로 간다.
     const msgText = [
-      `<@${pmSlackId}>`,
+      `<@${pmSlackIdFor(draft.lang || null)}>`,
       `안녕하세요.`,
       `아래 작품 원본 파일 재수급을 요청 드립니다.`,
       `- 담당자 : <@${submitterId}>`,
@@ -199,8 +205,10 @@ module.exports = function createInquiryBlocks({ pmSlackId, fixedMentionUserIds }
     originalChannelId,
     originalTs,
     sourceLink,
+    // 이 문의가 어느 언어쌍인지. 수신자를 고르는 데 쓴다 — 모르면(null) 공통 수신자.
+    langPair = null,
   }) {
-    const mentions = fixedMentionUserIds.map(id => `<@${id}>`).join(" ");
+    const mentions = mentionUserIdsFor(langPair).map(id => `<@${id}>`).join(" ");
     const fallbackText = `${workName||"-"} | ${inquiryType||"-"} | <@${submitterId}>`;
     // historyRowIndex를 버튼 값에 직접 박아둔다 — draftStore(인메모리)는 프로세스 재시작 시 사라지므로,
     // 완료 클릭이 며칠 뒤에 일어나도 시트 체크박스 처리가 가능하도록 메시지 자체에 영속시킨다.

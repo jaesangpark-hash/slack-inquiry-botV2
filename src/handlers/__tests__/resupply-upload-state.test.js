@@ -2,6 +2,13 @@
 
 const { afterEach, describe, test } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_TGT", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 
 const registerResupplyActions = require("../resupply-actions");
 const {
@@ -59,7 +66,7 @@ function makeHarness(files) {
     buildFileInquiryMessage: () => ({}),
     appendResupplyRecord: async () => 1,
     checkResupplyDone: async () => {},
-    PM_REQUEST_CHANNEL_ID: "C_PM",
+    langRouting: routing(),
   });
   const body = {
     user: { id: "U_OWNER" },

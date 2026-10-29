@@ -33,7 +33,7 @@ const RESUPPLY_NOTIFY_STATUS = Object.freeze({
  *   buildFileInquiryMessage: Function,
  *   appendResupplyRecord: Function,
  *   checkResupplyDone: Function,
- *   PM_REQUEST_CHANNEL_ID: string,
+ *   langRouting: { channelFor: Function },
  * }} deps
  */
 module.exports = function registerResupplyActions(app, deps) {
@@ -45,7 +45,7 @@ module.exports = function registerResupplyActions(app, deps) {
     updateResupplySourceLink,
     updateResupplyPivoId,
     checkResupplyDone,
-    PM_REQUEST_CHANNEL_ID,
+    langRouting,
     // 납품일·APM 조회 (선택 주입 — 미주입 시 조회 skip)
     matchWorkTitleFromSheet,
     fetchDeliveryDate,
@@ -53,6 +53,8 @@ module.exports = function registerResupplyActions(app, deps) {
   } = deps;
 
   async function publishResupplyRequest({ draft, draftId, submitterId, client }) {
+    // 목적지는 작품의 언어가 정한다 — 한일 검증 전이라 운영 PM 채널에 섞이면 안 된다.
+    const PM_REQUEST_CHANNEL_ID = langRouting.channelFor("pmRequest", draft.lang || null);
     const publicationKey = `resupply_publication:${draftId}`;
     try {
       const publication = await publishFromCheckpoint({

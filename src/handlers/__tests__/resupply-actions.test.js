@@ -2,6 +2,13 @@
 
 const { describe, it, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_TGT", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 
 const registerResupplyActions = require("../resupply-actions");
 const createResupplyRecord = require("../../sheets/resupply-record");
@@ -42,7 +49,7 @@ describe("registerResupplyActions — 등록 검증", () => {
       buildFileInquiryMessage: () => ({ text: "재수급 요청" }),
       appendResupplyRecord: async () => 5,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     };
     registerResupplyActions(app, deps);
   });
@@ -86,7 +93,7 @@ describe("open_file_inquiry_modal — 핸들러 동작", () => {
       buildFileInquiryMessage: () => ({}),
       appendResupplyRecord: async () => 0,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     const handler = app._registered.actions["open_file_inquiry_modal"];
@@ -108,7 +115,7 @@ describe("open_file_inquiry_modal — 핸들러 동작", () => {
       buildFileInquiryMessage: () => ({}),
       appendResupplyRecord: async () => 0,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     const handler = app._registered.actions["open_file_inquiry_modal"];
@@ -137,7 +144,7 @@ describe("cross-handler draft 공유 — 동일 Map 인스턴스", () => {
       buildFileInquiryMessage: () => ({ text: "msg" }),
       appendResupplyRecord: async () => 7,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     // step1: open_file_inquiry_modal로 초안 존재 확인
@@ -202,7 +209,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
     const {
       buildFileInquiryBlocks,
       buildFileInquiryMessage,
-    } = createInquiryBlocks({ pmSlackId: "U_PM", fixedMentionUserIds: [] });
+    } = createInquiryBlocks({ pmSlackIdFor: () => "U_PM", mentionUserIdsFor: () => [] });
 
     registerResupplyActions(app, {
       draftStore,
@@ -210,7 +217,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage,
       appendResupplyRecord: async () => 41,
       checkResupplyDone: async rowIndex => { checkedRows.push(rowIndex); },
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -274,7 +281,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { throw new Error("sheet unavailable"); },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -304,7 +311,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => null,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.views["submit_file_inquiry_modal"]({
@@ -350,7 +357,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { appendCalls++; return 31; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -397,7 +404,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { appendCalls++; return 32; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -447,7 +454,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { appendCalls++; return 33; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -488,7 +495,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { appendCalls++; return appendResult; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -523,7 +530,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => 35,
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -572,7 +579,7 @@ describe("재수급 요청 게시 — 시트 행 선확정", () => {
       buildFileInquiryMessage: () => ({ text: "PM request" }),
       appendResupplyRecord: async () => { appendCalls++; return 99; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.views.submit_file_inquiry_modal({
@@ -621,7 +628,7 @@ describe("재수급 요청 게시 — 히스토리 원문 링크 갱신", () => 
         updateArgs = [rowIndex, permalink];
       },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -654,7 +661,7 @@ describe("재수급 요청 게시 — 히스토리 원문 링크 갱신", () => 
       appendResupplyRecord: async () => 41,
       updateResupplySourceLink: async () => { updateCalls++; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     const args = {
       ack: async () => {},
@@ -691,7 +698,7 @@ describe("재수급 요청 게시 — 히스토리 원문 링크 갱신", () => 
       appendResupplyRecord: async () => 42,
       updateResupplySourceLink: async () => { throw new Error("sheet write failed"); },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -731,7 +738,7 @@ describe("재수급 요청 게시 — PIVO ID 갱신", () => {
         updateArgs = [rowIndex, pivoId];
       },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -765,7 +772,7 @@ describe("재수급 요청 게시 — PIVO ID 갱신", () => {
       updateResupplySourceLink: async () => {},
       updateResupplyPivoId: async () => { updateCalls++; },
       checkResupplyDone: async () => {},
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
 
     await app._registered.actions["send_file_inquiry_now"]({
@@ -814,7 +821,7 @@ describe("file_resupply_done — 완료 진실성과 owner 안내", () => {
       buildFileInquiryMessage: () => ({}),
       appendResupplyRecord: async () => 0,
       checkResupplyDone,
-      PM_REQUEST_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
     });
     return app._registered.actions["file_resupply_done"]({
       ack: async () => {},

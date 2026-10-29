@@ -14,7 +14,7 @@ function createInquiryPublisher({
   draftStore,
   buildFinalMainMessage,
   buildThreadMessage,
-  targetChannelId,
+  langRouting,
   logEvent = () => {},
 }) {
   return async function postInquiryToTargetChannel(client, draft, submitterId, {
@@ -23,6 +23,10 @@ function createInquiryPublisher({
     if (!draft.draftId) {
       throw new Error("문의 publication key를 만들 draftId가 없어.");
     }
+    // ★목적지는 작품의 언어가 정한다. 한일은 실사용 검증 전이라 운영 채널에 섞이면 안 된다
+    //   (재상 님 지시 2026-10-28). KOJA_TARGET_CHANNEL_ID 미설정이면 종전대로 공통 채널.
+    const langPair = draft.lang || null;
+    const targetChannelId = langRouting.channelFor("target", langPair);
     const publicationKey = `inquiry_publication:${draft.draftId}`;
     try {
       const publication = await publishFromCheckpoint({
@@ -75,6 +79,7 @@ function createInquiryPublisher({
             originalChannelId: draft.originalChannelId,
             originalTs: draft.originalTs,
             sourceLink: draft.sourceLink,
+            langPair,
           });
           const startedAt = Date.now();
           const postResult = await client.chat.postMessage({ channel: targetChannelId, ...message });

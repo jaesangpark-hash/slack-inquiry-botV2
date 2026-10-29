@@ -12,7 +12,7 @@ const {
 
 module.exports = function registerScheduleExtFlow(app, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
-  fetchDeliveryDate, sheetsClient,
+  fetchDeliveryDate, sheetsClient, langRouting,
 }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
@@ -34,8 +34,11 @@ module.exports = function registerScheduleExtFlow(app, {
       return json;
     }, meta);
   }
-  const SCHEDULE_CHANNEL_ID = () => process.env.SCHEDULE_CHANNEL_ID;
-  const PM_SLACK_ID         = () => process.env.PM_SLACK_ID;
+  // 납품일 변경 요청의 목적지·수신 PM 은 **작품의 언어**가 정한다(한일은 검증 전이라 분리).
+  // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다 — fetchDeliveryDate 가 실어 보낸다.
+  const langOf = (data) => data?.delivery?.lang || data?.matchedTitle?.lang || data?.lang || null;
+  const SCHEDULE_CHANNEL_ID = (data) => langRouting.channelFor("schedule", langOf(data));
+  const PM_SLACK_ID         = (data) => langRouting.pmSlackIdFor(langOf(data));
 
   const WORKER_SHEET_ID    = process.env.WORKER_SHEET_ID;
   const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE;
@@ -1149,7 +1152,7 @@ ${taskLines}` } },
     ).join("\n");
 
     const lines = [
-      `<@${PM_SLACK_ID()}>`,
+      `<@${PM_SLACK_ID(data)}>`,
       `안녕하세요. 아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
       ``,
       `・ 담당자: <@${body.user.id}>`,
@@ -1164,7 +1167,7 @@ ${taskLines}` } },
     if (reason) { lines.push(""); lines.push(reason); }
 
     await client.chat.postMessage({
-      channel: SCHEDULE_CHANNEL_ID(),
+      channel: SCHEDULE_CHANNEL_ID(data),
       text: lines.join("\n"),
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
@@ -1180,7 +1183,7 @@ ${taskLines}` } },
       ],
     });
     await client.chat.postMessage({ channel: body.user.id,
-      text: `🔄 <#${SCHEDULE_CHANNEL_ID()}> 채널에 납품일 변경 요청을 전송했어. 희망 납품일: ${desiredDate}` });
+      text: `🔄 <#${SCHEDULE_CHANNEL_ID(data)}> 채널에 납품일 변경 요청을 전송했어. 희망 납품일: ${desiredDate}` });
   });
 
   // ── PM 채널 자동 전송 (납품 초과 + 일괄 반영 시) ─────────
@@ -1190,11 +1193,11 @@ ${taskLines}` } },
     ).join("\n");
 
     await client.chat.postMessage({
-      channel: SCHEDULE_CHANNEL_ID(),
+      channel: SCHEDULE_CHANNEL_ID(data),
       text:    `${data.workName} ${data.episodeLabel} 납품일 초과 — PM 확인 필요`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `<@${PM_SLACK_ID()}>\n*📢 ${data.workName} ${data.episodeLabel} 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
+          text: `<@${PM_SLACK_ID(data)}>\n*📢 ${data.workName} ${data.episodeLabel} 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
         { type: "actions", elements: [
           { type: "button", action_id: "schext_pm_delivery_confirm",
             text: { type: "plain_text", text: "✅ 연장 가능" },

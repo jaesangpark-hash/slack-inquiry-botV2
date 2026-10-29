@@ -8,7 +8,7 @@ const createInquiryBlocks = require("../inquiry-blocks.js");
 const PM_SLACK_ID = "UPMTEST001";
 const FIXED_MENTION_USER_IDS = ["UMENTIONID1", "UMENTIONID2"];
 
-const blocks = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: FIXED_MENTION_USER_IDS });
+const blocks = createInquiryBlocks({ pmSlackIdFor: () => PM_SLACK_ID, mentionUserIdsFor: () => FIXED_MENTION_USER_IDS });
 
 // ── PRIORITY_EMOJI ──────────────────────────────────────────
 describe("PRIORITY_EMOJI", () => {
@@ -273,7 +273,7 @@ describe("buildFinalMainMessage", () => {
   });
 
   it("fixedMentionUserIds 빈 배열이면 멘션 없이 빈 문자열", () => {
-    const emptyBlocks = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: [] });
+    const emptyBlocks = createInquiryBlocks({ pmSlackIdFor: () => PM_SLACK_ID, mentionUserIdsFor: () => [] });
     const result = emptyBlocks.buildFinalMainMessage(params);
     assert.equal(result.blocks[0].text.text, "");
   });

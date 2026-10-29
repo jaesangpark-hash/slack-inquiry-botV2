@@ -15,8 +15,7 @@ const { withinAckBudget } = require("../utils/ack-budget");
  *   matchWorkTitleFromSheet: Function,
  *   fetchDeliveryDate: Function,
  *   handleScheduleExt: Function,
- *   PM_SLACK_ID: string,
- *   SCHEDULE_CHANNEL_ID: string,
+ *   langRouting: { channelFor: Function, pmSlackIdFor: Function },
  * }} deps
  */
 module.exports = function registerScheduleActions(app, deps) {
@@ -26,9 +25,12 @@ module.exports = function registerScheduleActions(app, deps) {
     matchWorkTitleFromSheet,
     fetchDeliveryDate,
     handleScheduleExt,
-    PM_SLACK_ID,
-    SCHEDULE_CHANNEL_ID,
+    langRouting,
   } = deps;
+
+  // 납품일 변경 요청의 목적지·수신 PM 은 작품의 언어가 정한다.
+  // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다(fetchDeliveryDate 가 실어 보낸다).
+  const langOf = (data) => data?.delivery?.lang || data?.lang || null;
 
   app.action("schedule_ask_pm", async ({ ack, body, client }) => {
     await ack();
@@ -68,8 +70,10 @@ module.exports = function registerScheduleActions(app, deps) {
     const deliveryDate = data.delivery?.allSame ? data.delivery.deliveryDate : (data.delivery?.episodes?.map(e => `${e.episode}화: ${e.deliveryDate}`).join(", ") || "-");
     const desiredDate  = view.state.values.desired_date_block?.desired_date_input?.selected_date || "-";
     const extraNote    = view.state.values.extra_note_block?.extra_note_input?.value?.trim() || "";
+    const langPair = langOf(data);
+    const SCHEDULE_CHANNEL_ID = langRouting.channelFor("schedule", langPair);
     const lines = [
-      `<@${PM_SLACK_ID}>`, `안녕하세요.`, `아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
+      `<@${langRouting.pmSlackIdFor(langPair)}>`, `안녕하세요.`, `아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
       `- 담당자 : <@${body.user.id}>`, `- 작품명 : ${workName}`, `- 회차 : ${episodeLabel}`,
       `- 기존 납품일 : ${deliveryDate}`, `- 희망 납품일 : ${desiredDate}`,
     ];

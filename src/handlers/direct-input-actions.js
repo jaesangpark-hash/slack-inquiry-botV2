@@ -35,7 +35,7 @@ const {
  *   generateDraftId: Function,
  *   resolveApmUserId: Function,
  *   postInquiryToTargetChannel: Function,
- *   TARGET_CHANNEL_ID: string,
+ *   langRouting: { channelFor: Function },
  *   handleWorkerRelay: Function,
  *   checkInquiryDone: Function,
  * }} deps
@@ -53,10 +53,13 @@ module.exports = function registerDirectInputActions(app, deps) {
     generateDraftId,
     resolveApmUserId,
     postInquiryToTargetChannel,
-    TARGET_CHANNEL_ID,
+    langRouting,
     handleWorkerRelay,
     checkInquiryDone,
   } = deps;
+
+  // 「어디에 보냈다」 안내는 실제로 간 채널을 가리켜야 한다 — 한일은 목적지가 다를 수 있다.
+  const sentChannelOf = (draft) => langRouting.channelFor("target", draft?.lang || null);
 
   // ── 문의봇 완료 버튼 ─────────────────────────────────────
   app.action("inquiry_done", async ({ ack, body, client }) => {
@@ -710,7 +713,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     let publication;
     try {
       publication = await postInquiryToTargetChannel(client, draft, body.user.id, {
-        completionNoticeText: `<#${TARGET_CHANNEL_ID}> 에 전송 완료!`,
+        completionNoticeText: `<#${sentChannelOf(draft)}> 에 전송 완료!`,
       });
     } catch (error) {
       if (error.publicationRecovery !== PUBLICATION_RECOVERY.REVIEW_REQUIRED) {
@@ -790,7 +793,7 @@ module.exports = function registerDirectInputActions(app, deps) {
     let publication;
     try {
       publication = await postInquiryToTargetChannel(client, updatedDraft, body.user.id, {
-        completionNoticeText: `수정 내용으로 <#${TARGET_CHANNEL_ID}> 에 전송 완료!`,
+        completionNoticeText: `수정 내용으로 <#${sentChannelOf(updatedDraft)}> 에 전송 완료!`,
       });
     } catch (error) {
       if (error.publicationRecovery !== PUBLICATION_RECOVERY.REVIEW_REQUIRED) {

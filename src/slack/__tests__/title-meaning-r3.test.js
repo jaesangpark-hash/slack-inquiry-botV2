@@ -2,6 +2,13 @@
 
 const { afterEach, describe, test } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_PM", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 
 const registerScheduleActions = require("../../handlers/schedule-actions");
 const registerDirectInputActions = require("../../handlers/direct-input-actions");
@@ -57,8 +64,7 @@ describe("remaining title meaning paths", () => {
       matchWorkTitleFromSheet: async () => null,
       fetchDeliveryDate: async (...args) => { deliveryArgs = args; return null; },
       handleScheduleExt: async (_client, _channel, parsed) => { forwarded = parsed; },
-      PM_SLACK_ID: "U_PM",
-      SCHEDULE_CHANNEL_ID: "C_SCHEDULE",
+      langRouting: routing(),
     });
 
     await app.views.get("schedule_title_modal")({
@@ -94,7 +100,7 @@ describe("remaining title meaning paths", () => {
       generateDraftId: () => "direct-inquiry-1",
       resolveApmUserId: () => null,
       postInquiryToTargetChannel: async () => ({}),
-      TARGET_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
       handleWorkerRelay: async () => {},
       checkInquiryDone: async () => {},
     });
@@ -141,7 +147,7 @@ describe("remaining title meaning paths", () => {
       generateDraftId: () => "direct-schedule",
       resolveApmUserId: () => null,
       postInquiryToTargetChannel: async () => ({}),
-      TARGET_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
       handleWorkerRelay: async () => {},
       checkInquiryDone: async () => {},
     });
@@ -183,7 +189,7 @@ describe("remaining title meaning paths", () => {
       generateDraftId: () => "direct-file-order",
       resolveApmUserId: () => null,
       postInquiryToTargetChannel: async () => ({}),
-      TARGET_CHANNEL_ID: "C_PM",
+      langRouting: routing(),
       handleWorkerRelay: async () => {},
       checkInquiryDone: async () => {},
     });
