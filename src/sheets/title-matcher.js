@@ -100,7 +100,17 @@ module.exports = function createTitleMatcher({ google, getGoogleAuth, masterShee
     ));
     // 한쪽이라도 실패하면 기존 캐시를 유지한다 — 반쪽짜리를 5분간 물고 있으면
     // 그 언어 문의가 조용히 "작품 없음"이 된다.
+    //
+    // ★단 캐시가 비어 있으면(= 봇 기동 직후 첫 로드) 유지할 기존 캐시가 없다. 그대로
+    //   돌려주면 빈 배열이라 **성공한 언어까지 "작품 없음"** 이 된다. 이때만은 성공한 쪽을
+    //   쓰되, 캐시에 넣지 않고 그 회차만 쓰고 버린다 — 반쪽짜리가 5분간 굳는 걸 막는다.
     if (loaded.some(rows => rows === null)) {
+      const partial = loaded.filter(rows => rows !== null).flat();
+      if (!titleCache.rows.length && partial.length) {
+        const langs = activeMasters.filter((_, i) => loaded[i] !== null).map(([lang]) => lang).join("·");
+        console.warn(`[title-matcher] 첫 로드 일부 실패 — 성공한 ${langs} ${partial.length}건만 이번 회차에 사용(캐시 안 함)`);
+        return partial;
+      }
       console.warn("[title-matcher] 마스터 일부 로드 실패 — 기존 캐시 유지:", titleCache.rows.length, "건");
       return titleCache.rows;
     }

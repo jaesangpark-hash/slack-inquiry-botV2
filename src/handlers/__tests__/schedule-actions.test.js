@@ -153,4 +153,80 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
     // draftStore에서 pendingId 삭제됐는지 확인
     assert.equal(draftStore.has(pendingId), false);
   });
+
+  // ★B3 회귀 — pivoId 가 빈 후보(마스터에 PIVO 가 없는 작품)를 누르면 "" === "" 로
+  //   PIVO 칸이 빈 **첫 행**, 즉 전혀 다른 작품이 걸렸다.
+  it("pivoId 가 빈 후보를 눌러도 PIVO 칸이 빈 다른 작품을 집지 않는다", async () => {
+    const draftStore = new Map();
+    const pendingId = "sched_pending_nopivo";
+    draftStore.set(pendingId, {
+      type: "schedule_pending",
+      ownerUserId: "U_OWNER",
+      parsed: { episode: "5", work_title_ko: "내가 고른 작품", work_title_ja: "" },
+    });
+
+    const app = makeFakeApp();
+    let askedWorkName = null;
+    registerScheduleActions(app, {
+      draftStore,
+      // 시트 첫 행이 PIVO 빈 "전혀 다른 작품" — 가드가 없으면 이게 걸린다
+      loadTitleRowsFromSheet: async () => [
+        { pivoId: "", koreanProjectName: "전혀 다른 작품" },
+        { pivoId: "P9", koreanProjectName: "또 다른 작품" },
+      ],
+      matchWorkTitleFromSheet: async () => null,
+      fetchDeliveryDate: async (workName) => { askedWorkName = workName; return null; },
+      handleScheduleExt: async () => {},
+      generateDraftId: () => "d_new",
+      PM_SLACK_ID: "U_PM",
+      SCHEDULE_CHANNEL_ID: "C_SCH",
+    });
+
+    const handler = app._registered.actions["^schedule_token_pick_\\d+$"];
+    await handler({
+      ack: async () => {},
+      body: {
+        user: { id: "U1" },
+        actions: [{ value: JSON.stringify({ pendingId, pivoId: "", koreanProjectName: "내가 고른 작품" }) }],
+      },
+      client: makeFakeClient({ chat: { postMessage: async () => ({ ts: "t" }) } }),
+    });
+
+    assert.equal(askedWorkName, "내가 고른 작품", "버튼이 실어 온 이름으로 조회해야 한다");
+    assert.notEqual(askedWorkName, "전혀 다른 작품");
+  });
+
+  // ★B4 회귀 — 버튼 payload 의 lang 이 납품 탭 선택까지 전달돼야 한다.
+  it("후보가 실어 온 lang 으로 납품 탭을 고른다 — 한일이 중일 탭으로 새지 않게", async () => {
+    const draftStore = new Map();
+    const pendingId = "sched_pending_koja";
+    draftStore.set(pendingId, {
+      type: "schedule_pending", ownerUserId: "U_OWNER",
+      parsed: { episode: "5", work_title_ko: "한일작품", work_title_ja: "" },
+    });
+
+    const app = makeFakeApp();
+    let askedLang = null;
+    registerScheduleActions(app, {
+      draftStore,
+      loadTitleRowsFromSheet: async () => [],   // 시트에서 못 찾아도 payload 의 lang 은 살아야 한다
+      matchWorkTitleFromSheet: async () => null,
+      fetchDeliveryDate: async (_w, _ep, lang) => { askedLang = lang; return null; },
+      handleScheduleExt: async () => {},
+      generateDraftId: () => "d_new",
+      PM_SLACK_ID: "U_PM", SCHEDULE_CHANNEL_ID: "C_SCH",
+    });
+
+    const handler = app._registered.actions["^schedule_token_pick_\\d+$"];
+    await handler({
+      ack: async () => {},
+      body: {
+        user: { id: "U1" },
+        actions: [{ value: JSON.stringify({ pendingId, pivoId: "301", koreanProjectName: "한일작품", lang: "ko-ja" }) }],
+      },
+      client: makeFakeClient({ chat: { postMessage: async () => ({ ts: "t" }) } }),
+    });
+
+    assert.equal(askedLang, "ko-ja", "zh-ja 로 떨어지면 한일 작품을 중일 납품 탭에서 찾는다");
+  });
 });

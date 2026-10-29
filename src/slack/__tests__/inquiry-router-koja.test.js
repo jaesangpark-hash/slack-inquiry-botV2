@@ -23,6 +23,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const createInquiryRouter = require("../inquiry-router");
+const { createTriggerEmojiMap } = require("../../utils/trigger");
 
 function spy(returnValue) {
   const calls = [];
@@ -59,6 +60,8 @@ function makeDeps(row = ZH_ROW, overrides = {}) {
       handleScheduleExt: noopSpy(), handleMultipleInquiry: noopSpy(),
       handleWorkerRelay: noopSpy(), handleRetakeInquiry: noopSpy(), handleFileOrderInquiry: noopSpy(),
     },
+    // 안내문의 이모지 이름은 하드코딩이 아니라 이 맵에서 역조회한다 — env 를 바꿔도 안내가 안 틀어지게.
+    triggerEmojis: createTriggerEmojiMap({ zhJa: "문의봇소환", koJa: "한일문의봇소환" }),
     retakeChannels: new Set(["RETAKE_CH1"]),
     analyzeInquiryWithAI: spy({ title_ja: "テスト", title_ko: "테스트", episode: "1" }),
     ...overrides,

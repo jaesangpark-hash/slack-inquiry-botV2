@@ -18,7 +18,7 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const { assertTriggerEmoji } = require("../env");
-const { isTriggerReaction, matchTriggerReaction, createTriggerEmojiMap } = require("../trigger");
+const { isTriggerReaction, matchTriggerReaction, createTriggerEmojiMap, emojiForLangPair } = require("../trigger");
 
 // ── 공통 fixtures ─────────────────────────────────────────────────────────────
 
@@ -55,6 +55,14 @@ describe("assertTriggerEmoji guard", () => {
 
   test("둘 다 있으면 throw 없음", () => {
     assert.doesNotThrow(() => assertTriggerEmoji({ TRIGGER_EMOJI: PROD_EMOJI, TRIGGER_EMOJI_KO_JA: KO_EMOJI }));
+  });
+
+  // ★값이 같으면 이모지→언어쌍 표가 덮여 모든 소환이 한일이 된다. 부팅에서 잡는다.
+  test("둘이 같은 값이면 throw — 조용히 전부 한일로 처리되느니 안 뜨는 게 낫다", () => {
+    assert.throws(
+      () => assertTriggerEmoji({ TRIGGER_EMOJI: PROD_EMOJI, TRIGGER_EMOJI_KO_JA: PROD_EMOJI }),
+      /같다/,
+    );
   });
 
   test("dev 이모지 조합도 throw 없음", () => {
@@ -102,5 +110,35 @@ describe("reaction 분기 (이모지 맵 기반)", () => {
     const partial = createTriggerEmojiMap({ zhJa: PROD_EMOJI, koJa: "" });
     assert.equal(partial.size, 1);
     assert.equal(matchTriggerReaction("", partial), false);
+  });
+
+  // ★두 env 에 같은 값을 넣으면 Map 이 덮여 모든 소환이 ko-ja 가 된다. 증상은 "중일 작품을
+  //   못 찾는다"로만 보여 원인을 짚기 어렵다 — 조용히 틀리느니 부팅에서 멈춘다.
+  test("중일·한일 이모지가 같으면 부팅에서 멈춘다", () => {
+    assert.throws(
+      () => createTriggerEmojiMap({ zhJa: PROD_EMOJI, koJa: PROD_EMOJI }),
+      /같다/,
+      "덮어써진 채로 뜨면 중일 소환이 전부 한일로 처리된다",
+    );
+  });
+
+  test("한쪽만 있으면 같은 값 검사에 걸리지 않는다", () => {
+    assert.doesNotThrow(() => createTriggerEmojiMap({ zhJa: PROD_EMOJI }));
+    assert.doesNotThrow(() => createTriggerEmojiMap({ koJa: KO_EMOJI }));
+  });
+});
+
+describe("emojiForLangPair — 안내문의 이모지 이름 역조회", () => {
+  const emojis = createTriggerEmojiMap({ zhJa: PROD_EMOJI, koJa: KO_EMOJI });
+
+  test("언어쌍으로 이모지 이름을 되찾는다 — 안내문 하드코딩을 없애려고", () => {
+    assert.equal(emojiForLangPair(emojis, "ko-ja"), KO_EMOJI);
+    assert.equal(emojiForLangPair(emojis, "zh-ja"), PROD_EMOJI);
+  });
+
+  test("없는 언어·빈 맵이면 null — 안내문에서 그 문장만 빠지게", () => {
+    assert.equal(emojiForLangPair(emojis, "en-ja"), null);
+    assert.equal(emojiForLangPair(new Map(), "ko-ja"), null);
+    assert.equal(emojiForLangPair(null, "ko-ja"), null);
   });
 });

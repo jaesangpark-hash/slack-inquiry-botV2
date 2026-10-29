@@ -5,6 +5,7 @@
 const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("../slack/title-selection-payload");
+const { withinAckBudget } = require("../utils/ack-budget");
 
 /**
  * @param {import("@slack/bolt").App} app
@@ -124,22 +125,38 @@ module.exports = function registerScheduleActions(app, deps) {
     }
     // PIVO 를 먼저 보되 **틀렸다고 제목을 버리지 않는다**. 종전엔 PIVO 가 틀리면 제목을 적어도
     // 무시돼서 작품을 못 찾았다(2026-10-28 AIA 리뷰).
-    let matchedTitle = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
-    if (!matchedTitle && titleInput) {
-      matchedTitle = await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null);
+    const lookup = (async () => {
+      const byPivo = pivoInput ? await matchWorkTitleFromSheet({ pivoId: pivoInput }).catch(() => null) : null;
+      if (byPivo) return byPivo;
+      return titleInput ? await matchWorkTitleFromSheet(titleInput, titleInput).catch(() => null) : null;
+    })();
+    // ★3초 안에 ack 하지 못하면 Slack 이 제 오류창을 띄우고 입력도 날아간다. 캐시가 식은
+    //   날엔 시트 조회만으로 그 시간을 넘길 수 있어, 예산을 넘기면 창부터 닫는다.
+    const { timedOut, value } = await withinAckBudget(lookup);
+    let matchedTitle = value;
+    const notFoundMsg = () => (titleInput
+      ? `PIVO ID ${pivoInput} 도, 작품명 「${titleInput}」 도 못 찾았어.`
+      : `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어. 작품명으로도 넣어볼 수 있어.`);
+
+    if (!timedOut) {
+      // ★PIVO 를 적었는데 못 찾은 경우만 창 안에서 막는다. 닫고 나서 "못 찾았어"라고 하면
+      //   처음부터 다시 열어야 한다.
+      //   제목만 적고 못 찾은 건 막지 않는다 — 마스터에 없는 작품도 원문 이름으로 스케줄
+      //   요청을 넣을 수 있어야 한다(title-meaning-r3 에 고정된 기존 동작).
+      if (!matchedTitle && pivoInput) {
+        await ack({ response_action: "errors", errors: { sched_pivoid_block: notFoundMsg() } });
+        return;
+      }
+      await ack();
+    } else {
+      await ack();
+      matchedTitle = await lookup;   // 창은 닫았으니 조회는 뒤에서 마저 기다린다
+      if (!matchedTitle && pivoInput) {
+        // 창이 이미 닫혀 인라인 오류를 못 쓴다 — 같은 내용을 DM 으로 알린다.
+        await client.chat.postMessage({ channel: body.user.id, text: notFoundMsg() })
+          .catch(e => console.error("[schedule_title_modal] PIVO 미발견 DM 실패:", e?.message ?? e));
+      }
     }
-    // ★PIVO 를 적었는데 못 찾은 경우만 창 안에서 막는다. 닫고 나서 "못 찾았어"라고 하면
-    //   처음부터 다시 열어야 한다.
-    //   제목만 적고 못 찾은 건 막지 않는다 — 마스터에 없는 작품도 원문 이름으로 스케줄
-    //   요청을 넣을 수 있어야 한다(title-meaning-r3 에 고정된 기존 동작).
-    if (!matchedTitle && pivoInput) {
-      const msg = titleInput
-        ? `PIVO ID ${pivoInput} 도, 작품명 「${titleInput}」 도 못 찾았어.`
-        : `PIVO ID ${pivoInput} 에 해당하는 작품을 못 찾았어. 작품명으로도 넣어볼 수 있어.`;
-      await ack({ response_action: "errors", errors: { sched_pivoid_block: msg } });
-      return;
-    }
-    await ack();
     if (!pending) return;
     const koreanProjectName = matchedTitle?.koreanProjectName || null;
     const displayWorkName = koreanProjectName || titleInput || matchedTitle?.japaneseDisplayTitle || "";
@@ -168,16 +185,20 @@ module.exports = function registerScheduleActions(app, deps) {
   app.action(/^schedule_token_pick_\d+$/, async ({ ack, body, client }) => {
     await ack();
     const selection = JSON.parse(body.actions[0].value || "{}");
-    const { pendingId, pivoId } = selection;
+    const { pendingId, pivoId, lang: pickedLang } = selection;
     const koreanProjectName = readKoreanProjectNameFromSelectionPayload(selection);
     const pending = draftStore.get(pendingId);
     if (!pending) return;
 
-    const rows         = await loadTitleRowsFromSheet();
-    const matchedTitle = rows.find(row => row.pivoId === pivoId) || { koreanProjectName, pivoId };
+    const rows = await loadTitleRowsFromSheet();
+    // ★pivoId 가 빈 후보(마스터에 PIVO 가 없는 작품)를 누르면 "" === "" 로 PIVO 칸이 빈
+    //   첫 행 — 전혀 다른 작품 — 이 걸린다. 빈 값일 땐 조회 자체를 하지 않는다.
+    const matchedTitle = (pivoId && rows.find(row => row.pivoId === pivoId))
+      || { koreanProjectName, pivoId, lang: pickedLang || null };
     const workNameKo   = matchedTitle.koreanProjectName || koreanProjectName;
+    // 버튼이 실어 온 lang 이 1순위 — 소환 이모지로 이미 언어가 갈린 결과다.
     const delivery     = pending.parsed?.episode
-      ? await fetchDeliveryDate(workNameKo, pending.parsed.episode, matchedTitle?.lang || "zh-ja", workNameKo).catch(() => null)
+      ? await fetchDeliveryDate(workNameKo, pending.parsed.episode, pickedLang || matchedTitle?.lang || "zh-ja", workNameKo).catch(() => null)
       : null;
 
     if (delivery) {

@@ -64,7 +64,10 @@ function buildCandidateBlocks({
   manualActionId, manualLabel = "✏️ 직접 입력", headline, valueFor, max = 5,
 }) {
   const shown = (candidates || []).slice(0, max);
-  const payload = valueFor || ((row) => ({ pendingId, pivoId: row.pivoId, koreanProjectName: row.koreanProjectName }));
+  // ★lang 을 반드시 싣는다. 버튼을 누른 뒤엔 소환 이모지가 남아 있지 않아서, 여기서 빠지면
+  //   받는 쪽이 어느 언어인지 되찾을 방법이 없고 납품 탭이 조용히 zh-ja 로 떨어진다.
+  const payload = valueFor
+    || ((row) => ({ pendingId, pivoId: row.pivoId, koreanProjectName: row.koreanProjectName, lang: row.lang || null }));
   return [
     { type: "section", text: { type: "mrkdwn", text: headline || `*작품 후보 ${shown.length}건* — 해당하는 작품을 선택해줘.` } },
     {

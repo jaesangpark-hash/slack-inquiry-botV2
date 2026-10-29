@@ -9,6 +9,7 @@
  */
 const { extractPivoIdGuess } = require("../utils/pivo-id");
 const { buildCandidateBlocks, buildManualEntryBlocks } = require("./work-picker-blocks");
+const { emojiForLangPair } = require("../utils/trigger");
 
 module.exports = function createInquiryRouter(deps) {
   const {
@@ -42,6 +43,8 @@ module.exports = function createInquiryRouter(deps) {
       handleRetakeInquiry,
       handleFileOrderInquiry,
     },
+    // 소환 이모지 맵 — 「반대 언어였다」 안내에서 이모지 이름을 되찾는 데 쓴다
+    triggerEmojis,
     // RETAKE 채널 Set (진입점에서 주입)
     retakeChannels,
     // RETAKE 스레드 작품명 추출용 AI 분석기 (UD-1, reaction only)
@@ -529,10 +532,13 @@ module.exports = function createInquiryRouter(deps) {
         if (candResult?.wrongLang) {
           // 이모지로 언어를 잘라서 못 찾았는데 반대 언어에는 있다. 그냥 "없음"으로 끝내면
           // APM 이 왜 안 나오는지 모른다 - 어느 이모지로 다시 찍어야 하는지 짚어 준다.
-          const other = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일" : "중일";
-          const emoji = candResult.wrongLang[0]?.lang === "ko-ja" ? "한일문의봇소환" : "문의봇소환";
+          const otherLang = candResult.wrongLang[0]?.lang === "ko-ja" ? "ko-ja" : "zh-ja";
+          const other = otherLang === "ko-ja" ? "한일" : "중일";
+          // 이모지 이름은 env 로 바뀌므로 실제 맵에서 되찾는다(하드코딩하면 틀린 안내가 나간다).
+          const emoji = emojiForLangPair(triggerEmojis, otherLang);
+          const retry = emoji ? `:${emoji}: 로 다시 찍거나, ` : "";
           await client.chat.update({ channel: dmChannel, ts: progressMsg.ts,
-            text: `*${analysis.title_ko || analysis.title_ja || "-"}* 은 ${other} 작품이야. :${emoji}: 로 다시 찍거나, 아래에서 골라줘.` });
+            text: `*${analysis.title_ko || analysis.title_ja || "-"}* 은 ${other} 작품이야. ${retry}아래에서 골라줘.` });
           await client.chat.postMessage({ channel: dmChannel, text: `${other} 작품이야. 맞으면 골라줘.`,
             blocks: buildCandidateBlocks({
               candidates: candResult.wrongLang, pendingId,

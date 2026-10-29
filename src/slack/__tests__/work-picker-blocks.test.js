@@ -30,8 +30,8 @@ const {
   candidateLabel, CANDIDATE_LABEL_MAX,
 } = require("../work-picker-blocks");
 
-const row = (ko, ja = "", fix = "", pivo = "") =>
-  ({ koreanProjectName: ko, japaneseDisplayTitle: ja, japaneseFixedTitle: fix, pivoId: pivo });
+const row = (ko, ja = "", fix = "", pivo = "", lang = "zh-ja") =>
+  ({ koreanProjectName: ko, japaneseDisplayTitle: ja, japaneseFixedTitle: fix, pivoId: pivo, lang });
 
 describe("buildCandidateBlocks", () => {
   const candidates = [row("신과 함께 레벨업", "", "", "82357"), row("회귀자 사용설명서", "", "", "86975")];
@@ -45,11 +45,25 @@ describe("buildCandidateBlocks", () => {
     assert.equal(els[2].value, "p1");
   });
 
-  test("버튼 value 에 선택 핸들러가 읽는 세 필드가 실린다", () => {
+  test("버튼 value 에 선택 핸들러가 읽는 네 필드가 실린다", () => {
     const [, actions] = buildCandidateBlocks({ candidates, pendingId: "p1", actionIdPrefix: "pick_", pivoActionId: "x" });
     assert.deepEqual(JSON.parse(actions.elements[0].value), {
-      pendingId: "p1", pivoId: "82357", koreanProjectName: "신과 함께 레벨업",
+      pendingId: "p1", pivoId: "82357", koreanProjectName: "신과 함께 레벨업", lang: "zh-ja",
     });
+  });
+
+  // ★버튼을 누른 뒤엔 소환 이모지가 남아 있지 않다. lang 이 빠지면 받는 쪽이 언어를
+  //   되찾을 수 없어 한일 작품도 중일 납품 탭에서 찾는다.
+  test("한일 후보면 lang 도 한일로 실린다", () => {
+    const koJa = [row("신과 함께 레벨업", "", "", "82357", "ko-ja")];
+    const [, actions] = buildCandidateBlocks({ candidates: koJa, pendingId: "p1", actionIdPrefix: "pick_", pivoActionId: "x" });
+    assert.equal(JSON.parse(actions.elements[0].value).lang, "ko-ja");
+  });
+
+  test("lang 이 없는 행이면 null 로 실어 보낸다 — 빈 문자열이 언어로 둔갑하지 않게", () => {
+    const noLang = [{ koreanProjectName: "작품", pivoId: "1" }];
+    const [, actions] = buildCandidateBlocks({ candidates: noLang, pendingId: "p1", actionIdPrefix: "pick_", pivoActionId: "x" });
+    assert.equal(JSON.parse(actions.elements[0].value).lang, null);
   });
 
   test("max 를 넘는 후보는 잘린다", () => {

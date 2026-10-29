@@ -10,7 +10,7 @@
  *     - 두 마스터를 같이 읽고 행마다 lang 이 붙는다
  *     - 한일 마스터 ID 가 없으면 중일만 읽는다 (설정 안 한 환경에서도 동작)
  *     - 숫자가 아닌 pivo_id(取り下げ)는 ID 로 쓰지 않는다
- *     - 한쪽 로드가 실패하면 반쪽을 캐시하지 않고 기존 캐시를 유지한다
+ *     - 한쪽 로드가 실패하면 반쪽을 캐시하지 않는다 (첫 로드면 성공한 쪽만 그 회차에 쓴다)
  *   언어 우선순위:
  *     - 같은 제목이 양쪽에 있으면 소환 이모지가 가리킨 쪽을 고른다
  *     - 이모지를 반대로 찍어도 작품을 못 찾지는 않는다 (반대쪽을 고를 뿐)
@@ -106,12 +106,20 @@ describe("한일 마스터 동시 적재", () => {
   });
 
   test("한쪽 로드가 실패하면 반쪽을 캐시하지 않는다", async () => {
-    const { matcher } = makeMatcher({
+    const { matcher, calls } = makeMatcher({
       zh: [zhRow({ ko: "작품A", pivo: "201" })],
       failing: KO_ID,
     });
-    const rows = await matcher.loadTitleRowsFromSheet();
-    assert.deepEqual(rows, [], "중일만 담아 5분간 물고 있으면 한일 문의가 조용히 '작품 없음'이 된다");
+    // 캐시가 비어 있던 첫 로드라 성공한 중일은 이번 회차에 쓴다 — 빈 배열을 주면
+    // 멀쩡한 중일 문의까지 '작품 없음'이 된다.
+    const first = await matcher.loadTitleRowsFromSheet();
+    assert.deepEqual(first.map(r => r.lang), ["zh-ja"]);
+
+    // 다만 캐시에는 넣지 않는다. 반쪽을 5분간 물고 있으면 한일 문의가 조용히 '작품 없음'이
+    // 된다 — 다음 호출이 다시 시트를 때리는 것으로 확인한다.
+    const before = calls.length;
+    await matcher.loadTitleRowsFromSheet();
+    assert.ok(calls.length > before, "반쪽이 캐시됐다면 두 번째 호출은 시트를 안 읽는다");
   });
 });
 
