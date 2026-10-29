@@ -73,6 +73,8 @@ function createInquiryPublisher({
             deliveryDate: draft.deliveryDate,
             inquiryType: draft.inquiryType,
             inquiryContent: draft.inquiryContent,
+            summary: draft.summary,
+            hasThreadContext: draft.hasThreadContext === true,
             actionRequired: draft.actionRequired,
             draftId: draft.draftId,
             historyRowIndex,
@@ -89,7 +91,12 @@ function createInquiryPublisher({
         postThreadMessage: ({ mainMessageTs }) => client.chat.postMessage({
           channel: targetChannelId,
           thread_ts: mainMessageTs,
-          text: buildThreadMessage({ summary: draft.summary, sourceLink: draft.sourceLink }),
+          text: buildThreadMessage({
+            summary: draft.summary,
+            sourceLink: draft.sourceLink,
+            inquiryContent: draft.inquiryContent,
+            hasThreadContext: draft.hasThreadContext === true,
+          }),
         }),
         ...(completionNoticeText ? {
           postCompletionNotice: () => client.chat.postMessage({

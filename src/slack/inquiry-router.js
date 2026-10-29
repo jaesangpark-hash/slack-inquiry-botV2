@@ -613,6 +613,12 @@ module.exports = function createInquiryRouter(deps) {
       originalTs:        ts,
       workName:      matchedTitle.koreanProjectName || analysis.title_ko || matchedTitle.japaneseDisplayTitle || analysis.title_ja || "",
       workNameKo:    matchedTitle.koreanProjectName || analysis.title_ko || "",
+      // ★이 세 줄이 없으면 최종 메시지의 작품명 보조줄(FIX·原題·고객사용)이 통째로 빠진다.
+      //   직접입력 경로엔 있었는데 **이모지 소환 경로(이 기본 처리)에만 없었다** — 즉 운영 대부분에서
+      //   안 나오고 있었다. 매칭 결과에 이미 들어 있는 값이라 담기만 하면 된다.
+      workNameJaFixed:   matchedTitle.japaneseFixedTitle   || "",
+      workNameJaDisplay: matchedTitle.japaneseDisplayTitle || "",
+      workNameZh:        matchedTitle.chineseOriginalTitle || "",
       pivoId:        matchedTitle.pivoId || null,
       lang:          matchedTitle.lang   || null,
       episode:       analysis.episode || null,

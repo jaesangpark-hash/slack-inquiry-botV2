@@ -147,26 +147,29 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     };
   }
 
+  // ★초안은 **보낼 것 그대로** 여야 한다.
+  //   종전엔 초안과 최종 메시지가 각자 레이아웃을 들고 있어 서로 어긋났다(재상 님 실측 2026-10-28):
+  //     · 스레드 맥락 건은 초안에 「문의 내용」이 아예 없는데 채널엔 스레드 전문이 통째로 나갔다
+  //     · 요약·원문 링크는 초안엔 본문에, 실제론 첫 댓글에 있었다
+  //     · 작품명 보조줄(FIX·原題·고객사용)은 초안에 없었다
+  //   그래서 초안을 최종 빌더로 그려 낸다 — 레이아웃이 한 벌뿐이라 구조적으로 못 어긋난다.
   function buildDraftPreviewBlocks(draft) {
+    const main = buildFinalMainMessage({
+      ...draft,
+      submitterId: draft.ownerUserId || draft.userId || "",
+      langPair:    draft.lang || null,
+      hasThreadContext: draft.hasThreadContext === true,
+    });
+    // 최종 블록에서 완료 버튼만 뺀다. 멘션 줄은 남긴다 — 누구에게 가는지 보고 전송하는 게 맞다
+    // (초안은 APM 과 봇 둘뿐인 DM 이라 멘션 대상에게 알림이 가지 않는다).
     const blocks = [
-      { type: "section", text: { type: "mrkdwn", text: `*문의 초안*` }},
-      { type: "section", text: { type: "mrkdwn", text: `*작품명:* ${draft.workName||"-"}${draft.workNameKo && draft.workNameKo !== draft.workName ? `　(${draft.workNameKo})` : ""}\n*회차:* ${draft.episode ? draft.episode+"화" : "-"}\n*납품일:* ${draft.deliveryDate||"-"}\n*문의 유형:* ${draft.inquiryType||"-"}` }},
+      { type: "section", text: { type: "mrkdwn", text: "*문의 초안* — 아래 그대로 전송돼" }},
+      ...main.blocks.filter(blk => blk.type !== "actions"),
+      { type: "section", text: { type: "mrkdwn", text: `*↳ 첫 댓글로 따라붙는 내용*\n${buildThreadMessage({
+        summary: draft.summary, sourceLink: draft.sourceLink,
+        inquiryContent: draft.inquiryContent, hasThreadContext: draft.hasThreadContext === true,
+      })}` }},
     ];
-
-    // 스레드 맥락이 있으면 요약만, 없으면 전체 내용 표시
-    if (draft.hasThreadContext) {
-      blocks.push({ type: "section", text: { type: "mrkdwn", text: `*요약:*\n${draft.summary||"-"}` }});
-      blocks.push({ type: "section", text: { type: "mrkdwn", text: `*필요 액션:*\n${draft.actionRequired||"-"}` }});
-      blocks.push({ type: "context", elements: [
-        { type: "mrkdwn", text: "💬 스레드 전체 맥락을 분석했어. 상세 내용은 원문 링크에서 확인해줘." },
-      ]});
-    } else {
-      blocks.push({ type: "section", text: { type: "mrkdwn", text: `*${draft.sourceLang === "ko" ? "문의 내용" : "번역 내용"}:*\n${draft.inquiryContent||"-"}` }});
-      blocks.push({ type: "section", text: { type: "mrkdwn", text: `*요약:*\n${draft.summary||"-"}` }});
-      blocks.push({ type: "section", text: { type: "mrkdwn", text: `*필요 액션:*\n${draft.actionRequired||"-"}` }});
-    }
-
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: `*원문 링크:*\n${draft.sourceLink||"-"}` }});
 
     // 작업 관련 문의일 경우 재수급봇 유도 문구 추가
     if (draft.inquiryType === "작업 관련 문의") {
@@ -199,7 +202,11 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     deliveryDate,
     inquiryType,
     inquiryContent,
+    summary,
     actionRequired,
+    // 스레드 맥락 건이면 inquiryContent 가 **스레드 전체 번역문**이다. 그대로 본문에 박으면
+    // 채널에 덤프가 올라가 읽히지 않는다 — 본문엔 요약을 쓰고 전문은 첫 댓글로 내린다.
+    hasThreadContext = false,
     draftId,
     historyRowIndex,
     originalChannelId,
@@ -229,14 +236,24 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
         { type: "section", fields: [
           // PM이 고객사·작업자와 소통할 때 매번 찾아야 했던 FIX 타이틀(일본어 확정명)과 원제(중국어)를
           // 같이 뿌린다. 둘 다 '출판사 드라이브 링크' 시트(E·B열)에서 이미 매칭 단계에 읽고 있던 값이다.
-          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}${titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName, langPair })}` },
+          // 시트 매칭이 안 돼 직접 입력한 건은 workName(일본어)과 workNameKo(한국어)가 다르다.
+          // 종전엔 초안에만 한국어가 괄호로 붙고 실제 메시지엔 빠졌다 — 둘 다 붙인다.
+          { type: "mrkdwn", text: `*작품명*\n${workName||"-"}${
+            workNameKo && workNameKo !== workName ? `　(${workNameKo})` : ""
+          }${titleExtraLines({ workNameJaFixed, workNameJaDisplay, workNameZh, workName, langPair })}` },
           { type: "mrkdwn", text: `*회차*\n${episode ? episode+"화" : "-"}` },
           { type: "mrkdwn", text: `*납품일*\n${deliveryDate||"-"}` },
           { type: "mrkdwn", text: `*문의 유형*\n${inquiryType||"-"}` },
-          { type: "mrkdwn", text: `*담당자*\n<@${submitterId}>` },
+          // 초안 단계에선 소환한 APM 이 그대로 담당자가 되지만, 값이 비면 `<@>` 라는 깨진 멘션이 찍힌다.
+          { type: "mrkdwn", text: `*담당자*\n${submitterId ? `<@${submitterId}>` : "-"}` },
         ]},
         { type: "divider" },
-        { type: "section", text: { type: "mrkdwn", text: `*문의 내용*\n${inquiryContent||"-"}` }},
+        { type: "section", text: { type: "mrkdwn", text: `*문의 내용*\n${bodyText(
+          { inquiryContent, summary, hasThreadContext }
+        )}` }},
+        ...(hasThreadContext ? [{ type: "context", elements: [
+          { type: "mrkdwn", text: "💬 스레드 전체를 요약했어. 전문은 첫 댓글, 원본은 원문 링크." },
+        ]}] : []),
         { type: "divider" },
         { type: "section", text: { type: "mrkdwn", text: `⚡ *필요 액션*\n${actionRequired||"-"}` }},
         { type: "divider" },
@@ -286,8 +303,20 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     return lines.length ? `\n${lines.join("\n")}` : "";
   }
 
-  function buildThreadMessage({ summary, sourceLink }) {
-    return `📋 *요약*\n${summary||"-"}\n\n🔗 *원문 링크*\n${sourceLink||"-"}`;
+  // 본문에 들어갈 글. 스레드 맥락 건은 inquiryContent 가 스레드 전체 번역문이라 요약을 쓴다.
+  // 요약이 비었을 때만 어쩔 수 없이 전문으로 떨어진다 — 빈 칸을 내보내느니 길게 내보낸다.
+  function bodyText({ inquiryContent, summary, hasThreadContext }) {
+    if (hasThreadContext) return summary || inquiryContent || "-";
+    return inquiryContent || "-";
+  }
+
+  // 첫 댓글. 본문이 요약이면 여기에 전문을 싣고, 본문이 전문이면 여기에 요약을 싣는다 —
+  // 어느 쪽이든 두 가지가 한 스레드에 다 남는다(정보 손실 없음).
+  function buildThreadMessage({ summary, sourceLink, inquiryContent, hasThreadContext = false }) {
+    const head = hasThreadContext
+      ? `📋 *전체 내용*\n${inquiryContent || summary || "-"}`
+      : `📋 *요약*\n${summary || "-"}`;
+    return `${head}\n\n🔗 *원문 링크*\n${sourceLink||"-"}`;
   }
 
   // ── 복수 문의 요약 메시지 ────────────────────────────────
