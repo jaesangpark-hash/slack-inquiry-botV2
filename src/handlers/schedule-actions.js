@@ -170,7 +170,7 @@ module.exports = function registerScheduleActions(app, deps) {
     const displayWorkName = koreanProjectName || titleInput || matchedTitle?.japaneseDisplayTitle || "";
     const originalWorkTitle = titleInput || pending.parsed?.work_title_ja || null;
     const delivery     = pending.parsed?.episode
-      ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, koreanProjectName).catch(() => null)
+      ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, matchedTitle?.lang || pending.langPair || "zh-ja" /* 확정 작품 > 소환 이모지 > 기본 */, koreanProjectName).catch(() => null)
       : null;
     if (delivery) {
       await client.chat.postMessage({ channel: body.user.id, text: `*${delivery.workName} ${delivery.episodeLabel}* 납품일: *${delivery.allSame ? delivery.deliveryDate : delivery.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")}*` });
@@ -180,6 +180,7 @@ module.exports = function registerScheduleActions(app, deps) {
     await handleScheduleExt(client, body.user.id, {
       ...pending.parsed,
       ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      langPair: pending.langPair || null,   // 작품·납품일을 못 찾아도 수신 PM 을 고를 수 있게(AIA D1)
       displayWorkName,
       originalWorkTitle,
       koreanProjectName,
@@ -218,6 +219,7 @@ module.exports = function registerScheduleActions(app, deps) {
     await handleScheduleExt(client, body.user.id, {
       ...pending.parsed,
       ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      langPair: pickedLang || pending.langPair || null,   // 버튼이 실어 온 lang 우선(AIA D1)
       work_title_ko: workNameKo,
     }, matchedTitle, delivery, pending.sourceLink || "");
     draftStore.delete(pendingId);

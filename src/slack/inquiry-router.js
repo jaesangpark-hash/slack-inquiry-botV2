@@ -514,7 +514,6 @@ module.exports = function createInquiryRouter(deps) {
         const pendingId = `pending_${Date.now()}`;
         draftStore.set(pendingId, {
           isPending:      true,
-        langPair,
           langPair,
           ownerUserId:    userId,
           userId,

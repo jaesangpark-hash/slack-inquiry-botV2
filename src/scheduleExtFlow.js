@@ -36,7 +36,8 @@ module.exports = function registerScheduleExtFlow(app, {
   }
   // 납품일 변경 요청의 목적지·수신 PM 은 **작품의 언어**가 정한다(한일은 검증 전이라 분리).
   // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다 — fetchDeliveryDate 가 실어 보낸다.
-  const langOf = (data) => data?.delivery?.lang || data?.matchedTitle?.lang || data?.lang || null;
+  // 확정 작품 > 소환 이모지. 작품·납품일을 둘 다 못 찾아도 수신 PM 이 공통으로 떨어지지 않게 한다(AIA D1).
+  const langOf = (data) => data?.delivery?.lang || data?.matchedTitle?.lang || data?.lang || data?.langPair || null;
   const SCHEDULE_CHANNEL_ID = (data) => langRouting.channelFor("schedule", langOf(data));
   const PM_SLACK_ID         = (data) => langRouting.pmSlackIdFor(langOf(data));
 
@@ -225,6 +226,7 @@ module.exports = function registerScheduleExtFlow(app, {
     const episode  = parsed.episode || null;
     const requesterUserId = parsed.requesterUserId || null;
     const ownerUserId = parsed.ownerUserId || null;
+    const langPair = parsed.langPair || null;   // 소환 이모지가 가리킨 언어(AIA D1)
 
     // 연장 일수 파싱 — extend_days 없으면 requested_date로 대체, 둘 다 없으면 수동 입력
     const extDays      = parsed.extend_days ? parseInt(parsed.extend_days, 10) : null;
@@ -234,6 +236,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
+        langPair,
         workName, pivoId, episode,
         episodes: episode ? [parseInt(episode, 10)] : [],
         delivery, sourceLink,
@@ -479,7 +482,8 @@ module.exports = function registerScheduleExtFlow(app, {
       const retryId = `schext_pending_${Date.now()}`;
       draftStore.set(retryId, {
         type: "schext_pending",
-        ownerUserId, workName, pivoId,
+        ownerUserId,
+        langPair, workName, pivoId,
         episode: null, episodes: [],
         delivery, sourceLink, requesterUserId,
         originalChannelId: originalChannelId || null,
@@ -603,7 +607,7 @@ module.exports = function registerScheduleExtFlow(app, {
         console.log(`[scheduleExt] requestedDate(${requestedDate}) - lastEndDate(${lastTaskEndDate.slice(0,10)}) = diff:${diff}`);
         const _makePending = () => {
           const pendingId = `schext_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
+          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, langPair, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
           return pendingId;
         };
         if (diff === 0) {
@@ -653,6 +657,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
+        langPair,
         workName, pivoId,
         episode: episodes[0], episodes,
         delivery, sourceLink, requesterUserId,
@@ -695,6 +700,7 @@ module.exports = function registerScheduleExtFlow(app, {
     draftStore.set(draftId, {
       type: "schext",
       ownerUserId,
+      langPair,
       workName, pivoId,
       episode: episodes[0],   // backward-compat
       episodes,

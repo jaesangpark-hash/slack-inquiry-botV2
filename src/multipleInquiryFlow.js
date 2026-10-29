@@ -170,7 +170,8 @@ ${text}`.trim();
   }
 
   // ── 항목 처리: 각 봇 플로우 연결 ─────────────────────────
-  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs = null) {
+  // langPair — 소환 이모지가 가리킨 언어. 작품을 못 찾은 항목도 수신자를 고를 수 있어야 한다(AIA D2).
+  async function processItem(client, dmChannel, item, matchedTitle, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs = null, langPair = null) {
     const koreanProjectName = matchedTitle?.koreanProjectName || item.work_title_ko || null;
     const displayWorkName = koreanProjectName
                          || matchedTitle?.displayWorkName
@@ -215,6 +216,7 @@ ${text}`.trim();
           workNameKo: koreanProjectName,
           pivoId: matchedTitle?.pivoId || null,
           lang: matchedTitle?.lang || null,
+          langPair,
           episode: episode || "",
           fileNumbers: item.file_numbers || [],
           reason: item.reason || "",
@@ -432,7 +434,7 @@ ${text}`.trim();
       client, body.user.id, item, matched,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
-      multiPending.ownerUserId, multiPending.threadTs,
+      multiPending.ownerUserId, multiPending.threadTs, multiPending.langPair || null,
     );
   });
 
@@ -453,7 +455,7 @@ ${text}`.trim();
       client, body.user.id, item, matchedTitle,
       multiPending.originalChannelId, multiPending.originalTs,
       multiPending.sourceLink, multiPending.requesterName, multiPending.requesterUserId,
-      multiPending.ownerUserId, multiPending.threadTs,
+      multiPending.ownerUserId, multiPending.threadTs, multiPending.langPair || null,
     );
   });
 
@@ -592,7 +594,7 @@ ${text}`.trim();
         await Promise.all(indices.map(async (i) => {
           const ri = resolvedItems[i];
           try {
-            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs);
+            await processItem(client, dmChannel, ri.item, ri.matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs, langPair);
           } catch (err) {
             console.error(`[multi] fallback 항목 ${i+1} 실패:`, err.message);
           }
@@ -673,7 +675,7 @@ ${text}`.trim();
             { type: "section", text: { type: "mrkdwn", text: `${header}\n처리 중...` }},
           ],
         });
-        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs);
+        await processItem(client, dmChannel, item, matched, originalChannelId, originalTs, sourceLink, requesterName, requesterUserId, ownerUserId, threadTs, langPair);
 
       } catch (e) {
         console.error(`[multi] 항목 ${i + 1} 처리 실패:`, e.message);
