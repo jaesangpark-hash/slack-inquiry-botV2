@@ -2,6 +2,13 @@
 
 const { describe, it, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_TGT", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 
 const registerScheduleActions = require("../schedule-actions");
 
@@ -39,8 +46,7 @@ describe("registerScheduleActions — 등록 검증", () => {
       fetchDeliveryDate: async () => null,
       handleScheduleExt: async () => {},
       generateDraftId: () => `draft_test_${Date.now()}`,
-      PM_SLACK_ID: "U_PM",
-      SCHEDULE_CHANNEL_ID: "C_SCH",
+      langRouting: routing(),
     };
     registerScheduleActions(app, deps);
   });
@@ -92,8 +98,7 @@ describe("schedule_pm_no — 핸들러 동작", () => {
       fetchDeliveryDate: async () => null,
       handleScheduleExt: async () => {},
       generateDraftId: () => "d1",
-      PM_SLACK_ID: "U_PM",
-      SCHEDULE_CHANNEL_ID: "C_SCH",
+      langRouting: routing(),
     });
 
     await app._registered.actions["schedule_pm_no"]({
@@ -134,8 +139,7 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
         forwardedParsed = parsed;
       },
       generateDraftId: () => "d_new",
-      PM_SLACK_ID: "U_PM",
-      SCHEDULE_CHANNEL_ID: "C_SCH",
+      langRouting: routing(),
     });
 
     const handler = app._registered.actions["^schedule_token_pick_\\d+$"];
@@ -178,8 +182,7 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
       fetchDeliveryDate: async (workName) => { askedWorkName = workName; return null; },
       handleScheduleExt: async () => {},
       generateDraftId: () => "d_new",
-      PM_SLACK_ID: "U_PM",
-      SCHEDULE_CHANNEL_ID: "C_SCH",
+      langRouting: routing(),
     });
 
     const handler = app._registered.actions["^schedule_token_pick_\\d+$"];
@@ -214,7 +217,7 @@ describe("schedule_token_pick — draftStore 공유 + handleScheduleExt 호출",
       fetchDeliveryDate: async (_w, _ep, lang) => { askedLang = lang; return null; },
       handleScheduleExt: async () => {},
       generateDraftId: () => "d_new",
-      PM_SLACK_ID: "U_PM", SCHEDULE_CHANNEL_ID: "C_SCH",
+      langRouting: routing(),
     });
 
     const handler = app._registered.actions["^schedule_token_pick_\\d+$"];
