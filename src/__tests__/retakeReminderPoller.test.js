@@ -132,7 +132,7 @@ describe("retakeReminderPoller.tick", () => {
     assert.strictEqual(slack.postCalls.length, 1);
     const post = slack.postCalls[0];
     assert.strictEqual(post.thread_ts, "1790904681.097009"); // 납품 스레드에 답글
-    assert.match(post.text, /모두 제출 완료/);
+    assert.match(post.text, /전건 제출 완료/);
     assert.doesNotMatch(post.text, /<@/); // 아무도 태그 안 함
   });
 
@@ -149,7 +149,7 @@ describe("retakeReminderPoller.tick", () => {
     assert.match(t, /미제출 리테이크 알림/);        // 리마인더
     assert.match(t, /미제출작품/);
     assert.doesNotMatch(t, /완료작품/);              // 완료건은 리마인더 목록에서 제외
-    assert.doesNotMatch(t, /모두 제출 완료/);        // 안내 아님
+    assert.doesNotMatch(t, /전건 제출 완료/);        // 안내 아님
   });
 
   test("감시 대상 채널 아니면 제외", async () => {
@@ -346,7 +346,7 @@ describe("retakeReminderPoller 발송 직전 Totus 재확인 (apiFetch)", () => 
     const poller = createRetakeReminderPoller({ retakeWatchStore: store, slackClient: slack, watchChannels: WATCH, apiFetch });
     await poller.tick();
     assert.strictEqual(slack.postCalls.length, 1);
-    assert.match(slack.postCalls[0].text, /모두 제출 완료/);
+    assert.match(slack.postCalls[0].text, /전건 제출 완료/);
     assert.doesNotMatch(slack.postCalls[0].text, /<@/); // 태그 없음
   });
 
