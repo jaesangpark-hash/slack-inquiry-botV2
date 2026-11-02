@@ -376,6 +376,38 @@ describe("createRetakeWatchStore.cleanupOldRows (rolling 보존)", () => {
     assert.strictEqual(res.deleted, 0);
     assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0);
   });
+
+  test("폴러 tick(runExclusive) 진행 중이면 정리는 tick이 끝난 뒤 지운다 — 읽어 둔 rowIndex 밀림 방지", async () => {
+    const getRows = [HEADER, rowOf("2026-09-01T10:00:00+09:00", "old-1"), rowOf("2026-10-22T10:00:00+09:00", "new-1")];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const order = [];
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const tickLike = store.runExclusive(async () => {
+      order.push("tick-start");
+      await gate; // Totus 조회 중
+      order.push("tick-end");
+    });
+    const cleanup = store.cleanupOldRows({ maxAgeDays: 21, now: NOW }).then(() => order.push("cleanup-done"));
+
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 0); // tick 진행 중 → 아직 안 지움
+    release();
+    await Promise.all([tickLike, cleanup]);
+    assert.deepStrictEqual(order, ["tick-start", "tick-end", "cleanup-done"]);
+    assert.strictEqual(sheetsClient.batchUpdateCalls.length, 1);
+  });
+
+  test("앞 작업이 실패해도 대기 중인 정리는 진행된다", async () => {
+    const getRows = [HEADER, rowOf("2026-09-01T10:00:00+09:00", "old-1")];
+    const sheetsClient = makeFakeSheetsClient({ getRows });
+    const store = createRetakeWatchStore({ sheetsClient, ...BASE_DEPS });
+    const failing = store.runExclusive(async () => { throw new Error("tick 실패"); });
+    const res = await store.cleanupOldRows({ maxAgeDays: 21, now: NOW });
+    await assert.rejects(failing, /tick 실패/);
+    assert.strictEqual(res.deleted, 1);
+  });
 });
 
 describe("createRetakeWatchStore.setWorkerThread", () => {

@@ -58,6 +58,16 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
   // 하나라도 없으면 등록·조회·기록 전부 끈다(부분 활성 금지).
   const enabled = Boolean(watchSheetId) && Boolean(watchSheetRange) && watchGridSheetId != null;
 
+  // 행 번호(rowIndex)로 쓰는 작업과 행을 지우는 작업을 한 줄로 세운다.
+  // 폴러 tick은 행을 읽은 뒤 Totus 조회를 거쳐 그 rowIndex에 상태를 쓰는데, 그 사이 cleanupOldRows가
+  // 위쪽 행을 지우면 rowIndex가 밀려 다른 행에 기록된다. 앞 작업이 실패해도 다음 대기 작업은 진행한다.
+  let _exclusiveTail = Promise.resolve();
+  function runExclusive(fn) {
+    const run = _exclusiveTail.then(() => fn());
+    _exclusiveTail = run.catch(() => {});
+    return run;
+  }
+
   /**
    * 시트 전체 행을 읽어 파싱한다 (헤더 1행 제외).
    * @returns {Promise<Array<object>>} 각 원소는 컬럼 필드 + rowIndex(1-base, 실제 시트 행번호)
@@ -260,11 +270,16 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
    *
    * ⚠️ 행 삭제는 아래 행 인덱스를 당긴다. 그래서 삭제 범위를 "행번호 내림차순"으로 보내
    *    먼저 지운(위쪽 큰 번호) 삭제가 아직 안 지운(아래쪽 작은 번호) 범위를 어긋나게 하지 않게 한다.
+   * ⚠️ 폴러 tick이 진행 중이면 끝날 때까지 기다렸다가 지운다(runExclusive) — tick의 rowIndex 쓰기 보호.
    *
    * @param {{ maxAgeDays?: number, now?: Date }} [opts]
    * @returns {Promise<{ deleted: number, scanned: number, skippedUnparsable: number }>}
    */
-  async function cleanupOldRows({ maxAgeDays = 21, now = new Date() } = {}) {
+  function cleanupOldRows(opts) {
+    return runExclusive(() => _cleanupOldRows(opts));
+  }
+
+  async function _cleanupOldRows({ maxAgeDays = 21, now = new Date() } = {}) {
     if (!enabled) {
       console.warn(`[retake-watch] cleanupOldRows skip — enabled:${enabled}`);
       return { deleted: 0, scanned: 0, skippedUnparsable: 0 };
@@ -343,5 +358,5 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     return { updated: true, rowIndex: hit.rowIndex };
   }
 
-  return { registerWatch, loadWatching, markStatus, markStatusMany, setWorkerThread, cleanupOldRows, enabled, _loadRows, COL };
+  return { registerWatch, loadWatching, markStatus, markStatusMany, setWorkerThread, cleanupOldRows, runExclusive, enabled, _loadRows, COL };
 };

@@ -6,10 +6,10 @@
  *
  * 검증 항목 (tick / _buildText):
  *   - 오늘 등록된 watching 행만 대상(어제·완료·DROP·만료·범위밖 제외)
- *   - 채널별 1건 요약 공지 + 소환 담당자(ownerUserId) @멘션
+ *   - 납품 스레드별 1건 답글(스레드 없으면 채널 최상위) + 소환 담당자(ownerUserId) @멘션
  *   - 작품명 정리 적용(PV코드·일본어 제거)
  *   - 대상 없으면 무발송
- *   - 소환자 미상(ownerUserId 빈 값) 표기
+ *   - 소환자 미상(ownerUserId 빈 값)이면 헤더 멘션 없이 발송
  */
 
 const { test, describe } = require("node:test");
@@ -310,7 +310,7 @@ describe("retakeReminderPoller 발송 직전 Totus 재확인 (apiFetch)", () => 
     assert.strictEqual(markCalled, false); // 읽기 전용 — 완료 답글 중복 방지
   });
 
-  // 형민님 검수: 조회 실패(unknown)가 섞인 스레드엔 "모두 제출 완료" 안내를 보내지 않는다.
+  // 형민님 검수: 조회 실패(unknown)가 섞인 스레드엔 "전건 제출 완료" 안내를 보내지 않는다.
   // (조회 실패를 완료로 오인하면, 실제로 미제출이 남았는데도 완료 안내가 나가버린다)
   test("notified + 조회 실패(watching) 같은 스레드 → 완료 안내 보류(무발송)", async () => {
     const store = makeStore([
