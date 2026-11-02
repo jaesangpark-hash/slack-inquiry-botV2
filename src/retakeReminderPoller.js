@@ -97,7 +97,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
 
   // 미제출 0건일 때 납품 스레드에 다는 "전체 제출 완료" 안내 — 아무도 태그하지 않는다.
   function _buildAllClearText() {
-    return `✅ 현 시점 기준, 오늘 요청된 리테이크 수정 건이 모두 제출 완료되었습니다. 감사합니다!`;
+    return `🎉 오늘의 리테이크 수정 *전건 제출 완료*! 다들 정말 수고 많으셨어요 🙌 오늘도 무사 마감입니다 🎊`;
   }
 
   // 작업자 수정요청 스레드에 다는 리마인드 답글 — 그 스레드 자체가 해당 건이라 간결하게.
