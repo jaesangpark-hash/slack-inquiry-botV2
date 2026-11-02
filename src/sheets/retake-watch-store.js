@@ -253,6 +253,63 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
   }
 
   /**
+   * 오래된 감시행을 삭제한다(rolling 보존) — 헤더(1행)는 유지, 데이터 행만.
+   *
+   * 등록시각(registeredAt)이 maxAgeDays일보다 오래된 행만 지운다. 최근·진행 중 건은 보존.
+   * registeredAt을 못 읽는(빈값/파싱 불가) 행은 안전하게 보존(삭제 안 함).
+   *
+   * ⚠️ 행 삭제는 아래 행 인덱스를 당긴다. 그래서 삭제 범위를 "행번호 내림차순"으로 보내
+   *    먼저 지운(위쪽 큰 번호) 삭제가 아직 안 지운(아래쪽 작은 번호) 범위를 어긋나게 하지 않게 한다.
+   *
+   * @param {{ maxAgeDays?: number, now?: Date }} [opts]
+   * @returns {Promise<{ deleted: number, scanned: number, skippedUnparsable: number }>}
+   */
+  async function cleanupOldRows({ maxAgeDays = 21, now = new Date() } = {}) {
+    if (!enabled) {
+      console.warn(`[retake-watch] cleanupOldRows skip — enabled:${enabled}`);
+      return { deleted: 0, scanned: 0, skippedUnparsable: 0 };
+    }
+    const rows = await _loadRows();
+    const cutoffMs = now.getTime() - maxAgeDays * 24 * 3600 * 1000;
+
+    // 삭제 대상의 0-base 행인덱스(rowIndex-1) 수집
+    let skippedUnparsable = 0;
+    const targets = []; // 0-base
+    for (const r of rows) {
+      const t = Date.parse(r.registeredAt);
+      if (Number.isNaN(t)) { skippedUnparsable++; continue; } // 날짜 못 읽으면 보존
+      if (t < cutoffMs) targets.push(r.rowIndex - 1);
+    }
+    if (!targets.length) {
+      console.log(`[retake-watch] 정리 대상 없음 — scanned:${rows.length} (보존 기준 ${maxAgeDays}일)`);
+      return { deleted: 0, scanned: rows.length, skippedUnparsable };
+    }
+
+    // 연속 구간으로 병합 → [startIndex, endIndex) (endIndex는 exclusive)
+    targets.sort((a, b) => a - b);
+    const ranges = [];
+    let start = targets[0], prev = targets[0];
+    for (let i = 1; i < targets.length; i++) {
+      if (targets[i] === prev + 1) { prev = targets[i]; continue; }
+      ranges.push([start, prev + 1]);
+      start = prev = targets[i];
+    }
+    ranges.push([start, prev + 1]);
+
+    // 내림차순(아래쪽 구간부터) 삭제 — 인덱스 밀림 방지
+    ranges.sort((a, b) => b[0] - a[0]);
+    const requests = ranges.map(([s, e]) => ({
+      deleteDimension: {
+        range: { sheetId: watchGridSheetId, dimension: "ROWS", startIndex: s, endIndex: e },
+      },
+    }));
+
+    await sheetsClient.batchUpdate(watchSheetId, requests);
+    console.log(`[retake-watch] 오래된 감시행 ${targets.length}건 삭제(구간 ${ranges.length}개, ${maxAgeDays}일 경과) — scanned:${rows.length}`);
+    return { deleted: targets.length, scanned: rows.length, skippedUnparsable };
+  }
+
+  /**
    * judgeTaskUuid로 행을 찾아 작업자 채널·스레드ts(인접 2칸)를 기록한다.
    * 작업자 채널 수정요청 메시지를 보낸 "뒤"에 그 ts를 저장해, 미제출 리마인더가
    * 그 스레드에 답글로 달 수 있게 한다. 해당 행이 없으면 no-op(감시 대상 아님 등).
@@ -286,5 +343,5 @@ module.exports = function createRetakeWatchStore({ sheetsClient, watchSheetId, w
     return { updated: true, rowIndex: hit.rowIndex };
   }
 
-  return { registerWatch, loadWatching, markStatus, markStatusMany, setWorkerThread, enabled, _loadRows, COL };
+  return { registerWatch, loadWatching, markStatus, markStatusMany, setWorkerThread, cleanupOldRows, enabled, _loadRows, COL };
 };
