@@ -9,7 +9,8 @@
  *   assertSecretsBase  — Slack BOT/APP + Gemini API Key + Gemini Model + Totus 게이트웨이 + Google Credentials (7종)
  *   assertGoogleSheets — 시트 ID 8종 + GOOGLE_SHEET_RANGE (9종)
  *   assertChannels     — 채널/유저 ID 6종
- *   assertTriggerEmoji — 트리거 이모지 (1종)
+ *   assertTriggerEmoji — 트리거 이모지 (2종)
+ *   assertLangRouting  — 한일 전용 출력 분리 KOJA_* (선택 5종 — 들어왔을 때 형식만 검증)
  *
  * 미래 확장:
  *   assertKpiSheets    — INQUIRY_HISTORY_SHEET_ID/RANGE (향후 KPI 기능용, 현재 미사용)
@@ -213,6 +214,75 @@ function assertTriggerEmoji(env = process.env) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 언어쌍별 출력 분리 (선택) — KOJA_* env
+// ---------------------------------------------------------------------------
+
+/**
+ * 한일 전용 출력 목적지·수신자. 전부 **선택** 값이다.
+ *   미설정 → 한일도 종전처럼 공통 채널·공통 수신자로 간다(동작 변화 없음).
+ *   설정   → 그 항목만 한일에서 갈라진다.
+ *
+ * key 는 config/lang-routing.js 의 목적지 이름과 맞춘다.
+ */
+const KOJA_ENV_KEYS = Object.freeze({
+  target:         "KOJA_TARGET_CHANNEL_ID",
+  pmRequest:      "KOJA_PM_REQUEST_CHANNEL_ID",
+  schedule:       "KOJA_SCHEDULE_CHANNEL_ID",
+  mentionUserIds: "KOJA_FORWARD_MENTION_USER_ID",
+  pmSlackId:      "KOJA_PM_SLACK_ID",
+});
+
+const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]{6,}$/;
+const SLACK_USER_ID    = /^[UW][A-Z0-9]{6,}$/;
+
+/**
+ * Guard: KOJA_* 가 들어왔으면 모양이 맞는지 부팅에서 본다.
+ *
+ * 선택 env 라 "없으면 throw" 는 하지 않는다. 대신 **오타난 채로 뜨는 것**은 막는다 —
+ * 채널 ID 자리에 채널 이름(`#한일-테스트`)을 넣는 실수가 흔한데, 그대로 뜨면 전송이
+ * 런타임에 channel_not_found 로 조용히 실패하고 한일 문의가 사라진다.
+ *
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env=process.env]
+ * @throws {Error} 값이 들어왔는데 Slack ID 모양이 아니면 throw
+ */
+function assertLangRouting(env = process.env) {
+  const bad = [];
+  for (const key of [KOJA_ENV_KEYS.target, KOJA_ENV_KEYS.pmRequest, KOJA_ENV_KEYS.schedule]) {
+    const raw = (env[key] || "").trim();
+    if (raw && !SLACK_CHANNEL_ID.test(raw)) bad.push(`${key}="${raw}" (채널 ID 는 C… 형식)`);
+  }
+  for (const key of [KOJA_ENV_KEYS.mentionUserIds, KOJA_ENV_KEYS.pmSlackId]) {
+    const raw = (env[key] || "").trim();
+    if (!raw) continue;
+    for (const id of raw.split(",").map(s => s.trim()).filter(Boolean)) {
+      if (!SLACK_USER_ID.test(id)) bad.push(`${key} 안의 "${id}" (유저 ID 는 U… 형식)`);
+    }
+  }
+  if (bad.length) {
+    throw new Error(`[assertLangRouting] 한일 분리 env 형식 오류: ${bad.join(" / ")}`);
+  }
+}
+
+/**
+ * KOJA_* 를 config/lang-routing.js 가 받는 overrides 모양으로 읽어 준다.
+ * 미설정 항목은 키를 아예 넣지 않는다 — lang-routing 이 "미설정 = 공통값"으로 처리한다.
+ *
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env=process.env]
+ * @returns {{ "ko-ja": Record<string, string|string[]> }}
+ */
+function readLangRoutingOverrides(env = process.env) {
+  const koJa = {};
+  for (const [key, name] of Object.entries(KOJA_ENV_KEYS)) {
+    const raw = (env[name] || "").trim();
+    if (!raw) continue;
+    koJa[key] = key === "mentionUserIds"
+      ? raw.split(",").map(s => s.trim()).filter(Boolean)
+      : raw;
+  }
+  return { "ko-ja": koJa };
+}
+
 module.exports = {
   isUnset,
   coalesceNonEmpty,
@@ -225,4 +295,7 @@ module.exports = {
   assertChannels,
   assertKpiSheets,
   assertTriggerEmoji,
+  assertLangRouting,
+  readLangRoutingOverrides,
+  KOJA_ENV_KEYS,
 };

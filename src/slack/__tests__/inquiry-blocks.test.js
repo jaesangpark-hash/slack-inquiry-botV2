@@ -8,7 +8,7 @@ const createInquiryBlocks = require("../inquiry-blocks.js");
 const PM_SLACK_ID = "UPMTEST001";
 const FIXED_MENTION_USER_IDS = ["UMENTIONID1", "UMENTIONID2"];
 
-const blocks = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: FIXED_MENTION_USER_IDS });
+const blocks = createInquiryBlocks({ pmSlackIdFor: () => PM_SLACK_ID, mentionUserIdsFor: () => FIXED_MENTION_USER_IDS });
 
 // ── PRIORITY_EMOJI ──────────────────────────────────────────
 describe("PRIORITY_EMOJI", () => {
@@ -196,7 +196,7 @@ describe("buildDraftPreviewBlocks", () => {
   it("hasThreadContext=true 시 스레드 맥락 안내 포함", () => {
     const d = { ...baseDraft, hasThreadContext: true };
     const result = blocks.buildDraftPreviewBlocks(d);
-    const ctxBlock = result.find(b => b.type === "context" && b.elements?.[0]?.text?.includes("스레드 전체 맥락"));
+    const ctxBlock = result.find(b => b.type === "context" && b.elements?.[0]?.text?.includes("스레드 전체를 요약"));
     assert.ok(ctxBlock, "스레드 맥락 context 블록 존재해야 함");
   });
 
@@ -209,14 +209,14 @@ describe("buildDraftPreviewBlocks", () => {
 
   it("workName === workNameKo 시 괄호 표기 없음", () => {
     const result = blocks.buildDraftPreviewBlocks(baseDraft);
-    const header = result.find(b => b.type === "section" && b.text?.text?.includes("작품명"))?.text.text;
+    const header = result.flatMap(b => b.fields || []).find(f => f.text?.includes("작품명"))?.text;
     assert.ok(!header.includes("(작품B)"), "동일 workName/workNameKo 시 괄호 중복 없어야 함");
   });
 
   it("workNameKo !== workName 시 괄호 표기 포함", () => {
     const d = { ...baseDraft, workNameKo: "한국어작품B" };
     const result = blocks.buildDraftPreviewBlocks(d);
-    const header = result.find(b => b.type === "section" && b.text?.text?.includes("작품명"))?.text.text;
+    const header = result.flatMap(b => b.fields || []).find(f => f.text?.includes("작품명"))?.text;
     assert.ok(header.includes("한국어작품B"), "다른 workNameKo 시 괄호 표기 있어야 함");
   });
 });
@@ -273,7 +273,7 @@ describe("buildFinalMainMessage", () => {
   });
 
   it("fixedMentionUserIds 빈 배열이면 멘션 없이 빈 문자열", () => {
-    const emptyBlocks = createInquiryBlocks({ pmSlackId: PM_SLACK_ID, fixedMentionUserIds: [] });
+    const emptyBlocks = createInquiryBlocks({ pmSlackIdFor: () => PM_SLACK_ID, mentionUserIdsFor: () => [] });
     const result = emptyBlocks.buildFinalMainMessage(params);
     assert.equal(result.blocks[0].text.text, "");
   });

@@ -2,6 +2,13 @@
 
 const { describe, it, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_TGT", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 
 const registerDirectInputActions = require("../direct-input-actions");
 const createInquiryHistory = require("../../sheets/inquiry-history");
@@ -47,7 +54,7 @@ function makeDeps(draftStore, overrides = {}) {
     generateDraftId: () => `draft_${Date.now()}`,
     resolveApmUserId: () => null,
     postInquiryToTargetChannel: async () => ({ ts: "ts_tgt" }),
-    TARGET_CHANNEL_ID: "C_TGT",
+    langRouting: routing(),
     ...overrides,
   };
 }

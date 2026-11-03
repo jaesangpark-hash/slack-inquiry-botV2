@@ -12,7 +12,7 @@ const {
 
 module.exports = function registerScheduleExtFlow(app, {
   ai, GEMINI_MODEL, matchWorkTitleFromSheet, generateDraftId, draftStore,
-  fetchDeliveryDate, sheetsClient,
+  fetchDeliveryDate, sheetsClient, langRouting,
 }) {
 
   const BASE  = () => process.env.PLATFORM_API_URL;
@@ -34,8 +34,12 @@ module.exports = function registerScheduleExtFlow(app, {
       return json;
     }, meta);
   }
-  const SCHEDULE_CHANNEL_ID = () => process.env.SCHEDULE_CHANNEL_ID;
-  const PM_SLACK_ID         = () => process.env.PM_SLACK_ID;
+  // 납품일 변경 요청의 목적지·수신 PM 은 **작품의 언어**가 정한다(한일은 검증 전이라 분리).
+  // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다 — fetchDeliveryDate 가 실어 보낸다.
+  // 확정 작품 > 소환 이모지. 작품·납품일을 둘 다 못 찾아도 수신 PM 이 공통으로 떨어지지 않게 한다(AIA D1).
+  const langOf = (data) => data?.delivery?.lang || data?.matchedTitle?.lang || data?.lang || data?.langPair || null;
+  const SCHEDULE_CHANNEL_ID = (data) => langRouting.channelFor("schedule", langOf(data));
+  const PM_SLACK_ID         = (data) => langRouting.pmSlackIdFor(langOf(data));
 
   const WORKER_SHEET_ID    = process.env.WORKER_SHEET_ID;
   const WORKER_SHEET_RANGE = process.env.WORKER_SHEET_RANGE;
@@ -222,6 +226,7 @@ module.exports = function registerScheduleExtFlow(app, {
     const episode  = parsed.episode || null;
     const requesterUserId = parsed.requesterUserId || null;
     const ownerUserId = parsed.ownerUserId || null;
+    const langPair = parsed.langPair || null;   // 소환 이모지가 가리킨 언어(AIA D1)
 
     // 연장 일수 파싱 — extend_days 없으면 requested_date로 대체, 둘 다 없으면 수동 입력
     const extDays      = parsed.extend_days ? parseInt(parsed.extend_days, 10) : null;
@@ -231,6 +236,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
+        langPair,
         workName, pivoId, episode,
         episodes: episode ? [parseInt(episode, 10)] : [],
         delivery, sourceLink,
@@ -256,6 +262,7 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     await _proceedScheduleExt(client, dmChannel, {
+      langPair,
       workName, pivoId,
       episodes: [parseInt(episode, 10)],
       extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
@@ -372,6 +379,7 @@ module.exports = function registerScheduleExtFlow(app, {
       const mergedDelivery = await _fetchDeliveryForEpisodes(workNameKo, f.matchedTitle?.koreanProjectName || null, episodes, f.matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */);
 
       await _proceedScheduleExt(client, dmChannel, {
+        langPair: f.parsed?.langPair || f.langPair || null,
         workName, pivoId,
         episodes,
         extDays: f.parsed.extend_days ? parseInt(f.parsed.extend_days, 10) : null,
@@ -463,6 +471,9 @@ module.exports = function registerScheduleExtFlow(app, {
     const { workName, pivoId, delivery, sourceLink,
             originalChannelId, originalTs, requesterUserId,
             requestedDate, isDirectCall, ownerUserId } = info;
+    // ★info 로 받는다(AIA D1 회귀). 아래 pending/draft 저장 4곳이 이 이름을 쓰는데
+    //   구조분해에 없으면 strict mode 에서 ReferenceError 로 연장 전체가 멈춘다.
+    const langPair = info.langPair || null;
     let extDays = info.extDays || null;
 
     // 화수 배열 정규화
@@ -476,7 +487,8 @@ module.exports = function registerScheduleExtFlow(app, {
       const retryId = `schext_pending_${Date.now()}`;
       draftStore.set(retryId, {
         type: "schext_pending",
-        ownerUserId, workName, pivoId,
+        ownerUserId,
+        langPair, workName, pivoId,
         episode: null, episodes: [],
         delivery, sourceLink, requesterUserId,
         originalChannelId: originalChannelId || null,
@@ -600,7 +612,7 @@ module.exports = function registerScheduleExtFlow(app, {
         console.log(`[scheduleExt] requestedDate(${requestedDate}) - lastEndDate(${lastTaskEndDate.slice(0,10)}) = diff:${diff}`);
         const _makePending = () => {
           const pendingId = `schext_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
+          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, langPair, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
           return pendingId;
         };
         if (diff === 0) {
@@ -650,6 +662,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
+        langPair,
         workName, pivoId,
         episode: episodes[0], episodes,
         delivery, sourceLink, requesterUserId,
@@ -692,6 +705,7 @@ module.exports = function registerScheduleExtFlow(app, {
     draftStore.set(draftId, {
       type: "schext",
       ownerUserId,
+      langPair,
       workName, pivoId,
       episode: episodes[0],   // backward-compat
       episodes,
@@ -1149,7 +1163,7 @@ ${taskLines}` } },
     ).join("\n");
 
     const lines = [
-      `<@${PM_SLACK_ID()}>`,
+      `<@${PM_SLACK_ID(data)}>`,
       `안녕하세요. 아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
       ``,
       `・ 담당자: <@${body.user.id}>`,
@@ -1164,7 +1178,7 @@ ${taskLines}` } },
     if (reason) { lines.push(""); lines.push(reason); }
 
     await client.chat.postMessage({
-      channel: SCHEDULE_CHANNEL_ID(),
+      channel: SCHEDULE_CHANNEL_ID(data),
       text: lines.join("\n"),
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
@@ -1180,7 +1194,7 @@ ${taskLines}` } },
       ],
     });
     await client.chat.postMessage({ channel: body.user.id,
-      text: `🔄 <#${SCHEDULE_CHANNEL_ID()}> 채널에 납품일 변경 요청을 전송했어. 희망 납품일: ${desiredDate}` });
+      text: `🔄 <#${SCHEDULE_CHANNEL_ID(data)}> 채널에 납품일 변경 요청을 전송했어. 희망 납품일: ${desiredDate}` });
   });
 
   // ── PM 채널 자동 전송 (납품 초과 + 일괄 반영 시) ─────────
@@ -1190,11 +1204,11 @@ ${taskLines}` } },
     ).join("\n");
 
     await client.chat.postMessage({
-      channel: SCHEDULE_CHANNEL_ID(),
+      channel: SCHEDULE_CHANNEL_ID(data),
       text:    `${data.workName} ${data.episodeLabel} 납품일 초과 — PM 확인 필요`,
       blocks: [
         { type: "section", text: { type: "mrkdwn",
-          text: `<@${PM_SLACK_ID()}>\n*📢 ${data.workName} ${data.episodeLabel} 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
+          text: `<@${PM_SLACK_ID(data)}>\n*📢 ${data.workName} ${data.episodeLabel} 일정이 변경되었습니다.*\n⚠️ 납품예정일(${data.deliveryDateStr}) 초과 — PM 확인이 필요해.\n\n${changeLines}\n\n담당 APM: <@${userId}>` } },
         { type: "actions", elements: [
           { type: "button", action_id: "schext_pm_delivery_confirm",
             text: { type: "plain_text", text: "✅ 연장 가능" },

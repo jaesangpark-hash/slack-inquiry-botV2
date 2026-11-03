@@ -15,8 +15,7 @@ const { withinAckBudget } = require("../utils/ack-budget");
  *   matchWorkTitleFromSheet: Function,
  *   fetchDeliveryDate: Function,
  *   handleScheduleExt: Function,
- *   PM_SLACK_ID: string,
- *   SCHEDULE_CHANNEL_ID: string,
+ *   langRouting: { channelFor: Function, pmSlackIdFor: Function },
  * }} deps
  */
 module.exports = function registerScheduleActions(app, deps) {
@@ -26,9 +25,13 @@ module.exports = function registerScheduleActions(app, deps) {
     matchWorkTitleFromSheet,
     fetchDeliveryDate,
     handleScheduleExt,
-    PM_SLACK_ID,
-    SCHEDULE_CHANNEL_ID,
+    langRouting,
   } = deps;
+
+  // 납품일 변경 요청의 목적지·수신 PM 은 작품의 언어가 정한다.
+  // delivery.lang 은 납품 탭을 고른 언어 그 자체라 가장 믿을 만하다(fetchDeliveryDate 가 실어 보낸다).
+  // 납품일을 못 찾아도 소환 이모지가 가리킨 언어로 떨어진다(AIA C3).
+  const langOf = (data) => data?.delivery?.lang || data?.lang || data?.langPair || null;
 
   app.action("schedule_ask_pm", async ({ ack, body, client }) => {
     await ack();
@@ -68,8 +71,10 @@ module.exports = function registerScheduleActions(app, deps) {
     const deliveryDate = data.delivery?.allSame ? data.delivery.deliveryDate : (data.delivery?.episodes?.map(e => `${e.episode}화: ${e.deliveryDate}`).join(", ") || "-");
     const desiredDate  = view.state.values.desired_date_block?.desired_date_input?.selected_date || "-";
     const extraNote    = view.state.values.extra_note_block?.extra_note_input?.value?.trim() || "";
+    const langPair = langOf(data);
+    const SCHEDULE_CHANNEL_ID = langRouting.channelFor("schedule", langPair);
     const lines = [
-      `<@${PM_SLACK_ID}>`, `안녕하세요.`, `아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
+      `<@${langRouting.pmSlackIdFor(langPair)}>`, `안녕하세요.`, `아래 작품 납품일 변경이 가능할지 문의 드립니다.`,
       `- 담당자 : <@${body.user.id}>`, `- 작품명 : ${workName}`, `- 회차 : ${episodeLabel}`,
       `- 기존 납품일 : ${deliveryDate}`, `- 희망 납품일 : ${desiredDate}`,
     ];
@@ -155,6 +160,9 @@ module.exports = function registerScheduleActions(app, deps) {
         // 창이 이미 닫혀 인라인 오류를 못 쓴다 — 같은 내용을 DM 으로 알린다.
         await client.chat.postMessage({ channel: body.user.id, text: notFoundMsg() })
           .catch(e => console.error("[schedule_title_modal] PIVO 미발견 DM 실패:", e?.message ?? e));
+        // ★예산 안 분기와 같게 여기서 멈춘다. 안 멈추면 빈 작품명으로 납품일 조회·초안 생성까지
+        //   진행하고, 아래에서 pending 을 지워 「직접 입력」 재시도 경로까지 사라진다(AIA C1).
+        return;
       }
     }
     if (!pending) return;
@@ -162,7 +170,7 @@ module.exports = function registerScheduleActions(app, deps) {
     const displayWorkName = koreanProjectName || titleInput || matchedTitle?.japaneseDisplayTitle || "";
     const originalWorkTitle = titleInput || pending.parsed?.work_title_ja || null;
     const delivery     = pending.parsed?.episode
-      ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, matchedTitle?.lang || "zh-ja" /* 납품 탭은 이모지가 아니라 확정된 작품이 고른다 */, koreanProjectName).catch(() => null)
+      ? await fetchDeliveryDate(displayWorkName, pending.parsed.episode, matchedTitle?.lang || pending.langPair || "zh-ja" /* 확정 작품 > 소환 이모지 > 기본 */, koreanProjectName).catch(() => null)
       : null;
     if (delivery) {
       await client.chat.postMessage({ channel: body.user.id, text: `*${delivery.workName} ${delivery.episodeLabel}* 납품일: *${delivery.allSame ? delivery.deliveryDate : delivery.episodes?.map(e=>`${e.episode}화:${e.deliveryDate}`).join(", ")}*` });
@@ -172,6 +180,7 @@ module.exports = function registerScheduleActions(app, deps) {
     await handleScheduleExt(client, body.user.id, {
       ...pending.parsed,
       ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      langPair: pending.langPair || null,   // 작품·납품일을 못 찾아도 수신 PM 을 고를 수 있게(AIA D1)
       displayWorkName,
       originalWorkTitle,
       koreanProjectName,
@@ -210,6 +219,7 @@ module.exports = function registerScheduleActions(app, deps) {
     await handleScheduleExt(client, body.user.id, {
       ...pending.parsed,
       ownerUserId: pending.ownerUserId || pending.parsed?.ownerUserId || null,
+      langPair: pickedLang || pending.langPair || null,   // 버튼이 실어 온 lang 우선(AIA D1)
       work_title_ko: workNameKo,
     }, matchedTitle, delivery, pending.sourceLink || "");
     draftStore.delete(pendingId);

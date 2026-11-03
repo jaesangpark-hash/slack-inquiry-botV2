@@ -64,9 +64,15 @@ function interactionReference({ kind, body, event, message, draftStore }) {
   };
 }
 
-async function authorize({ access, reference, checkPermission, pmSlackId }) {
+// PM 은 한 명이 아니다 — 언어쌍별로 다르다(중일 박재상 / 한일 정보라). 문자열 하나로 받던 옛
+// 호출부도 그대로 돌아가게 배열로 정규화한다(AIA C2).
+const toPmList = ({ pmSlackIds, pmSlackId }) =>
+  (Array.isArray(pmSlackIds) ? pmSlackIds : [pmSlackId]).filter(Boolean);
+
+async function authorize({ access, reference, checkPermission, pmSlackIds, pmSlackId }) {
   const { actorUserId, ownerUserId, targetWorkerIds } = reference;
-  if (access === ACCESS.PM_ONLY) return !!actorUserId && actorUserId === pmSlackId;
+  const pms = toPmList({ pmSlackIds, pmSlackId });
+  if (access === ACCESS.PM_ONLY) return !!actorUserId && pms.includes(actorUserId);
   if (access === ACCESS.WORKER_TARGET) {
     return !!actorUserId && targetWorkerIds.includes(actorUserId);
   }
@@ -77,7 +83,7 @@ async function authorize({ access, reference, checkPermission, pmSlackId }) {
     return !!permission?.allowed && !!ownerUserId && actorUserId === ownerUserId;
   }
   if (access === ACCESS.COMPLETION) {
-    return (!!actorUserId && actorUserId === pmSlackId) ||
+    return (!!actorUserId && pms.includes(actorUserId)) ||
       (!!permission?.allowed && !!ownerUserId && actorUserId === ownerUserId);
   }
   return false;
@@ -121,7 +127,7 @@ async function notifyDenied({ kind, client, body, event, message, access }) {
   }
 }
 
-function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, triggerEmojis }) {
+function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, pmSlackIds, triggerEmojis }) {
   function requirePolicy(kind, matcher) {
     const policy = getAccessPolicy(kind, matcher);
     if (!policy) {
@@ -158,7 +164,7 @@ function createInteractionGuard({ app, draftStore, checkPermission, pmSlackId, t
       access: policy.policy,
       reference,
       checkPermission,
-      pmSlackId,
+      pmSlackId, pmSlackIds,
     });
     if (!allowed) {
       await notifyDenied({

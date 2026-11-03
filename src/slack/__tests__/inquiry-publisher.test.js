@@ -2,6 +2,13 @@
 
 const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
+const { createLangRouting } = require("../../config/lang-routing");
+// 실제 라우팅 모듈을 그대로 쓴다 — 가짜로 대체하면 "언어별로 갈린다"는 계약을 안 보게 된다.
+const routing = (overrides = {}) => createLangRouting({
+  base: { target: "C_PM", pmRequest: "C_PM", schedule: "C_SCH", mentionUserIds: ["U_FWD"], pmSlackId: "U_PM" },
+  overrides,
+});
+
 const createInquiryPublisher = require("../inquiry-publisher");
 
 function makePublisher({ appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId }) {
@@ -13,7 +20,7 @@ function makePublisher({ appendInquiryHistory, updateInquiryHistorySourceLink, u
     draftStore,
     buildFinalMainMessage: metadata => ({ text: "main", metadata }),
     buildThreadMessage: () => "thread",
-    targetChannelId: "C_PM",
+    langRouting: routing(),
   });
   return { draftStore, postInquiry };
 }
