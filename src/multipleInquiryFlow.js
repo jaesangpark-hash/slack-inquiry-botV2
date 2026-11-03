@@ -246,6 +246,7 @@ ${text}`.trim();
           { title_ja: originalWorkTitle, title_ko: koreanProjectName, episode },
           { url: sourceLink, channelId: originalChannelId, ts: originalTs, requesterUserId: requesterUserId || null, ownerUserId },
           item.work_title_ko || item.work_title_ja || "",
+          matchedTitle?.lang || null, // 확정된 작품 언어 — 재매칭을 해당 언어 마스터로 한정(스케줄 케이스와 동일)
         );
         break;
       }
@@ -253,6 +254,9 @@ ${text}`.trim();
       case "리테이크": {
         // 리테이크 감시행이 납품 스레드(watchChannel/watchThreadTs)를 알아야 하므로 좌표를 관통시킨다.
         // threadTs(부모)가 없으면 originalTs로 폴백. (단일 소환 경로와 동일 구조)
+        // ⚠️ 언어(matchedTitle.lang)를 반드시 넘긴다 — 빠지면 handleRetakeInquiry 내부 재매칭이
+        //    중일·한일 마스터를 섞어 돌려 한일 작품이 엉뚱한 중일 작품으로 잡히거나 후보 충돌로 멈춰,
+        //    감시행 미등록 → 완료 알림 누락. (확정된 작품 언어 기준 — 스케줄/납품 케이스와 동일)
         await handleRetakeInquiry(
           client, dmChannel,
           { title_ja: originalWorkTitle, title_ko: koreanProjectName, episode },
@@ -261,6 +265,7 @@ ${text}`.trim();
           requesterName || "",
           requesterUserId || null,
           ownerUserId,
+          matchedTitle?.lang || null,
         );
         break;
       }
