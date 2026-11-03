@@ -168,6 +168,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
       { type: "section", text: { type: "mrkdwn", text: `*↳ 첫 댓글로 따라붙는 내용*\n${buildThreadMessage({
         summary: draft.summary, sourceLink: draft.sourceLink,
         inquiryContent: draft.inquiryContent, hasThreadContext: draft.hasThreadContext === true,
+        langPair: draft.lang || draft.langPair || null, sourceLang: draft.sourceLang || null,
       })}` }},
     ];
 
@@ -214,6 +215,8 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     sourceLink,
     // 이 문의가 어느 언어쌍인지. 수신자를 고르는 데 쓴다 — 모르면(null) 공통 수신자.
     langPair = null,
+    // 작업자 문의 언어(분석 결과 source_lang). 언어쌍과 함께 본문을 요약으로 쓸지 정한다.
+    sourceLang = null,
   }) {
     const mentions = mentionUserIdsFor(langPair).map(id => `<@${id}>`).join(" ");
     const fallbackText = `${workName||"-"} | ${inquiryType||"-"} | <@${submitterId}>`;
@@ -249,7 +252,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
         ]},
         { type: "divider" },
         { type: "section", text: { type: "mrkdwn", text: `*문의 내용*\n${bodyText(
-          { inquiryContent, summary, hasThreadContext }
+          { inquiryContent, summary, hasThreadContext, langPair, sourceLang }
         )}` }},
         ...(hasThreadContext ? [{ type: "context", elements: [
           { type: "mrkdwn", text: "💬 스레드 전체를 요약했어. 전문은 첫 댓글, 원본은 원문 링크." },
@@ -303,17 +306,28 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     return lines.length ? `\n${lines.join("\n")}` : "";
   }
 
-  // 본문에 들어갈 글. 스레드 맥락 건은 inquiryContent 가 스레드 전체 번역문이라 요약을 쓴다.
-  // 요약이 비었을 때만 어쩔 수 없이 전문으로 떨어진다 — 빈 칸을 내보내느니 길게 내보낸다.
-  function bodyText({ inquiryContent, summary, hasThreadContext }) {
-    if (hasThreadContext) return summary || inquiryContent || "-";
+  // 본문을 요약으로 쓸지. 언어쌍·작업자 문의 언어마다 다르다(재상 님 2026-11-03).
+  //   스레드 맥락 — inquiryContent 가 스레드 전체 번역문이라 언제나 요약.
+  //   중일 — 일본어·한국어 불문 요약.
+  //   한일 — 한국어 문의만 요약, 일본어(그 외)는 요약 없이 전문 그대로.
+  //   언어쌍 모름(직접 입력 등) — 종전대로 전문.
+  function bodyIsSummary({ hasThreadContext, langPair, sourceLang }) {
+    if (hasThreadContext) return true;
+    if (langPair === "zh-ja") return true;
+    if (langPair === "ko-ja") return sourceLang === "ko";
+    return false;
+  }
+
+  // 본문에 들어갈 글. 요약이 비었을 때만 어쩔 수 없이 전문으로 떨어진다 — 빈 칸을 내보내느니 길게 내보낸다.
+  function bodyText({ inquiryContent, summary, hasThreadContext, langPair, sourceLang }) {
+    if (bodyIsSummary({ hasThreadContext, langPair, sourceLang })) return summary || inquiryContent || "-";
     return inquiryContent || "-";
   }
 
   // 첫 댓글. 본문이 요약이면 여기에 전문을 싣고, 본문이 전문이면 여기에 요약을 싣는다 —
   // 어느 쪽이든 두 가지가 한 스레드에 다 남는다(정보 손실 없음).
-  function buildThreadMessage({ summary, sourceLink, inquiryContent, hasThreadContext = false }) {
-    const head = hasThreadContext
+  function buildThreadMessage({ summary, sourceLink, inquiryContent, hasThreadContext = false, langPair = null, sourceLang = null }) {
+    const head = bodyIsSummary({ hasThreadContext, langPair, sourceLang })
       ? `📋 *전체 내용*\n${inquiryContent || summary || "-"}`
       : `📋 *요약*\n${summary || "-"}`;
     return `${head}\n\n🔗 *원문 링크*\n${sourceLink||"-"}`;

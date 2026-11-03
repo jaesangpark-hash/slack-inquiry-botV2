@@ -83,6 +83,7 @@ function createInquiryPublisher({
             originalTs: draft.originalTs,
             sourceLink: draft.sourceLink,
             langPair,
+            sourceLang: draft.sourceLang || null,
           });
           const startedAt = Date.now();
           const postResult = await client.chat.postMessage({ channel: targetChannelId, ...message });
@@ -97,6 +98,8 @@ function createInquiryPublisher({
             sourceLink: draft.sourceLink,
             inquiryContent: draft.inquiryContent,
             hasThreadContext: draft.hasThreadContext === true,
+            langPair,
+            sourceLang: draft.sourceLang || null,
           }),
         }),
         ...(completionNoticeText ? {

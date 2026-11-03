@@ -49,7 +49,7 @@ const sentFrom = (draft) => blocks.buildFinalMainMessage({
   summary: draft.summary, hasThreadContext: draft.hasThreadContext === true,
   actionRequired: draft.actionRequired, draftId: draft.draftId, historyRowIndex: 1,
   originalChannelId: "C1", originalTs: "1.1", sourceLink: draft.sourceLink,
-  langPair: draft.lang || null,
+  langPair: draft.lang || null, sourceLang: draft.sourceLang || null,
 });
 
 /** 버튼을 뺀 본문 블록만 글로 뽑는다 — 초안과 최종을 글자 단위로 맞대본다. */
@@ -101,6 +101,34 @@ describe("초안과 실제 전송 내용이 같다", () => {
     const draft = draftOf({ hasThreadContext: true, summary: "" });
     assert.ok(JSON.stringify(sentFrom(draft).blocks).includes(draft.inquiryContent));
   });
+
+  // 본문 = 요약인지 전문인지는 언어쌍 × 작업자 문의 언어로 갈린다(재상 님 2026-11-03).
+  //   한일: 한국어 → 요약 / 일본어 → 요약 없이 그대로.  중일: 일본어·한국어 모두 요약.
+  for (const [lang, sourceLang, expectSummary] of [
+    ["ko-ja", "ko", true],
+    ["ko-ja", "ja", false],
+    ["zh-ja", "ja", true],
+    ["zh-ja", "ko", true],
+    [null,    "ko", false],   // 언어쌍 모름 — 종전대로 전문
+  ]) {
+    test(`${lang || "언어쌍 모름"} · ${sourceLang} 문의 — 본문 ${expectSummary ? "요약, 첫 댓글 전문" : "전문, 첫 댓글 요약"}`, () => {
+      const draft = draftOf({ lang, sourceLang });
+      const body = JSON.stringify(sentFrom(draft).blocks);
+      const thread = blocks.buildThreadMessage({
+        summary: draft.summary, sourceLink: draft.sourceLink,
+        inquiryContent: draft.inquiryContent, langPair: lang, sourceLang,
+      });
+      const [inBody, inThread] = expectSummary
+        ? [draft.summary, draft.inquiryContent]
+        : [draft.inquiryContent, draft.summary];
+      assert.ok(body.includes(inBody), body.slice(0, 300));
+      assert.ok(!body.includes(inThread), "본문에 둘 다 들어갔다");
+      assert.ok(thread.includes(inThread), "첫 댓글에서 나머지 하나가 빠졌다 — 정보가 사라진다");
+
+      // 초안도 같은 분기를 탄다
+      assert.equal(JSON.stringify(blocks.buildDraftPreviewBlocks(draft)).includes(inBody), true);
+    });
+  }
 
   test("초안에도 작품명 보조줄이 보인다 — 전송 전에 고객사용 타이틀을 확인할 수 있어야 한다", () => {
     const preview = JSON.stringify(blocks.buildDraftPreviewBlocks(draftOf()));
