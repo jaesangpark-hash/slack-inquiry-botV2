@@ -88,6 +88,17 @@ const deps = ({ store, slack, apiFetch }) => ({
 });
 
 describe("retakeWatchPoller.tick", () => {
+  test("store.runExclusive가 있으면 tick 전체를 그 안에서 돌린다(감시 시트 정리와 직렬화)", async () => {
+    const store = makeStore([{ ...BASE_ROW }]);
+    const seen = [];
+    store.runExclusive = async (fn) => { seen.push("enter"); const r = await fn(); seen.push("exit"); return r; };
+    const slack = makeSlack();
+    const poller = createRetakeWatchPoller(deps({ store, slack, apiFetch: makeApiFetch({ taskState: "COMPLETED" }) }));
+    await poller.tick();
+    assert.deepStrictEqual(seen, ["enter", "exit"]);
+    assert.strictEqual(store.markCalls.length, 1); // 상태 기록이 runExclusive 안에서 끝남
+  });
+
   test("COMPLETED → 납품 스레드 답글 1회 + notified 마킹 (링크=생성일 최신)", async () => {
     const store = makeStore([{ ...BASE_ROW }]);
     const slack = makeSlack();

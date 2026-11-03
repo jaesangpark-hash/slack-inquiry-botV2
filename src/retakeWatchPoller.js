@@ -15,7 +15,7 @@
  * 행별 try/catch로 한 행 실패가 다른 행을 막지 않는다.
  *
  * @param {{
- *   retakeWatchStore: { loadWatching: function, markStatus: function },
+ *   retakeWatchStore: { loadWatching: function, markStatus: function, runExclusive?: function },
  *   slackClient: object,          // app.client (chat.postMessage)
  *   apiFetch: function,           // retakeFlow._apiFetch 재사용 (url, options, meta) => json
  *   base: function,               // () => PLATFORM_API_URL
@@ -158,8 +158,13 @@ module.exports = function createRetakeWatchPoller({ retakeWatchStore, slackClien
 
   /**
    * 폴러 1회 실행 — watching 행 전체를 순회 처리한다.
+   * store.runExclusive가 있으면 그 안에서 돌린다 — 감시 시트 정리(행 삭제)와 겹치면 읽어 둔 rowIndex가 밀리므로.
    */
-  async function tick() {
+  function tick() {
+    return retakeWatchStore.runExclusive ? retakeWatchStore.runExclusive(_tick) : _tick();
+  }
+
+  async function _tick() {
     let rows;
     try {
       rows = await retakeWatchStore.loadWatching();
