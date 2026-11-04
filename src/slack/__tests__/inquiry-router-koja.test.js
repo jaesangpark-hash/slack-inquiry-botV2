@@ -225,3 +225,27 @@ describe("T8 문의 흐름에 별도 PIVO 버튼이 없다", () => {
     assert.match(manual.text.text, /PIVO ID/, "라벨에 PIVO 가 드러나야 발견 가능하다");
   });
 });
+
+// 후보 화면·직접 입력으로 넘어가도 회차가 끊기지 않는다 (재상 님 실측 2026-11-04, 한일 <페이트메이트> 40화).
+// pending 에 회차가 없으면 사람이 작품을 고른 뒤 만든 초안에 회차·납품일이 빈다. 언어쌍과 무관한 경로라 둘 다 본다.
+describe("작품 확정이 사람 손으로 넘어갈 때 pending 에 회차·스레드 맥락이 실린다", () => {
+  const cases = [
+    ["후보 여러 개", { multiple: [KO_ROW, { ...KO_ROW, pivoId: "202", koreanProjectName: "한일작품 완전판" }] }],
+    ["매칭 실패(직접 입력)", null],
+    ["반대 언어에만 있음", { wrongLang: [ZH_ROW] }],
+  ];
+  for (const langPair of ["ko-ja", "zh-ja"]) {
+    for (const [label, candResult] of cases) {
+      it(`${langPair} · ${label}`, async () => {
+        const deps = makeDeps(null, { matchWorkTitleWithCandidates: spy(candResult) });
+        const ctx = makeCtx({ langPair, hasThreadContext: true,
+          analysis: { inquiry_type: "작업 관련 문의", title_ja: "フェイトメイト", title_ko: "페이트메이트", episode: "40" } });
+        await createInquiryRouter(deps).routeInquiry(ctx);
+        const pending = [...deps.draftStore.values()].find(v => v.isPending);
+        assert.ok(pending, "pending 이 만들어져야 이 시험이 의미가 있다");
+        assert.equal(pending.episode, "40");
+        assert.equal(pending.hasThreadContext, true);
+      });
+    }
+  }
+});

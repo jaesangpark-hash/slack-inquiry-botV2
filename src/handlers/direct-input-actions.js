@@ -58,6 +58,26 @@ module.exports = function registerDirectInputActions(app, deps) {
     checkInquiryDone,
   } = deps;
 
+  /**
+   * 사람이 작품을 고른 뒤(후보 선택·직접 입력) 초안에 회차·납품일을 붙인다.
+   * 한 번에 매칭된 경로(inquiry-router ⑧)와 같은 규칙이다 — 회차와 한국어 작품명이 둘 다 있어야
+   * 조회하고, 못 찾으면 "-". 납품 탭은 확정된 작품의 lang 이 고른다(이모지가 아니다).
+   * 스레드 맥락 여부도 여기서 넘긴다. 빠지면 「문의 내용」이 요약/전문 분기를 잘못 탄다.
+   */
+  async function carryOverEpisode(pending, koreanProjectName, lang) {
+    const episode = pending?.episode || null;
+    const deliveryDate = episode && koreanProjectName
+      ? await fetchDeliveryDate(koreanProjectName, episode, lang || "zh-ja", koreanProjectName)
+          .catch(() => null)
+          .then(d => d ? (d.allSame ? d.deliveryDate : d.episodes?.map(e => `${e.episode}화:${e.deliveryDate}`).join(", ")) : "-")
+      : "-";
+    return {
+      episode,
+      deliveryDate,
+      ...(pending && "hasThreadContext" in pending ? { hasThreadContext: pending.hasThreadContext } : {}),
+    };
+  }
+
   // ── 문의봇 완료 버튼 ─────────────────────────────────────
   app.action("inquiry_done", async ({ ack, body, client }) => {
     await ack();
@@ -551,7 +571,8 @@ module.exports = function registerDirectInputActions(app, deps) {
     }
     if (!pending) return;
     const draftId = generateDraftId();
-    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja" };
+    const draft = { draftId, ownerUserId: pending.ownerUserId, userId: pending.userId, dmChannelId: pending.dmChannelId, progressMessageTs: pending.progressTs, sourceLink: pending.sourceLink, originalText: pending.originalText, originalChannelId: pending.originalChannelId || null, originalTs: pending.originalTs || null, workName: matchedManual?.koreanProjectName || workNameJa, workNameKo: matchedManual?.koreanProjectName || workNameKo, pivoId: matchedManual?.pivoId || null, lang: matchedManual?.lang || null, inquiryType: pending.inquiryType||"기타", inquiryContent: pending.inquiryContent||"", summary: pending.summary||"", actionRequired: pending.actionRequired||"", sourceLang: pending.sourceLang||"ja",
+      ...(await carryOverEpisode(pending, matchedManual?.koreanProjectName || null, matchedManual?.lang || null)) };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
     await client.chat.postMessage({ channel: draft.dmChannelId, text: buildDraftPreviewText(draft), blocks: buildDraftPreviewBlocks(draft) });
@@ -569,7 +590,9 @@ module.exports = function registerDirectInputActions(app, deps) {
     const draftId = generateDraftId();
     // 후보 선택 경로에는 matchedTitle 객체가 없다(선택 payload에 pivoId·한국어명만 실림).
     // FIX 타이틀·원제를 붙이려면 여기서 시트를 한 번 더 조회한다. 실패해도 문의 발행은 막지 않는다.
-    const selected = await matchWorkTitleFromSheet(null, koreanProjectName).catch(() => null);
+    // ★후보가 둘 이상이었다는 건 같은 이름이 여럿이란 뜻이다. 이름으로 다시 찾으면 고른 것과 다른
+    //   행이 잡힐 수 있어, 버튼이 실어 온 PIVO ID 와 언어쌍을 같이 넘긴다(PIVO 가 1순위로 정확 대조).
+    const selected = await matchWorkTitleFromSheet({ pivoId: pivoId || null, titleKo: koreanProjectName, langPair: pickedLang || null }).catch(() => null);
     const draft = {
       draftId,
       ownerUserId:       pending.ownerUserId,
@@ -595,6 +618,7 @@ module.exports = function registerDirectInputActions(app, deps) {
       summary:            pending.summary        || "",
       actionRequired:     pending.actionRequired || "",
       sourceLang:         pending.sourceLang     || "ja",
+      ...(await carryOverEpisode(pending, koreanProjectName, pickedLang || selected?.lang || null)),
     };
     draftStore.set(draftId, draft);
     draftStore.delete(pendingId);
