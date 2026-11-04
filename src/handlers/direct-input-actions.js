@@ -20,6 +20,19 @@ const {
 const {
   PUBLICATION_RECOVERY,
 } = require("../slack/publication-coordinator");
+const { replyTargetFromLink } = require("../slack/text")();
+
+/**
+ * 「답변 작성」이 답글을 달 원문 자리. 버튼 값에 좌표가 있으면 그대로, 없으면 원문 링크에서 푼다.
+ * 링크만 들고 온 초안(「기타」 → 「문의봇」, 직접 소환)은 좌표가 비어 있었다.
+ */
+function resolveReplyTarget(meta = {}) {
+  if (meta.originalChannelId && meta.originalTs) {
+    return { originalChannelId: meta.originalChannelId, originalTs: meta.originalTs };
+  }
+  const t = replyTargetFromLink(meta.sourceLink || "");
+  return t ? { originalChannelId: t.channelId, originalTs: t.ts } : { originalChannelId: null, originalTs: null };
+}
 
 /**
  * @param {import("@slack/bolt").App} app
@@ -123,10 +136,15 @@ module.exports = function registerDirectInputActions(app, deps) {
         },
         postFollowup: async () => {
           if (!submitterId) return { ts: "not_required" };
-          const replyMeta = JSON.stringify({
+          const sourceLink = metadataSourceLink || draft?.sourceLink || null;
+          const target = resolveReplyTarget({
             originalChannelId: metadataOriginalChannelId || draft?.originalChannelId || null,
             originalTs:        metadataOriginalTs        || draft?.originalTs        || null,
-            sourceLink:        metadataSourceLink        || draft?.sourceLink        || null,
+            sourceLink,
+          });
+          const replyMeta = JSON.stringify({
+            ...target,
+            sourceLink,
             submitterId,
             ownerUserId:       submitterId,
           });
@@ -174,11 +192,17 @@ module.exports = function registerDirectInputActions(app, deps) {
   // ── 문의봇 답변 작성 모달 ────────────────────────────────
   app.action("open_inquiry_reply_modal", async ({ ack, body, client }) => {
     await ack();
+    // ★이미 게시된 버튼 중 좌표·링크가 다 빈 것이 있다(수정 전 「기타」 → 「문의봇」 경로).
+    //   버튼이 놓인 문의 스레드 위치를 같이 실어, 제출 때 그 스레드의 「원문 링크」에서 되찾는다.
+    //   여기서 조회하지 않는 이유: trigger_id 가 3초 안에 쓰여야 해서 모달부터 연다.
+    let meta = {};
+    try { meta = JSON.parse(body.actions?.[0]?.value || "{}"); } catch { meta = {}; }
+    const inquiryThreadTs = body.message?.thread_ts || body.message?.ts || null;
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
         type: "modal", callback_id: "submit_inquiry_reply_modal",
-        private_metadata: body.actions[0].value,
+        private_metadata: JSON.stringify({ ...meta, inquiryChannelId: body.channel?.id || null, inquiryThreadTs }),
         title:  { type: "plain_text", text: "원문 스레드 답변" },
         submit: { type: "plain_text", text: "답변 전송" },
         close:  { type: "plain_text", text: "취소" },
@@ -194,9 +218,26 @@ module.exports = function registerDirectInputActions(app, deps) {
   app.view("submit_inquiry_reply_modal", async ({ ack, body, view, client }) => {
     await ack();
     const meta = JSON.parse(view.private_metadata || "{}");
-    const { originalChannelId, originalTs } = meta;
     const replyText = view.state.values.reply_block?.reply_input?.value?.trim() || "";
     if (!replyText) return;
+    let { originalChannelId, originalTs } = resolveReplyTarget(meta);
+    if ((!originalChannelId || !originalTs) && meta.inquiryChannelId && meta.inquiryThreadTs) {
+      // 버튼 값이 비었으면 문의 스레드의 요약 댓글 「원문 링크」에서 되찾는다(봇이 쓴 글만 본다 —
+      // 사람 댓글에 붙은 다른 Slack 링크를 원문으로 오인하지 않게).
+      try {
+        const replies = await client.conversations.replies({ channel: meta.inquiryChannelId, ts: meta.inquiryThreadTs, limit: 20 });
+        for (const m of replies.messages || []) {
+          if (!m.bot_id) continue;
+          const text = String(m.text || "") + " " + JSON.stringify(m.blocks || []);
+          const at = text.indexOf("원문 링크");
+          if (at < 0) continue;
+          const t = resolveReplyTarget({ sourceLink: text.slice(at) });
+          if (t.originalChannelId) { ({ originalChannelId, originalTs } = t); break; }
+        }
+      } catch (e) {
+        console.warn("[reply] 문의 스레드에서 원문 링크 복구 실패:", e.message);
+      }
+    }
 
     if (originalChannelId && originalTs) {
       // 원문 작성자 자동 멘션: 부모 메시지 fetch → user 꺼내기
@@ -432,6 +473,8 @@ module.exports = function registerDirectInputActions(app, deps) {
       ownerUserId: body.user.id,
       progressMessageTs: null,
       sourceLink: sourceLink || "",
+      // 링크만 들고 온 초안도 「답변 작성」이 원문 스레드에 답글을 달 수 있게 좌표를 링크에서 푼다.
+      ...resolveReplyTarget({ sourceLink }),
       originalText: "",
       displayWorkName,
       originalWorkTitle,
