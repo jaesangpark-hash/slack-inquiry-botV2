@@ -1278,6 +1278,7 @@ JSON만 출력. 코드블록 금지.
     try {
       const sharp  = require("sharp");
       const axios  = require("axios");
+      const { assertSlackFileUrl } = require("./utils/slack-file-url");
       const fs     = require("fs");
       const path   = require("path");
       const os     = require("os");
@@ -1355,6 +1356,7 @@ ${msgText}
             }
 
             // 실제 바이너리 다운로드 (봇 토큰 인증)
+            assertSlackFileUrl(downloadUrl);
             const res = await axios.get(downloadUrl, {
               responseType: 'arraybuffer',
               headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
