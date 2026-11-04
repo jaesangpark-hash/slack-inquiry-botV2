@@ -502,6 +502,14 @@ module.exports = function createInquiryRouter(deps) {
     }
 
     // ── ⑧ 기본 처리 (매칭 → draft) ──────────────────────────────
+    // ★작품을 사람이 고르는 경로(후보 선택·직접 입력)로 넘어가도 분석 결과가 끊기면 안 된다.
+    //   한 번에 매칭되면 아래에서 analysis.episode 로 회차·납품일을 채우는데, pending 에는
+    //   회차가 실리지 않아 후보를 고른 뒤 만든 초안은 회차·납품일이 비었다(재상 님 실측 2026-11-04,
+    //   한일 <페이트메이트> 40화). 스레드 맥락 여부도 같이 실어야 「문의 내용」이 요약/전문으로 맞게 갈린다.
+    const pendingCarryOver = () => ({
+      episode: analysis.episode || null,
+      ...(source === "reaction" ? { hasThreadContext } : {}),
+    });
     let matchedTitle = null;
     if (analysis.title_ja || analysis.title_ko) {
       const candResult = await matchWorkTitleWithCandidates(analysis.title_ja, analysis.title_ko, null, langPair).catch(() => null);
@@ -528,6 +536,7 @@ module.exports = function createInquiryRouter(deps) {
           actionRequired: analysis.action_required,
           priority:       analysis.priority,
           sourceLang:     analysis.source_lang,
+          ...pendingCarryOver(),
         });
         if (candResult?.wrongLang) {
           // 이모지로 언어를 잘라서 못 찾았는데 반대 언어에는 있다. 그냥 "없음"으로 끝내면
@@ -589,6 +598,7 @@ module.exports = function createInquiryRouter(deps) {
         actionRequired: analysis.action_required,
         priority:       analysis.priority,
         sourceLang:     analysis.source_lang,
+        ...pendingCarryOver(),
       });
       await client.chat.update({ channel: dmChannel, ts: progressMsg.ts, text: `시트에서 *${analysis.title_ja || analysis.title_ko || "작품명"}* 을 찾지 못했어.` });
       await client.chat.postMessage({ channel: dmChannel, text: "작품명을 직접 입력해줘.",
