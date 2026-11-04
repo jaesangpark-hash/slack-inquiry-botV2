@@ -1019,6 +1019,7 @@ JSON만 출력. 코드블록 금지.
     if (workerImageUrls.length > 0) {
       const sharp  = require("sharp");
       const axios  = require("axios");
+      const { assertSlackFileUrl } = require("./utils/slack-file-url");
       const fs     = require("fs");
       const path   = require("path");
       const os     = require("os");
@@ -1034,6 +1035,7 @@ JSON만 출력. 코드블록 금지.
               downloadUrl = infoRes.file?.url_private_download || infoRes.file?.url_private || url;
             } catch (_) {}
           }
+          assertSlackFileUrl(downloadUrl);
           const res = await axios.get(downloadUrl, {
             responseType: "arraybuffer",
             headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
