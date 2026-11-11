@@ -227,6 +227,10 @@ module.exports = function registerScheduleExtFlow(app, {
     const requesterUserId = parsed.requesterUserId || null;
     const ownerUserId = parsed.ownerUserId || null;
     const langPair = parsed.langPair || null;   // 소환 이모지가 가리킨 언어(AIA D1)
+    // ★확정 작품의 언어(AIA E2). 주 경로는 parsed.langPair 를 안 넘기고 납품 탭에 행이 없으면
+    //   delivery 도 null 이라, langOf 의 matchedTitle.lang 단계가 비어 공통 채널로 샌다.
+    //   langOf 가 data.lang 을 이미 보므로 lang 칸으로 초안·pending 에 남긴다.
+    const lang = matchedTitle?.lang || null;
 
     // 연장 일수 파싱 — extend_days 없으면 requested_date로 대체, 둘 다 없으면 수동 입력
     const extDays      = parsed.extend_days ? parseInt(parsed.extend_days, 10) : null;
@@ -236,7 +240,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
-        langPair,
+        langPair, lang,
         workName, pivoId, episode,
         episodes: episode ? [parseInt(episode, 10)] : [],
         delivery, sourceLink,
@@ -262,7 +266,7 @@ module.exports = function registerScheduleExtFlow(app, {
     }
 
     await _proceedScheduleExt(client, dmChannel, {
-      langPair,
+      langPair, lang,
       workName, pivoId,
       episodes: [parseInt(episode, 10)],
       extDays: extDays || null, requestedDate, delivery, sourceLink, requesterUserId,
@@ -380,6 +384,7 @@ module.exports = function registerScheduleExtFlow(app, {
 
       await _proceedScheduleExt(client, dmChannel, {
         langPair: f.parsed?.langPair || f.langPair || null,
+        lang: f.matchedTitle?.lang || null,   // 확정 작품 언어(AIA E2)
         workName, pivoId,
         episodes,
         extDays: f.parsed.extend_days ? parseInt(f.parsed.extend_days, 10) : null,
@@ -474,6 +479,7 @@ module.exports = function registerScheduleExtFlow(app, {
     // ★info 로 받는다(AIA D1 회귀). 아래 pending/draft 저장 4곳이 이 이름을 쓰는데
     //   구조분해에 없으면 strict mode 에서 ReferenceError 로 연장 전체가 멈춘다.
     const langPair = info.langPair || null;
+    const lang = info.lang || null;   // 확정 작품 언어(AIA E2) — langOf 가 data.lang 으로 읽는다
     let extDays = info.extDays || null;
 
     // 화수 배열 정규화
@@ -488,7 +494,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(retryId, {
         type: "schext_pending",
         ownerUserId,
-        langPair, workName, pivoId,
+        langPair, lang, workName, pivoId,
         episode: null, episodes: [],
         delivery, sourceLink, requesterUserId,
         originalChannelId: originalChannelId || null,
@@ -612,7 +618,7 @@ module.exports = function registerScheduleExtFlow(app, {
         console.log(`[scheduleExt] requestedDate(${requestedDate}) - lastEndDate(${lastTaskEndDate.slice(0,10)}) = diff:${diff}`);
         const _makePending = () => {
           const pendingId = `schext_pending_${Date.now()}`;
-          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, langPair, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
+          draftStore.set(pendingId, { type: "schext_pending", ownerUserId, langPair, lang, workName, pivoId, episode: episodes[0], episodes, delivery, sourceLink, requesterUserId, originalChannelId, originalTs, dmChannelId: dmChannel });
           return pendingId;
         };
         if (diff === 0) {
@@ -662,7 +668,7 @@ module.exports = function registerScheduleExtFlow(app, {
       draftStore.set(pendingId, {
         type: "schext_pending",
         ownerUserId,
-        langPair,
+        langPair, lang,
         workName, pivoId,
         episode: episodes[0], episodes,
         delivery, sourceLink, requesterUserId,
@@ -705,7 +711,7 @@ module.exports = function registerScheduleExtFlow(app, {
     draftStore.set(draftId, {
       type: "schext",
       ownerUserId,
-      langPair,
+      langPair, lang,
       workName, pivoId,
       episode: episodes[0],   // backward-compat
       episodes,
