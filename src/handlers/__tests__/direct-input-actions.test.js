@@ -617,6 +617,53 @@ describe("send_inquiry_now — postInquiryToTargetChannel 호출", () => {
     assert.deepEqual(draftStore.get("d-stale"), originalDraft);
     assert.ok(notices.some(text => text.includes("이미 전송") && text.includes("새 문의")));
   });
+
+  it("progressMessageTs가 없는 초안(DM 직접 입력·경로 선택)도 수정 전송이 끝까지 가고 ts 없는 update를 부르지 않는다", async () => {
+    const draftStore = new Map([["d-nots", {
+      draftId: "d-nots", draftVersion: 1, workName: "작품", inquiryContent: "내용",
+      dmChannelId: "D1", progressMessageTs: null,
+    }]]);
+    const app = makeFakeApp();
+    let publishArgs = null;
+    registerDirectInputActions(app, makeDeps(draftStore, {
+      postInquiryToTargetChannel: async (_c, draft, _u, opts) => { publishArgs = { draft, opts }; return { publicationStatus: "sent" }; },
+    }));
+    const updates = [];
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async () => ({ ts: "notice" }),
+        update: async payload => {
+          if (!payload.ts) throw new Error("invalid_arguments: missing required field: ts");
+          updates.push(payload);
+          return {};
+        },
+      },
+    });
+
+    await app._registered.views.submit_inquiry_modal({
+      ack: async () => {},
+      body: { user: { id: "U1" } },
+      view: {
+        private_metadata: JSON.stringify({ draftId: "d-nots", draftVersion: 1, previewChannelId: "D1", previewMessageTs: null }),
+        state: { values: {
+          work_name_block: { work_name_input: { value: "작품" } },
+          work_name_ko_block: { work_name_ko_input: { value: "" } },
+          episode_block: { episode_input: { value: "" } },
+          inquiry_type_block: { inquiry_type_input: { value: "기타" } },
+          inquiry_content_block: { inquiry_content_input: { value: "고친 내용" } },
+          summary_block: { summary_input: { value: "요약" } },
+          action_block: { action_input: { value: "확인" } },
+          link_block: { link_input: { value: "" } },
+        } },
+      },
+      client,
+    });
+
+    assert.ok(publishArgs, "채널 전송이 호출돼야 한다");
+    assert.match(publishArgs.opts.completionNoticeText, /수정 내용으로 .* 전송 완료!/);
+    assert.equal(publishArgs.draft.inquiryContent, "고친 내용");
+    assert.equal(updates.length, 0, "ts가 없으면 미리보기 update를 건너뛴다");
+  });
 });
 
 describe("inquiry_cand_pick — draftStore 공유 + draft 생성", () => {
