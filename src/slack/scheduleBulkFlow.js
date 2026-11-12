@@ -9,6 +9,7 @@ const {
   requireCreatedTaskUuids,
   toUnknownMutationOutcome,
 } = require("../clients/totus-mutation-result");
+const { GATEWAY_MUTATION_HEADERS } = require("../utils/gateway-headers");
 
 // ══════════════════════════════════════════════════════════════════
 // scheduleBulkFlow.js — 여러 회차 일정 일괄 변경 플로우
@@ -425,7 +426,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
           for (const { opCode, opName, taskUuid } of sources) {
             const res = await fetch(`${BASE()}/api/v1/tasks/${taskUuid}/retake`, {
               method: "POST",
-              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
             });
             const ct = res.headers.get("content-type") || "";
             if (!ct.includes("application/json")) {
@@ -605,7 +606,7 @@ module.exports = function registerScheduleBulkFlow(app, { draftStore, generateDr
 
     const applyRes  = await fetch(`${BASE()}/api/v1/tasks/dates`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN()}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN()}`, ...GATEWAY_MUTATION_HEADERS },
       body:    JSON.stringify(payload),
     });
     const applyCt = applyRes.headers.get("content-type") || "";

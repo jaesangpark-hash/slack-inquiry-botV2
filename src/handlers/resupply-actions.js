@@ -18,6 +18,7 @@ const {
   updateTerminalPublicationPreview,
 } = require("../slack/publication-ui");
 const { stripPermalinkQuery } = require("../slack/text")();
+const { GATEWAY_MUTATION_HEADERS } = require("../utils/gateway-headers");
 
 const RESUPPLY_NOTIFY_STATUS = Object.freeze({
   SENDING: "sending",
@@ -481,7 +482,7 @@ module.exports = function registerResupplyActions(app, deps) {
 
           const uploadRes  = await fetch(`${BASE}/api/v1/projects/${projectUuid}/files`, {
             method: "POST",
-            headers: { Authorization: `Bearer ${TOKEN}` },
+            headers: { Authorization: `Bearer ${TOKEN}`, ...GATEWAY_MUTATION_HEADERS },
             body: formData,
           });
           const upCt = uploadRes.headers.get("content-type") || "";

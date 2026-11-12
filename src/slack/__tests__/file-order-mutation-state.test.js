@@ -68,7 +68,9 @@ describe("file_order_apply_suggested mutation checkpoint", () => {
     const { actions, body, client, draftStore } = makeHarness();
     let reorderCalls = 0;
     let completeCalls = 0;
-    global.fetch = async url => {
+    const fetchCalls = [];
+    global.fetch = async (url, options) => {
+      fetchCalls.push([url, options]);
       if (url.includes("/files/reorder")) {
         reorderCalls++;
         return jsonResponse({ success: true });
@@ -89,6 +91,16 @@ describe("file_order_apply_suggested mutation checkpoint", () => {
 
     assert.equal(reorderCalls, 1);
     assert.equal(completeCalls, 2);
+    assert.equal(fetchCalls.length, 3);
+    for (const [url, options] of fetchCalls) {
+      assert.ok(url.endsWith("/api/v1/files/reorder") || url.endsWith("/api/v1/source-groups/complete"));
+      assert.equal(options.method, "POST");
+      assert.deepEqual(options.headers, {
+        Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+        "Content-Type": "application/json",
+        "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+      });
+    }
     assert.equal(draftStore.get("fo-1").fileOrderMutation.status, "completed");
   });
 

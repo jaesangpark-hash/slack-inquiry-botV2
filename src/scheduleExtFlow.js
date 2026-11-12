@@ -5,6 +5,7 @@ const {
   assertNoAmbiguousMutationTargets,
   decodeMutationResult,
 } = require("./clients/totus-mutation-result");
+const { GATEWAY_MUTATION_HEADERS } = require("./utils/gateway-headers");
 // scheduleExtFlow.js — 스케줄 연장 플로우
 // app.js 에서 require("./scheduleExtFlow")(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet,
 //   generateDraftId, draftStore, fetchDeliveryDate }) 로 호출
@@ -1019,7 +1020,7 @@ ${taskLines}` } },
 
       const json = await _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
         method:  "POST",
-        headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
         body:    JSON.stringify({ tasks: apiTasks }),
       }, { bot: "schedule", endpoint: "/tasks/dates", params: {}, expectedCount: null });
       console.log("[scheduleExt] 일정 반영 응답:", JSON.stringify(json));
