@@ -9,6 +9,7 @@ const {
   finalizeCompletion,
 } = require("../slack/completion-coordinator");
 const { requirePositiveSheetRowIndex } = require("../sheets/sheet-row-index");
+const { recordTargetFromMeta } = require("../sheets/lang-record-router");
 const { withinAckBudget } = require("../utils/ack-budget");
 const {
   readKoreanProjectNameFromSelectionPayload,
@@ -134,7 +135,7 @@ module.exports = function registerDirectInputActions(app, deps) {
           if (typeof checkInquiryDone !== "function") {
             throw new Error("문의 완료 시트 기록 기능이 연결되지 않았어.");
           }
-          await checkInquiryDone(historyRowIndex, meta.lang || null);   // 기록한 탭(한일/공통)과 같은 곳을 체크
+          await checkInquiryDone(historyRowIndex, recordTargetFromMeta(meta));   // 기록한 탭을 체크(옛 버튼은 언어로)
         },
         postFollowup: async () => {
           if (!submitterId) return { ts: "not_required" };

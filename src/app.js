@@ -38,19 +38,9 @@ const createDeliveryDateService = require("./sheets/delivery-date");
 const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
 const { routeInquiryHistory, routeResupplyRecord } = require("./sheets/lang-record-router");
+const { enforceKojaRecordTargets, kojaRecordConfig: readKojaRecordConfig } = require("./sheets/koja-record-check");
 // 한일 기록 탭 설정 읽기 — KOJA_{kind}_SHEET_RANGE + KOJA_{kind}_GRID_SHEET_ID 가 둘 다 있어야 켠다(반쪽 설정은 경고 후 무시).
-function kojaRecordConfig(kind, baseSheetId) {
-  const range = String(process.env[`KOJA_${kind}_SHEET_RANGE`] || "").trim();
-  const gridRaw = String(process.env[`KOJA_${kind}_GRID_SHEET_ID`] || "").trim();
-  const sheetId = String(process.env[`KOJA_${kind}_SHEET_ID`] || "").trim() || baseSheetId;
-  if (!range && !gridRaw) return null;
-  const gridId = Number.parseInt(gridRaw, 10);
-  if (!range || !Number.isFinite(gridId) || !sheetId) {
-    console.warn(`[lang-record] KOJA_${kind}_* 설정이 반쪽이라 무시 — RANGE·GRID_SHEET_ID 둘 다 필요(한일도 공통 탭에 기록)`);
-    return null;
-  }
-  return { sheetId, range, gridId };
-}
+const kojaRecordConfig = (kind, baseSheetId) => readKojaRecordConfig(process.env, kind, baseSheetId);
 const createRetakeWatchStore = require("./sheets/retake-watch-store");
 const createRetakeWatchPoller = require("./retakeWatchPoller");
 const createRetakeReminderPoller = require("./retakeReminderPoller");
@@ -206,9 +196,10 @@ const interactionApp = createInteractionGuard({
 //   KOJA_*_SHEET_ID 는 생략 시 공통 스프레드시트와 같은 파일의 다른 탭으로 본다.
 const kojaHistoryCfg = kojaRecordConfig("INQUIRY_HISTORY", process.env.INQUIRY_HISTORY_SHEET_ID);
 const kojaResupplyCfg = kojaRecordConfig("RESUPPLY", RESUPPLY_SHEET_ID);
-const {
-  appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone,
-} = routeInquiryHistory({
+// 후속 호출은 기록한 탭의 gid 로 탭을 고른다(lang-record-router). 그래서 두 탭의 gid 를 라우터에 넘긴다.
+const inquiryHistory = routeInquiryHistory({
+  baseGid: INQUIRY_HISTORY_GRID_SHEET_ID,
+  kojaGid: kojaHistoryCfg ? kojaHistoryCfg.gridId : null,
   base: createInquiryHistory({
     sheetsClient,
     historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
@@ -223,8 +214,11 @@ const {
   }),
 });
 const {
-  appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone,
-} = routeResupplyRecord({
+  appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone,
+} = inquiryHistory;
+const resupplyRecord = routeResupplyRecord({
+  baseGid: RESUPPLY_GRID_SHEET_ID,
+  kojaGid: kojaResupplyCfg ? kojaResupplyCfg.gridId : null,
   base: createResupplyRecord({
     sheetsClient,
     resupplySheetId: RESUPPLY_SHEET_ID,
@@ -238,6 +232,9 @@ const {
     resupplyGridSheetId: kojaResupplyCfg.gridId,
   }),
 });
+const {
+  appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone,
+} = resupplyRecord;
 console.log(`[lang-record] 한일 기록 탭 — 문의: ${kojaHistoryCfg ? kojaHistoryCfg.range : "분리 없음(공통)"} / 재수급: ${kojaResupplyCfg ? kojaResupplyCfg.range : "분리 없음(공통)"}`);
 
 // ── flow wiring (모듈 factory 직후, 핸들러 등록 전) ─────────────────
@@ -343,6 +340,7 @@ const postInquiryToTargetChannel = createInquiryPublisher({
   appendInquiryHistory,
   updateInquiryHistorySourceLink,
   updateInquiryHistoryPivoId,
+  inquiryRecordGidFor: inquiryHistory.recordGidFor,
   draftStore,
   buildFinalMainMessage,
   buildThreadMessage,
@@ -376,6 +374,7 @@ require("./handlers/resupply-actions")(interactionApp, {
   updateResupplySourceLink,
   updateResupplyPivoId,
   checkResupplyDone,
+  resupplyRecordGidFor: resupplyRecord.recordGidFor,
   langRouting,
   matchWorkTitleFromSheet,
   fetchDeliveryDate,
@@ -559,6 +558,14 @@ if (RETAKE_WATCH_ENABLED) {
 
 // ── 서버 시작 ─────────────────────────────────────────────
 (async () => {
+  // 한일 기록 탭 설정 확인 — 이벤트를 받기 전에. 틀리면 그 분리만 끄고(한일도 공통 탭) 오류 로그를 남긴다.
+  await enforceKojaRecordTargets({
+    sheetsClient,
+    checks: [
+      { kind: "INQUIRY_HISTORY", cfg: kojaHistoryCfg, baseGid: INQUIRY_HISTORY_GRID_SHEET_ID, router: inquiryHistory },
+      { kind: "RESUPPLY", cfg: kojaResupplyCfg, baseGid: RESUPPLY_GRID_SHEET_ID, router: resupplyRecord },
+    ],
+  });
   await app.start();
   // 알럿 클라이언트 초기화 (PM_SLACK_ID로 오류 알럿 전송)
   initAlertClient(app.client, PM_SLACK_ID);

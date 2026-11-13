@@ -11,6 +11,8 @@ function createInquiryPublisher({
   appendInquiryHistory,
   updateInquiryHistorySourceLink = async () => {},
   updateInquiryHistoryPivoId = async () => {},
+  // 이 언어로 기록하면 쓰게 될 탭의 gid. 없으면(시험 등) 종전처럼 언어로 탭을 고른다.
+  inquiryRecordGidFor = null,
   draftStore,
   buildFinalMainMessage,
   buildThreadMessage,
@@ -28,6 +30,9 @@ function createInquiryPublisher({
     // 작품을 못 찾아 lang 이 없으면 소환 이모지가 가리킨 언어로 떨어진다(AIA C3).
     const langPair = draft.lang || draft.langPair || null;
     const targetChannelId = langRouting.channelFor("target", langPair);
+    // 기록 탭을 게시 전에 한 번 정한다 — 기록·버튼·후속 갱신이 같은 탭을 가리키게(AIA 리뷰 S1·P2).
+    const recordGid = typeof inquiryRecordGidFor === "function" ? inquiryRecordGidFor(langPair) : null;
+    const recordTarget = recordGid != null ? { gid: recordGid } : langPair;
     const publicationKey = `inquiry_publication:${draft.draftId}`;
     try {
       const publication = await publishFromCheckpoint({
@@ -53,9 +58,10 @@ function createInquiryPublisher({
           sourceLink: draft.sourceLink || null,
           originalChannelId: draft.originalChannelId || null,
           originalTs: draft.originalTs || null,
+          recordGid,
         },
         appendSheetRow: async () => requirePositiveSheetRowIndex(
-          await appendInquiryHistory(draft, submitterId),
+          await appendInquiryHistory(draft, submitterId, recordTarget),
           "문의 이력"
         ),
         onSheetRowConfirmed: historyRowIndex => {
@@ -84,6 +90,7 @@ function createInquiryPublisher({
             sourceLink: draft.sourceLink,
             langPair,
             sourceLang: draft.sourceLang || null,
+            recordGid,
           });
           const startedAt = Date.now();
           const postResult = await client.chat.postMessage({ channel: targetChannelId, ...message });
@@ -118,7 +125,7 @@ function createInquiryPublisher({
             channel: targetChannelId,
             message_ts: publication.mainMessageTs,
           });
-          await updateInquiryHistorySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), langPair);
+          await updateInquiryHistorySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), recordTarget);
         } catch (e) {
           console.error("[postInquiry] 히스토리 링크 갱신 실패:", e.message);
         }
@@ -127,7 +134,7 @@ function createInquiryPublisher({
       // 히스토리 시트 PIVO ID 컬럼 채우기 (append 범위가 좁아 후속 호출로 채움)
       if (publication.sheetRowIndex && publication.replay !== true && draft.pivoId) {
         try {
-          await updateInquiryHistoryPivoId(publication.sheetRowIndex, draft.pivoId, langPair);
+          await updateInquiryHistoryPivoId(publication.sheetRowIndex, draft.pivoId, recordTarget);
         } catch (e) {
           console.error("[postInquiry] 히스토리 PIVO ID 갱신 실패:", e.message);
         }

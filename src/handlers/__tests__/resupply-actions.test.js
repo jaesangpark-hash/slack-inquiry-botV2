@@ -1038,3 +1038,58 @@ describe("file_resupply_done — 완료 진실성과 owner 안내", () => {
     assert.equal(updates, 0);
   });
 });
+
+describe("재수급 — 기록 대상(gid)이 게시부터 완료까지 이어진다(AIA 리뷰 S1)", () => {
+  it("게시 때 정한 gid 로 기록하고, 완료 버튼 rg 를 거쳐 완료 체크도 그 gid 로 한다", async () => {
+    const draftStore = new Map([["d-rg", {
+      draftId: "d-rg", ownerUserId: "U_OWNER", dmChannelId: "D_OWNER", lang: "ko-ja",
+      workName: "한일 작품", episode: "3", fileNumbers: ["1"], reason: "파일 손상", sourceLink: "",
+    }]]);
+    const app = makeFakeApp();
+    const postedPayloads = [];
+    const appendTargets = [];
+    const doneTargets = [];
+    const client = makeFakeClient({
+      chat: {
+        postMessage: async payload => {
+          postedPayloads.push(payload);
+          return { ts: payload.channel === "C_PM" && !payload.thread_ts ? "main-rg" : "reply-rg" };
+        },
+        update: async () => ({}),
+      },
+    });
+    const { buildFileInquiryBlocks, buildFileInquiryMessage } = createInquiryBlocks({ pmSlackIdFor: () => "U_PM", mentionUserIdsFor: () => [] });
+    registerResupplyActions(app, {
+      draftStore,
+      buildFileInquiryBlocks,
+      buildFileInquiryMessage,
+      appendResupplyRecord: async (draft, submitterId, c, target) => { appendTargets.push(target); return 52; },
+      checkResupplyDone: async (rowIndex, target) => { doneTargets.push([rowIndex, target]); },
+      resupplyRecordGidFor: lang => (lang === "ko-ja" ? 486785012 : 511152201),
+      langRouting: routing(),
+    });
+
+    await app._registered.actions["send_file_inquiry_now"]({
+      ack: async () => {},
+      body: { user: { id: "U_SUBMITTER" }, actions: [{ value: "d-rg" }] },
+      client,
+    });
+    const mainPayload = postedPayloads.find(payload => payload.channel === "C_PM" && !payload.thread_ts);
+    const doneButton = mainPayload.blocks.flatMap(block => block.elements || [])
+      .find(element => element.action_id === "file_resupply_done");
+    assert.equal(JSON.parse(doneButton.value).rg, 486785012);
+
+    await app._registered.actions["file_resupply_done"]({
+      ack: async () => {},
+      body: {
+        user: { id: "U_HANDLER" },
+        channel: { id: "C_PM" },
+        message: { ts: "main-rg", text: mainPayload.text, blocks: mainPayload.blocks },
+        actions: [{ value: doneButton.value }],
+      },
+      client,
+    });
+    assert.deepEqual(appendTargets, [{ gid: 486785012 }]);
+    assert.deepEqual(doneTargets, [[52, { gid: 486785012 }]]);
+  });
+});
