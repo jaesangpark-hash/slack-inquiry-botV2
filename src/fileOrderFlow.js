@@ -14,6 +14,7 @@ const {
 } = require("./slack/mutation-checkpoint");
 const { parseAiJson } = require("./utils/ai-json");
 const { buildCandidateBlocks } = require("./slack/work-picker-blocks");
+const { GATEWAY_MUTATION_HEADERS } = require("./utils/gateway-headers");
 
 module.exports = function registerFileOrderFlow(app, { ai, GEMINI_MODEL, matchWorkTitleFromSheet, matchWorkTitleWithCandidates, generateDraftId, draftStore }) {
 
@@ -164,7 +165,7 @@ JSON만 출력. 코드블록 금지.
 
     const json = await _apiFetch(`${BASE}/api/v1/files/reorder`, {
       method:  "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
       body:    JSON.stringify(reqBody),
     }, { bot: "fileOrder", endpoint: "/files/reorder", params: {}, expectedCount: null });
     console.log("[reorder] 응답 전체:", JSON.stringify(json, null, 2));
@@ -179,7 +180,7 @@ JSON만 출력. 코드블록 금지.
     const TOKEN = process.env.PLATFORM_API_TOKEN;
     const completeJson = await _apiFetch(`${BASE}/api/v1/source-groups/complete`, {
       method:  "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
       body:    JSON.stringify({ sourceGroupIds: [sourceGroupId] }),
     }, { bot: "fileOrder", endpoint: "/source-groups/complete", params: {}, expectedCount: null });
     console.log("[complete] 응답 전체:", JSON.stringify(completeJson, null, 2));

@@ -182,6 +182,13 @@ describe("scheduleExtFlow mutation truth", () => {
     );
 
     assert.equal(fetchCalls.length, 1);
+    assert.ok(fetchCalls[0][0].endsWith("/api/v1/tasks/dates"));
+    assert.equal(fetchCalls[0][1].method, "POST");
+    assert.deepEqual(fetchCalls[0][1].headers, {
+      Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+    });
     assert.equal(draftStore.get("schext-1").scheduleMutationStatus, "applied");
     assert.ok(client.calls.some(call => call.text?.includes("일정 반영 완료")));
   });

@@ -6,6 +6,7 @@ const {
   requireCreatedTaskUuids,
   toUnknownMutationOutcome,
 } = require("./clients/totus-mutation-result");
+const { GATEWAY_MUTATION_HEADERS } = require("./utils/gateway-headers");
 const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
@@ -777,7 +778,7 @@ JSON만 출력. 코드블록 금지.
         try {
           json = await _apiFetch(`${BASE()}/api/v1/tasks/${data.sourceTaskUuid}/retake`, {
             method:  "POST",
-            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
             body:    JSON.stringify(reqBody),
           }, { bot: "retake", endpoint: "/tasks/{uuid}/retake", params: {}, expectedCount: null });
           createdUuids = requireCreatedTaskUuids(json, "태스크 재생성");
@@ -809,7 +810,7 @@ JSON만 출력. 코드블록 금지.
         (createdUuids.length > 0 && startDate && endDate)
           ? _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
               method:  "POST",
-              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
               body: JSON.stringify({
                 tasks: createdUuids.map(uuid => ({
                   taskUuid:  uuid,

@@ -105,7 +105,9 @@ describe("resupply_upload_file mutation checkpoint", () => {
       { id: "F2", name: "two.psd", mimetype: "image/vnd.adobe.photoshop", url_private_download: "https://slack/F2" },
     ]);
     const uploadCalls = { "one.psd": 0, "two.psd": 0 };
+    const fetchCalls = [];
     global.fetch = async (url, options = {}) => {
+      fetchCalls.push([url, options]);
       if (url.includes("/projects?")) return jsonResponse({ success: true, data: [{ uuid: "P1" }] });
       if (url.startsWith("https://slack/")) return downloadResponse();
       if (url.includes("/files")) {
@@ -134,6 +136,20 @@ describe("resupply_upload_file mutation checkpoint", () => {
     await handler(args);
 
     assert.deepEqual(uploadCalls, { "one.psd": 1, "two.psd": 2 });
+    const uploads = fetchCalls.filter(([, options]) => options.method === "POST");
+    assert.equal(uploads.length, 3);
+    for (const [url, options] of uploads) {
+      assert.ok(url.endsWith("/api/v1/projects/P1/files"));
+      assert.deepEqual(options.headers, {
+        Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+        "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+      });
+      assert.equal(Object.keys(options.headers).some(key => key.toLowerCase() === "content-type"), false);
+      assert.ok(options.body instanceof FormData);
+    }
+    for (const [, options] of fetchCalls.filter(([, options]) => (options.method || "GET") === "GET")) {
+      assert.equal(Object.keys(options.headers || {}).some(key => key.toLowerCase() === "x-confirm-mutation"), false);
+    }
     assert.equal(draftStore.get("resupply_upload:C_PM:followup-ts").status, "completed");
   });
 
