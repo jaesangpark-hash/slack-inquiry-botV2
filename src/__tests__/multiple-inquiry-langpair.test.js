@@ -105,3 +105,73 @@ describe("복수 문의 — langPair 전달 (AIA B1·B2)", () => {
     );
   });
 });
+
+/**
+ * 복수 소환 → 리테이크/파일순서 재디스패치에 "확정 작품 언어"(matchedTitle.lang)를 넘기는지.
+ *
+ * 회귀 배경: 한일/중일을 한 이모지로 받다가 이모지를 둘로 쪼갠 뒤,
+ *   복수 소환(납품 스레드는 대부분 복수)에서 processItem → handleRetakeInquiry 재호출 시
+ *   언어를 빠뜨려(기존 코드) 내부 재매칭이 양쪽 마스터를 섞어 돌렸다.
+ *   그 결과 한일 작품이 엉뚱한 중일 작품으로 잡히거나 후보 충돌로 멈춰
+ *   감시행이 안 생기고 → 완료 알림이 안 나갔다. (단일 소환 경로는 멀쩡)
+ *
+ * self-fulfilling 금지: 매칭 결과의 lang("ko-ja")이 그대로 재호출 인자에 도달하는지만 본다.
+ */
+function makeCapturingHarness({ matchedLang }) {
+  const app = { action() {}, view() {} };
+  const retakeCalls = [];
+  const fileOrderCalls = [];
+  const draftStore = new Map();
+  const api = registerMultipleInquiryFlow(app, {
+    ai: { models: { generateContent: async () => ({ text: "{}" }) } },
+    GEMINI_MODEL: "x",
+    matchWorkTitleFromSheet: async () => ({ koreanProjectName: "아포칼립스", pivoId: "P1", lang: matchedLang }),
+    matchWorkTitleByTokens: async () => null,
+    generateDraftId: () => "d1",
+    draftStore,
+    fetchDeliveryDate: async () => null,
+    handleFileOrderInquiry: async (...args) => { fileOrderCalls.push(args); },
+    handleRetakeInquiry:   async (...args) => { retakeCalls.push(args); },
+    handleScheduleExt: async () => {},
+    handleScheduleExtGrouped: null,
+  });
+  return { api, retakeCalls, fileOrderCalls };
+}
+
+describe("복수 문의 — 리테이크/파일순서 언어 전달 (한일 완료 알림 회귀)", () => {
+  test("리테이크 항목 → handleRetakeInquiry 에 확정 언어(matchedTitle.lang) 전달", async () => {
+    const { api, retakeCalls } = makeCapturingHarness({ matchedLang: "ko-ja" });
+
+    await api.handleMultipleInquiry(
+      client, "DM1", "원문", "https://link", "C1", "1.1", "요청자",
+      [{ type: "리테이크", work_title_ko: "아포칼립스", work_title_ja: "", episode: "3" }],
+      null, "U_REQ", "U_OWNER", null,
+      "ko-ja",
+    );
+
+    assert.equal(retakeCalls.length, 1, "handleRetakeInquiry 가 불려야 한다");
+    // 시그니처: (client, dmChannel, analysis, linkInfo, originalText, requesterName, requesterUserId, ownerUserId, langPair)
+    assert.equal(
+      retakeCalls[0][8], "ko-ja",
+      `9번째 인자(langPair)로 확정 언어가 넘어가야 한다 — 빠지면 한일 완료 알림 누락. 실제: ${JSON.stringify(retakeCalls[0][8])}`,
+    );
+  });
+
+  test("파일순서 항목 → handleFileOrderInquiry 에 확정 언어 전달", async () => {
+    const { api, fileOrderCalls } = makeCapturingHarness({ matchedLang: "ko-ja" });
+
+    await api.handleMultipleInquiry(
+      client, "DM1", "원문", "https://link", "C1", "1.1", "요청자",
+      [{ type: "파일순서", work_title_ko: "아포칼립스", work_title_ja: "", episode: "3" }],
+      null, "U_REQ", "U_OWNER", null,
+      "ko-ja",
+    );
+
+    assert.equal(fileOrderCalls.length, 1, "handleFileOrderInquiry 가 불려야 한다");
+    // 시그니처: (client, dmChannel, analysis, linkInfo, originalText, langPair)
+    assert.equal(
+      fileOrderCalls[0][5], "ko-ja",
+      `6번째 인자(langPair)로 확정 언어가 넘어가야 한다. 실제: ${JSON.stringify(fileOrderCalls[0][5])}`,
+    );
+  });
+});

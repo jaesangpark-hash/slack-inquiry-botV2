@@ -120,6 +120,16 @@ describe("retakeFlow mutation truth", () => {
     });
 
     assert.equal(fetchCalls.length, 2);
+    for (const endpoint of ["/api/v1/tasks/source-task-1/retake", "/api/v1/tasks/dates"]) {
+      const request = fetchCalls.find(([url]) => url.endsWith(endpoint));
+      assert.ok(request, endpoint);
+      assert.equal(request[1].method, "POST");
+      assert.deepEqual(request[1].headers, {
+        Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+        "Content-Type": "application/json",
+        "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+      });
+    }
     assert.deepEqual(draftStore.get("retake-1").createdTaskUuids, ["created-1"]);
     assert.equal(draftStore.get("retake-1").retakeMutationStatus, "completed");
   });

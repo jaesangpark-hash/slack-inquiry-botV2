@@ -172,6 +172,19 @@ describe("scheduleBulkFlow mutation truth", () => {
     });
 
     assert.equal(fetchCalls.length, 2);
+    const dateRequest = fetchCalls.find(([url]) => url.endsWith("/api/v1/tasks/dates"));
+    assert.ok(dateRequest);
+    assert.equal(dateRequest[1].method, "POST");
+    assert.deepEqual(dateRequest[1].headers, {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+      "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+    });
+    const lookupRequest = fetchCalls.find(([url]) => url.includes("/jobs?episode="));
+    assert.ok(lookupRequest);
+    assert.deepEqual(lookupRequest[1].headers, {
+      Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+    });
     assert.equal(draftStore.has("bulk-1"), false);
     assert.ok(client.calls.some(call => call.text?.includes("일정 반영 완료")));
   });
@@ -320,6 +333,12 @@ describe("scheduleBulkFlow mutation truth", () => {
 
     const retakeCalls = fetchCalls.filter(([url]) => url.endsWith("/retake"));
     assert.equal(retakeCalls.length, 1, "소스가 있는 1화만 생성한다");
+    assert.equal(retakeCalls[0][1].method, "POST");
+    assert.deepEqual(retakeCalls[0][1].headers, {
+      Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Confirm-Mutation": "I-UNDERSTAND-PROD",
+    });
     assert.ok(retakeCalls.every(([url]) => url.includes("source-1")), "2화에는 POST하지 않는다");
     assert.ok(client.calls.some(call => call.text?.includes("2화/번역")), "건너뛴 대상을 알린다");
   });

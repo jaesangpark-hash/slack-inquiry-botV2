@@ -14,7 +14,8 @@ const DONE_STATES = new Set(["COMPLETED", "DROP"]);
  *   - 오늘(KST) 등록분(registeredAt)
  *   - 감시 대상 채널(watchChannels) 소환건
  *   을 1차로 고른 뒤, 각 행을 judgeTaskUuid로 GET /api/v1/tasks/{uuid} 조회해
- *   이미 COMPLETED·DROP 인 태스크는 제외하고, "확인된 미완료" 건만 채널별 1건으로 공지한다.
+ *   이미 COMPLETED·DROP 인 태스크는 제외하고, "확인된 미완료" 건만 납품 스레드별 1건 답글로 공지한다
+ *   (스레드 정보가 없으면 채널 최상위 1건). 작업자 수정요청 스레드가 기록된 건은 그 스레드에도 답글.
  *
  * ⚠️ 왜 Totus를 다시 확인하나 (형민님 검수):
  *   완료 폴러와 리마인더가 같은 18시에 시작하는데, 폴러는 행마다 Totus 조회→답글→notified 기록이라
@@ -25,6 +26,7 @@ const DONE_STATES = new Set(["COMPLETED", "DROP"]);
  *   notified 기록은 완료 폴러 몫. 두 곳에서 기록하면 완료 답글이 두 번 나갈 수 있다.
  *
  * 조회 실패 시: 해당 행은 공지에서 제외한다("확인된 미완료"만 알림 → 완료건 오탐·오태그 방지).
+ *   그 행이 섞인 납품 스레드에는 "전건 제출 완료" 안내도 보내지 않는다(틀린 완료 안내 방지).
  *
  * @param {{
  *   retakeWatchStore: { _loadRows: function },  // 시트 전체 행 로드
@@ -97,7 +99,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
 
   // 미제출 0건일 때 납품 스레드에 다는 "전체 제출 완료" 안내 — 아무도 태그하지 않는다.
   function _buildAllClearText() {
-    return `✅ 현 시점 기준, 오늘 요청된 리테이크 수정 건이 모두 제출 완료되었습니다. 감사합니다!`;
+    return `🎉 오늘의 리테이크 수정 *전건 제출 완료*! 다들 정말 수고 많으셨어요 🙌 오늘도 무사 마감입니다 🎊`;
   }
 
   // 작업자 수정요청 스레드에 다는 리마인드 답글 — 그 스레드 자체가 해당 건이라 간결하게.
@@ -129,7 +131,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
     }
 
     // watching 행을 발송 직전 Totus로 재분류 → pending(미제출 확정)·unknown(조회 실패)을 나눠 담는다.
-    // unknown은 리마인더 목록에선 빠지지만(기존대로), "모두 제출 완료" 안내는 차단해야 한다(틀린 완료 안내 방지).
+    // unknown은 리마인더 목록에선 빠지지만(기존대로), "전건 제출 완료" 안내는 차단해야 한다(틀린 완료 안내 방지).
     const pending = [];
     const unknownSet = new Set();
     for (const r of todayWatch) {
@@ -143,7 +145,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
 
     // 납품 스레드(watchThreadTs)별 그룹 → 스레드마다:
     //   - 미제출(pending) 있으면 그 스레드에 리마인더(소환자 태그) 답글
-    //   - 미제출·조회실패(unknown) 모두 없고 완료(notified) 있으면 "모두 제출 완료" 안내(태그 없음)
+    //   - 미제출·조회실패(unknown) 모두 없고 완료(notified) 있으면 "전건 제출 완료" 안내(태그 없음)
     //   - 조회 실패가 하나라도 있으면 완료 안내 보류(실제로 미제출이 남았을 수 있음 — 형민님 검수)
     //   - 그 외(드랍/만료만) 무발송
     const byThread = new Map(); // key = channel + "\u0000" + threadTs
@@ -160,7 +162,7 @@ module.exports = function createRetakeReminderPoller({ retakeWatchStore, slackCl
       if (grpPending.length) {
         text = _buildText(grpPending); // 미제출 리마인더
       } else if (!grpHasUnknown && grp.some(r => r.status === "notified")) {
-        text = _buildAllClearText();   // 모두 제출 완료 안내(조회 실패 없을 때만)
+        text = _buildAllClearText();   // 전건 제출 완료 안내(조회 실패 없을 때만)
       }
       if (!text) {
         if (grpHasUnknown) console.log(`[retake-reminder] 조회 실패 포함 → 완료 안내 보류 — ch:${channel} thread:${threadTs || "(최상위)"}`);

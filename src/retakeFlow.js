@@ -6,6 +6,7 @@ const {
   requireCreatedTaskUuids,
   toUnknownMutationOutcome,
 } = require("./clients/totus-mutation-result");
+const { GATEWAY_MUTATION_HEADERS } = require("./utils/gateway-headers");
 const {
   readKoreanProjectNameFromSelectionPayload,
 } = require("./slack/title-selection-payload");
@@ -777,7 +778,7 @@ JSON만 출력. 코드블록 금지.
         try {
           json = await _apiFetch(`${BASE()}/api/v1/tasks/${data.sourceTaskUuid}/retake`, {
             method:  "POST",
-            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+            headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
             body:    JSON.stringify(reqBody),
           }, { bot: "retake", endpoint: "/tasks/{uuid}/retake", params: {}, expectedCount: null });
           createdUuids = requireCreatedTaskUuids(json, "태스크 재생성");
@@ -809,7 +810,7 @@ JSON만 출력. 코드블록 금지.
         (createdUuids.length > 0 && startDate && endDate)
           ? _apiFetch(`${BASE()}/api/v1/tasks/dates`, {
               method:  "POST",
-              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json" },
+              headers: { Authorization: `Bearer ${TOKEN()}`, "Content-Type": "application/json", ...GATEWAY_MUTATION_HEADERS },
               body: JSON.stringify({
                 tasks: createdUuids.map(uuid => ({
                   taskUuid:  uuid,
@@ -1278,6 +1279,7 @@ JSON만 출력. 코드블록 금지.
     try {
       const sharp  = require("sharp");
       const axios  = require("axios");
+      const { assertSlackFileUrl } = require("./utils/slack-file-url");
       const fs     = require("fs");
       const path   = require("path");
       const os     = require("os");
@@ -1355,6 +1357,7 @@ ${msgText}
             }
 
             // 실제 바이너리 다운로드 (봇 토큰 인증)
+            assertSlackFileUrl(downloadUrl);
             const res = await axios.get(downloadUrl, {
               responseType: 'arraybuffer',
               headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
