@@ -720,3 +720,33 @@ describe("원문 스레드 좌표 보존", () => {
     assert.equal(d.originalTs, "1700000000.0001");
   });
 });
+
+describe("inquiry_done — 기록 대상(gid)으로 체크한다(AIA 리뷰 S1)", () => {
+  for (const [label, metaExtra, expected] of [
+    ["rg 가 있으면 그 gid", { rg: 1179736144, lang: "ko-ja" }, { gid: 1179736144 }],
+    ["rg 가 없는 옛 버튼은 lang", { lang: "ko-ja" }, "ko-ja"],
+    ["둘 다 없으면 null(공통)", {}, null],
+  ]) {
+    it(label, async () => {
+      const draftStore = new Map([["d1", { originalChannelId: "C_ORIG", originalTs: "111" }]]);
+      const app = makeFakeApp();
+      const targets = [];
+      const client = makeFakeClient({ chat: { postMessage: async () => ({ ts: "ts2" }), update: async () => ({}) } });
+      registerDirectInputActions(app, makeDeps(draftStore, {
+        checkInquiryDone: async (rowIndex, target) => { targets.push([rowIndex, target]); },
+      }));
+      const meta = JSON.stringify({ submitterId: "U_SUBMIT", draftId: "d1", historyRowIndex: 9, ...metaExtra });
+      await app._registered.actions["inquiry_done"]({
+        ack: async () => {},
+        body: {
+          user: { id: "U_HANDLER" },
+          channel: { id: "C_PM" },
+          message: { ts: "m_ts", text: "원본", blocks: [{ type: "section" }, { type: "actions" }] },
+          actions: [{ value: meta }],
+        },
+        client,
+      });
+      assert.deepEqual(targets, [[9, expected]]);
+    });
+  }
+});

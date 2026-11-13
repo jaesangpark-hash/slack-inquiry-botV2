@@ -13,6 +13,7 @@ const {
   publishFromCheckpoint,
 } = require("../slack/publication-coordinator");
 const { requirePositiveSheetRowIndex } = require("../sheets/sheet-row-index");
+const { recordTargetFromMeta } = require("../sheets/lang-record-router");
 const {
   isPublicationLocked,
   updateTerminalPublicationPreview,
@@ -46,6 +47,8 @@ module.exports = function registerResupplyActions(app, deps) {
     updateResupplySourceLink,
     updateResupplyPivoId,
     checkResupplyDone,
+    // 이 언어로 기록하면 쓰게 될 탭의 gid. 없으면(시험 등) 종전처럼 언어로 탭을 고른다.
+    resupplyRecordGidFor = null,
     langRouting,
     // 납품일·APM 조회 (선택 주입 — 미주입 시 조회 skip)
     matchWorkTitleFromSheet,
@@ -55,7 +58,11 @@ module.exports = function registerResupplyActions(app, deps) {
 
   async function publishResupplyRequest({ draft, draftId, submitterId, client }) {
     // 목적지는 작품의 언어가 정한다 — 한일 검증 전이라 운영 PM 채널에 섞이면 안 된다.
-    const PM_REQUEST_CHANNEL_ID = langRouting.channelFor("pmRequest", draft.lang || draft.langPair || null);
+    const langPair = draft.lang || draft.langPair || null;
+    const PM_REQUEST_CHANNEL_ID = langRouting.channelFor("pmRequest", langPair);
+    // 기록 탭을 게시 전에 한 번 정한다 — 기록·버튼·후속 갱신이 같은 탭을 가리키게(AIA 리뷰 S1·P2).
+    const recordGid = typeof resupplyRecordGidFor === "function" ? resupplyRecordGidFor(langPair) : null;
+    const recordTarget = recordGid != null ? { gid: recordGid } : langPair;
     const publicationKey = `resupply_publication:${draftId}`;
     try {
       const publication = await publishFromCheckpoint({
@@ -76,9 +83,10 @@ module.exports = function registerResupplyActions(app, deps) {
           sourceLink: draft.sourceLink || null,
           originalChannelId: draft.originalChannelId || null,
           originalTs: draft.originalTs || null,
+          recordGid,
         },
         appendSheetRow: async () => requirePositiveSheetRowIndex(
-          await appendResupplyRecord(draft, submitterId, client),
+          await appendResupplyRecord(draft, submitterId, client, recordTarget),
           "재수급"
         ),
         onSheetRowConfirmed: resupplyRowIndex => {
@@ -86,7 +94,7 @@ module.exports = function registerResupplyActions(app, deps) {
           draftStore.set(draftId, { ...currentDraft, resupplyRowIndex });
         },
         postMainMessage: ({ sheetRowIndex: resupplyRowIndex }) => {
-          const messageDraft = { ...draft, resupplyRowIndex };
+          const messageDraft = { ...draft, resupplyRowIndex, resupplyRecordGid: recordGid };
           return client.chat.postMessage({
             channel: PM_REQUEST_CHANNEL_ID,
             ...buildFileInquiryMessage(messageDraft, submitterId),
@@ -117,7 +125,7 @@ module.exports = function registerResupplyActions(app, deps) {
             channel: PM_REQUEST_CHANNEL_ID,
             message_ts: publication.mainMessageTs,
           });
-          await updateResupplySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), draft.lang || draft.langPair || null);
+          await updateResupplySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), recordTarget);
         } catch (e) {
           console.error("[resupply] 링크 갱신 실패:", e.message);
         }
@@ -131,7 +139,7 @@ module.exports = function registerResupplyActions(app, deps) {
         && typeof updateResupplyPivoId === "function"
       ) {
         try {
-          await updateResupplyPivoId(publication.sheetRowIndex, draft.pivoId, draft.lang || draft.langPair || null);
+          await updateResupplyPivoId(publication.sheetRowIndex, draft.pivoId, recordTarget);
         } catch (e) {
           console.error("[resupply] PIVO ID 갱신 실패:", e.message);
         }
@@ -321,7 +329,7 @@ module.exports = function registerResupplyActions(app, deps) {
           if (typeof checkResupplyDone !== "function") {
             throw new Error("재수급 완료 시트 기록 기능이 연결되지 않았어.");
           }
-          await checkResupplyDone(resupplyRowIndex, meta.lang || null);   // 기록한 탭(한일/공통)과 같은 곳을 체크
+          await checkResupplyDone(resupplyRowIndex, recordTargetFromMeta(meta));   // 기록한 탭을 체크(옛 버튼은 언어로)
         },
         postFollowup: async () => {
           const sharedMeta = JSON.stringify({

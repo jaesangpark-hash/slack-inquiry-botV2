@@ -82,8 +82,10 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
       workName: draft.workName || "-",
       episode: draft.episode || "-",
       resupplyRowIndex: draft.resupplyRowIndex || null,
-      // 기록 탭(한일/공통)을 고른 언어 — 완료 클릭 때 같은 탭을 체크하려고 영속한다
+      // 기록 탭(한일/공통)을 고른 언어 — 기록 대상(rg)이 없는 옛 버튼 호환용
       lang: draft.lang || draft.langPair || null,
+      // 기록한 탭의 gid — 완료 클릭 때 이 탭을 체크한다(설정이 바뀌어도 다른 탭을 건드리지 않게)
+      rg: draft.resupplyRecordGid ?? null,
     });
 
     // 재수급 요청을 받는 PM 도 언어쌍마다 다르다. draft.lang 은 매칭된 작품이 정한 값이라
@@ -219,6 +221,8 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
     langPair = null,
     // 작업자 문의 언어(분석 결과 source_lang). 언어쌍과 함께 본문을 요약으로 쓸지 정한다.
     sourceLang = null,
+    // 이력을 기록한 탭의 gid(게시자가 기록 전에 정한 값). 없으면 옛 방식(언어로 탭 선택).
+    recordGid = null,
   }) {
     const mentions = mentionUserIdsFor(langPair).map(id => `<@${id}>`).join(" ");
     const fallbackText = `${workName||"-"} | ${inquiryType||"-"} | <@${submitterId}>`;
@@ -232,8 +236,10 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
       originalChannelId: originalChannelId || null,
       originalTs: originalTs || null,
       sourceLink: sourceLink || null,
-      // 기록 탭(한일/공통)을 고른 언어 — 완료 클릭 때 같은 탭을 체크하려고 영속한다
+      // 기록 탭(한일/공통)을 고른 언어 — 기록 대상(rg)이 없는 옛 버튼 호환용
       lang: langPair || null,
+      // 기록한 탭의 gid — 완료 클릭 때 이 탭을 체크한다(설정이 바뀌어도 다른 탭을 건드리지 않게)
+      rg: recordGid ?? null,
     });
     return {
       text: fallbackText,
@@ -318,7 +324,7 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
   function bodyIsSummary({ hasThreadContext, langPair, sourceLang }) {
     if (hasThreadContext) return true;
     if (langPair === "zh-ja") return true;
-    if (langPair === "ko-ja") return sourceLang === "ko";
+    if (langPair === "ko-ja") return String(sourceLang || "").trim().toLowerCase() === "ko";
     return false;
   }
 

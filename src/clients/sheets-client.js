@@ -56,6 +56,20 @@ module.exports = function createSheetsClient({ google, getGoogleAuth }) {
   }
 
   /**
+   * 시트 파일의 탭 목록(제목·gid). 부팅 때 설정한 탭 이름과 gid 가 같은 탭인지 확인하는 데 쓴다(read-only).
+   * @param {string} spreadsheetId
+   * @returns {Promise<Array<{ sheetId: number, title: string }>>}
+   */
+  async function getSheetTabs(spreadsheetId) {
+    const sheets = google.sheets({ version: "v4", auth: getGoogleAuth([READONLY_SCOPE]) });
+    const res = await _withRetry(() => sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties(sheetId,title)",
+    }));
+    return (res.data.sheets || []).map(s => ({ sheetId: s.properties.sheetId, title: s.properties.title }));
+  }
+
+  /**
    * 시트 범위에 행을 append한다. API error 시 throw (F2 — 알림·로깅은 호출처 책임).
    * @param {string} spreadsheetId
    * @param {string} range
@@ -89,5 +103,5 @@ module.exports = function createSheetsClient({ google, getGoogleAuth }) {
     return res;
   }
 
-  return { getValues, append, batchUpdate };
+  return { getValues, getSheetTabs, append, batchUpdate };
 };
