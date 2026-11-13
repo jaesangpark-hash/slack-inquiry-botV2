@@ -134,7 +134,7 @@ module.exports = function registerDirectInputActions(app, deps) {
           if (typeof checkInquiryDone !== "function") {
             throw new Error("문의 완료 시트 기록 기능이 연결되지 않았어.");
           }
-          await checkInquiryDone(historyRowIndex);
+          await checkInquiryDone(historyRowIndex, meta.lang || null);   // 기록한 탭(한일/공통)과 같은 곳을 체크
         },
         postFollowup: async () => {
           if (!submitterId) return { ts: "not_required" };

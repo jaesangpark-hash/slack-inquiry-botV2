@@ -118,7 +118,7 @@ function createInquiryPublisher({
             channel: targetChannelId,
             message_ts: publication.mainMessageTs,
           });
-          await updateInquiryHistorySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink));
+          await updateInquiryHistorySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), langPair);
         } catch (e) {
           console.error("[postInquiry] 히스토리 링크 갱신 실패:", e.message);
         }
@@ -127,7 +127,7 @@ function createInquiryPublisher({
       // 히스토리 시트 PIVO ID 컬럼 채우기 (append 범위가 좁아 후속 호출로 채움)
       if (publication.sheetRowIndex && publication.replay !== true && draft.pivoId) {
         try {
-          await updateInquiryHistoryPivoId(publication.sheetRowIndex, draft.pivoId);
+          await updateInquiryHistoryPivoId(publication.sheetRowIndex, draft.pivoId, langPair);
         } catch (e) {
           console.error("[postInquiry] 히스토리 PIVO ID 갱신 실패:", e.message);
         }

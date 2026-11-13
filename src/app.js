@@ -37,6 +37,20 @@ const createTitleMatcher = require("./sheets/title-matcher");
 const createDeliveryDateService = require("./sheets/delivery-date");
 const createInquiryHistory = require("./sheets/inquiry-history");
 const createResupplyRecord = require("./sheets/resupply-record");
+const { routeInquiryHistory, routeResupplyRecord } = require("./sheets/lang-record-router");
+// 한일 기록 탭 설정 읽기 — KOJA_{kind}_SHEET_RANGE + KOJA_{kind}_GRID_SHEET_ID 가 둘 다 있어야 켠다(반쪽 설정은 경고 후 무시).
+function kojaRecordConfig(kind, baseSheetId) {
+  const range = String(process.env[`KOJA_${kind}_SHEET_RANGE`] || "").trim();
+  const gridRaw = String(process.env[`KOJA_${kind}_GRID_SHEET_ID`] || "").trim();
+  const sheetId = String(process.env[`KOJA_${kind}_SHEET_ID`] || "").trim() || baseSheetId;
+  if (!range && !gridRaw) return null;
+  const gridId = Number.parseInt(gridRaw, 10);
+  if (!range || !Number.isFinite(gridId) || !sheetId) {
+    console.warn(`[lang-record] KOJA_${kind}_* 설정이 반쪽이라 무시 — RANGE·GRID_SHEET_ID 둘 다 필요(한일도 공통 탭에 기록)`);
+    return null;
+  }
+  return { sheetId, range, gridId };
+}
 const createRetakeWatchStore = require("./sheets/retake-watch-store");
 const createRetakeWatchPoller = require("./retakeWatchPoller");
 const createRetakeReminderPoller = require("./retakeReminderPoller");
@@ -188,18 +202,43 @@ const interactionApp = createInteractionGuard({
 });
 
 // ── 시트 write 모듈 wiring (T3 — R4 수렴 완료, sheetsClient 경유) ──────────────
-const { appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone } = createInquiryHistory({
-  sheetsClient,
-  historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
-  historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
-  historyGridSheetId: INQUIRY_HISTORY_GRID_SHEET_ID,
+// 한일 기록 탭(선택) — 셋 다 있어야 켜진다. 비우면 한일도 공통 탭(종전 동작).
+//   KOJA_*_SHEET_ID 는 생략 시 공통 스프레드시트와 같은 파일의 다른 탭으로 본다.
+const kojaHistoryCfg = kojaRecordConfig("INQUIRY_HISTORY", process.env.INQUIRY_HISTORY_SHEET_ID);
+const kojaResupplyCfg = kojaRecordConfig("RESUPPLY", RESUPPLY_SHEET_ID);
+const {
+  appendInquiryHistory, updateInquiryHistorySourceLink, updateInquiryHistoryPivoId, checkInquiryDone,
+} = routeInquiryHistory({
+  base: createInquiryHistory({
+    sheetsClient,
+    historySheetId: process.env.INQUIRY_HISTORY_SHEET_ID,
+    historySheetRange: process.env.INQUIRY_HISTORY_SHEET_RANGE,
+    historyGridSheetId: INQUIRY_HISTORY_GRID_SHEET_ID,
+  }),
+  koja: kojaHistoryCfg && createInquiryHistory({
+    sheetsClient,
+    historySheetId: kojaHistoryCfg.sheetId,
+    historySheetRange: kojaHistoryCfg.range,
+    historyGridSheetId: kojaHistoryCfg.gridId,
+  }),
 });
-const { appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone } = createResupplyRecord({
-  sheetsClient,
-  resupplySheetId: RESUPPLY_SHEET_ID,
-  resupplySheetRange: RESUPPLY_SHEET_RANGE,
-  resupplyGridSheetId: RESUPPLY_GRID_SHEET_ID,
+const {
+  appendResupplyRecord, updateResupplySourceLink, updateResupplyPivoId, checkResupplyDone,
+} = routeResupplyRecord({
+  base: createResupplyRecord({
+    sheetsClient,
+    resupplySheetId: RESUPPLY_SHEET_ID,
+    resupplySheetRange: RESUPPLY_SHEET_RANGE,
+    resupplyGridSheetId: RESUPPLY_GRID_SHEET_ID,
+  }),
+  koja: kojaResupplyCfg && createResupplyRecord({
+    sheetsClient,
+    resupplySheetId: kojaResupplyCfg.sheetId,
+    resupplySheetRange: kojaResupplyCfg.range,
+    resupplyGridSheetId: kojaResupplyCfg.gridId,
+  }),
 });
+console.log(`[lang-record] 한일 기록 탭 — 문의: ${kojaHistoryCfg ? kojaHistoryCfg.range : "분리 없음(공통)"} / 재수급: ${kojaResupplyCfg ? kojaResupplyCfg.range : "분리 없음(공통)"}`);
 
 // ── flow wiring (모듈 factory 직후, 핸들러 등록 전) ─────────────────
 const { handleFileOrderInquiry } = require("./fileOrderFlow")(interactionApp, {

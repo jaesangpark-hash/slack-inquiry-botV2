@@ -82,6 +82,8 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
       workName: draft.workName || "-",
       episode: draft.episode || "-",
       resupplyRowIndex: draft.resupplyRowIndex || null,
+      // 기록 탭(한일/공통)을 고른 언어 — 완료 클릭 때 같은 탭을 체크하려고 영속한다
+      lang: draft.lang || draft.langPair || null,
     });
 
     // 재수급 요청을 받는 PM 도 언어쌍마다 다르다. draft.lang 은 매칭된 작품이 정한 값이라
@@ -230,6 +232,8 @@ module.exports = function createInquiryBlocks({ pmSlackIdFor, mentionUserIdsFor 
       originalChannelId: originalChannelId || null,
       originalTs: originalTs || null,
       sourceLink: sourceLink || null,
+      // 기록 탭(한일/공통)을 고른 언어 — 완료 클릭 때 같은 탭을 체크하려고 영속한다
+      lang: langPair || null,
     });
     return {
       text: fallbackText,

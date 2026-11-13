@@ -117,7 +117,7 @@ module.exports = function registerResupplyActions(app, deps) {
             channel: PM_REQUEST_CHANNEL_ID,
             message_ts: publication.mainMessageTs,
           });
-          await updateResupplySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink));
+          await updateResupplySourceLink(publication.sheetRowIndex, stripPermalinkQuery(permalinkRes.permalink), draft.lang || draft.langPair || null);
         } catch (e) {
           console.error("[resupply] 링크 갱신 실패:", e.message);
         }
@@ -131,7 +131,7 @@ module.exports = function registerResupplyActions(app, deps) {
         && typeof updateResupplyPivoId === "function"
       ) {
         try {
-          await updateResupplyPivoId(publication.sheetRowIndex, draft.pivoId);
+          await updateResupplyPivoId(publication.sheetRowIndex, draft.pivoId, draft.lang || draft.langPair || null);
         } catch (e) {
           console.error("[resupply] PIVO ID 갱신 실패:", e.message);
         }
@@ -321,7 +321,7 @@ module.exports = function registerResupplyActions(app, deps) {
           if (typeof checkResupplyDone !== "function") {
             throw new Error("재수급 완료 시트 기록 기능이 연결되지 않았어.");
           }
-          await checkResupplyDone(resupplyRowIndex);
+          await checkResupplyDone(resupplyRowIndex, meta.lang || null);   // 기록한 탭(한일/공통)과 같은 곳을 체크
         },
         postFollowup: async () => {
           const sharedMeta = JSON.stringify({
